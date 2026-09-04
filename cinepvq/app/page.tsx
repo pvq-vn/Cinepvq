@@ -1,102 +1,292 @@
 "use client";
 
-import { useFetchNewMovies } from "@/hooks/useMovies";
+import Link from "next/link";
+import { useQuery } from "@tanstack/react-query";
+import {
+  getLatestMovies,
+  getMoviesByCategory,
+  getMoviesByGenre,
+  getMoviesByCountry,
+} from "@/services/api";
+import HeroCarousel from "@/components/HeroCarousel";
+import MovieRow from "@/components/MovieRow";
+import { HeroSkeleton, MovieRowSkeleton } from "@/components/Skeleton";
+import { AlertCircle, RefreshCw, Sparkles } from "lucide-react";
 
 export default function Home() {
-  const { data: movies, isLoading, isError } = useFetchNewMovies();
+  // Query 1: Latest movies (Used for Hero Carousel + Phim mới cập nhật)
+  const {
+    data: latestData,
+    isLoading: latestLoading,
+    isError: latestError,
+    refetch: refetchLatest,
+  } = useQuery({
+    queryKey: ["home-latest"],
+    queryFn: async () => (await getLatestMovies(1)).data,
+    staleTime: 5 * 60 * 1000,
+  });
 
-  /* ── Error ── */
-  if (isError) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-screen gap-3">
-        <p className="text-lg font-semibold text-red-600 dark:text-red-400">
-          Lỗi kết nối API
-        </p>
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
-          Vui lòng kiểm tra kết nối mạng và thử lại.
-        </p>
-      </div>
-    );
-  }
+  // Query 2: Phim bộ
+  const { data: seriesData, isLoading: seriesLoading } = useQuery({
+    queryKey: ["home-phim-bo"],
+    queryFn: async () => (await getMoviesByCategory("phim-bo", 1)).data,
+    staleTime: 5 * 60 * 1000,
+  });
 
-  /* ── Loading ── */
-  if (isLoading) {
+  // Query 3: Phim lẻ
+  const { data: singleData, isLoading: singleLoading } = useQuery({
+    queryKey: ["home-phim-le"],
+    queryFn: async () => (await getMoviesByCategory("phim-le", 1)).data,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Query 4: Hoạt hình
+  const { data: animeData, isLoading: animeLoading } = useQuery({
+    queryKey: ["home-hoat-hinh"],
+    queryFn: async () => (await getMoviesByCategory("hoat-hinh", 1)).data,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Query 5: TV Show
+  const { data: tvShowData, isLoading: tvShowLoading } = useQuery({
+    queryKey: ["home-tv-shows"],
+    queryFn: async () => (await getMoviesByCategory("tv-shows", 1)).data,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Query 6: Thể loại Hành động
+  const { data: actionData, isLoading: actionLoading } = useQuery({
+    queryKey: ["home-genre-hanh-dong"],
+    queryFn: async () => (await getMoviesByGenre("hanh-dong", 1)).data,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Query 7: Quốc gia Âu Mỹ
+  const { data: westernData, isLoading: westernLoading } = useQuery({
+    queryKey: ["home-country-au-my"],
+    queryFn: async () => (await getMoviesByCountry("au-my", 1)).data,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Query 8: Quốc gia Hàn Quốc
+  const { data: koreanData, isLoading: koreanLoading } = useQuery({
+    queryKey: ["home-country-han-quoc"],
+    queryFn: async () => (await getMoviesByCountry("han-quoc", 1)).data,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Handle Full Page Error if first query fails
+  if (latestError) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen gap-4">
-        <div className="relative h-14 w-14">
-          <div className="absolute inset-0 rounded-full border-4 border-zinc-200 dark:border-zinc-800" />
-          <div className="absolute inset-0 rounded-full border-4 border-transparent border-t-violet-600 animate-spin" />
+      <main className="flex-1 min-h-screen flex flex-col items-center justify-center p-6 text-center">
+        <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-red-500/10 text-red-500 mb-4">
+          <AlertCircle className="h-8 w-8" />
         </div>
-        <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400 animate-pulse">
-          Đang tải phim...
+        <h2 className="text-xl font-bold text-zinc-900 dark:text-zinc-100">
+          Không thể kết nối đến máy chủ phim
+        </h2>
+        <p className="mt-2 text-xs text-zinc-500 max-w-sm">
+          Dịch vụ phim tạm thời không phản hồi. Vui lòng kiểm tra lại kết nối mạng của bạn.
         </p>
-      </div>
+        <button
+          onClick={() => refetchLatest()}
+          className="mt-5 inline-flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-2.5 text-xs font-bold text-white shadow-lg shadow-violet-600/30 hover:bg-violet-500 transition-all"
+        >
+          <RefreshCw className="h-4 w-4" />
+          Thử lại
+        </button>
+      </main>
     );
   }
 
-  /* ── Movie grid ── */
+  const latestMovies = latestData?.items ?? [];
+
   return (
-    <main className="flex-1 pt-24 pb-12 px-4 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-7xl">
-        {/* Heading */}
-        <div className="mb-10">
-          <h1 className="text-3xl font-bold tracking-tight sm:text-4xl bg-gradient-to-r from-violet-600 to-indigo-500 bg-clip-text text-transparent">
-            Phim mới cập nhật
-          </h1>
-          <p className="mt-2 text-zinc-500 dark:text-zinc-400">
-            Danh sách phim được cập nhật mới nhất trên hệ thống
-          </p>
-        </div>
+    <main className="flex-1 pb-16">
+      {/* ── 1. Hero Cinematic Carousel ── */}
+      {latestLoading ? (
+        <HeroSkeleton />
+      ) : (
+        <HeroCarousel movies={latestMovies} />
+      )}
 
-        {/* Grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 sm:gap-6">
-          {movies.map((movie) => (
-            <a
-              key={movie.slug}
-              href={`/phim/${movie.slug}`}
-              className="group relative flex flex-col overflow-hidden rounded-xl bg-zinc-100 dark:bg-zinc-900 ring-1 ring-zinc-200/60 dark:ring-zinc-800/60 transition-all duration-300 hover:ring-violet-500/50 hover:shadow-xl hover:shadow-violet-500/10"
+      {/* ── 2. Trending / Top Phim Hôm Nay (Ranking shelf) ── */}
+      <div className="mt-6">
+        {latestLoading ? (
+          <div className="px-4 sm:px-6 lg:px-8">
+            <MovieRowSkeleton />
+          </div>
+        ) : (
+          <MovieRow
+            title="🔥 Top Phim Hôm Nay"
+            subtitle="Các bộ phim nổi bật được khán giả theo dõi nhiều nhất"
+            seeAllHref="/thinh-hanh"
+            movies={latestMovies.slice(0, 10)}
+            variant="ranking"
+          />
+        )}
+      </div>
+
+      {/* ── Quick Genre Tags Banner ── */}
+      <section className="px-4 sm:px-6 lg:px-8 my-6">
+        <div className="mx-auto max-w-7xl flex items-center gap-2 overflow-x-auto scrollbar-none py-2">
+          <span className="text-xs font-bold text-zinc-400 flex items-center gap-1 flex-shrink-0 mr-2">
+            <Sparkles className="h-3.5 w-3.5 text-violet-500" />
+            Thể loại:
+          </span>
+          {[
+            { label: "Hành Động", href: "/the-loai/hanh-dong" },
+            { label: "Tình Cảm", href: "/the-loai/tinh-cam" },
+            { label: "Hài Hước", href: "/the-loai/phim-hai" },
+            { label: "Cổ Trang", href: "/the-loai/co-trang" },
+            { label: "Kinh Dị", href: "/the-loai/kinh-di" },
+            { label: "Khoa Học Viễn Tưởng", href: "/the-loai/khoa-hoc-vien-tuong" },
+            { label: "Tâm Lý", href: "/the-loai/tam-ly" },
+            { label: "Hình Sự", href: "/the-loai/hinh-su" },
+          ].map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className="flex-shrink-0 rounded-full px-3.5 py-1 text-xs font-medium bg-zinc-100 dark:bg-zinc-900 hover:bg-violet-600 hover:text-white dark:hover:bg-violet-600 dark:hover:text-white text-zinc-700 dark:text-zinc-300 transition-colors shadow-sm"
             >
-              {/* Poster — dùng thẻ <img> tạm để tránh lỗi next/image */}
-              <div className="relative aspect-[2/3] w-full overflow-hidden">
-                <img
-                  src={movie.thumb_url}
-                  alt={movie.name}
-                  className="h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-110"
-                  loading="lazy"
-                />
-
-                {/* Gradient overlay on hover */}
-                <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
-
-                {/* Quality badge */}
-                {movie.quality && (
-                  <span className="absolute top-2 left-2 rounded-md bg-violet-600/90 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white backdrop-blur-sm">
-                    {movie.quality}
-                  </span>
-                )}
-
-                {/* Episode badge */}
-                {movie.current_episode && (
-                  <span className="absolute top-2 right-2 rounded-md bg-black/60 px-2 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">
-                    {movie.current_episode}
-                  </span>
-                )}
-              </div>
-
-              {/* Info */}
-              <div className="flex flex-col gap-1 p-3">
-                <h2 className="text-sm font-semibold leading-tight line-clamp-2 text-zinc-900 dark:text-zinc-100 group-hover:text-violet-600 dark:group-hover:text-violet-400 transition-colors duration-200">
-                  {movie.name}
-                </h2>
-                {movie.original_name && (
-                  <p className="text-xs text-zinc-500 dark:text-zinc-500 line-clamp-1">
-                    {movie.original_name}
-                  </p>
-                )}
-              </div>
-            </a>
+              {item.label}
+            </Link>
           ))}
+          <Link
+            href="/the-loai"
+            className="flex-shrink-0 text-xs font-bold text-violet-600 dark:text-violet-400 hover:underline ml-2"
+          >
+            Tất cả →
+          </Link>
         </div>
+      </section>
+
+      {/* ── 3. Phim Mới Cập Nhật ── */}
+      <div>
+        {latestLoading ? (
+          <div className="px-4 sm:px-6 lg:px-8">
+            <MovieRowSkeleton />
+          </div>
+        ) : (
+          <MovieRow
+            title="Phim Mới Cập Nhật"
+            subtitle="Những tác phẩm vừa được cập nhật tập mới"
+            seeAllHref="/phim"
+            movies={latestMovies}
+          />
+        )}
+      </div>
+
+      {/* ── 4. Phim Bộ Mới ── */}
+      <div>
+        {seriesLoading ? (
+          <div className="px-4 sm:px-6 lg:px-8">
+            <MovieRowSkeleton />
+          </div>
+        ) : (
+          <MovieRow
+            title="Phim Bộ Đặc Sắc"
+            subtitle="Series dài tập lôi cuốn, trọn bộ vietsub chất lượng cao"
+            seeAllHref="/phim-bo"
+            movies={seriesData?.items ?? []}
+          />
+        )}
+      </div>
+
+      {/* ── 5. Phim Lẻ Mới ── */}
+      <div>
+        {singleLoading ? (
+          <div className="px-4 sm:px-6 lg:px-8">
+            <MovieRowSkeleton />
+          </div>
+        ) : (
+          <MovieRow
+            title="Phim Lẻ Chiếu Rạp"
+            subtitle="Bom tấn điện ảnh màn ảnh rộng không thể bỏ lỡ"
+            seeAllHref="/phim-le"
+            movies={singleData?.items ?? []}
+          />
+        )}
+      </div>
+
+      {/* ── 6. Hoạt Hình Mới ── */}
+      <div>
+        {animeLoading ? (
+          <div className="px-4 sm:px-6 lg:px-8">
+            <MovieRowSkeleton />
+          </div>
+        ) : (
+          <MovieRow
+            title="Thế Giới Hoạt Hình & Anime"
+            subtitle="Các bộ phim hoạt hình kinh điển và anime hot nhất"
+            seeAllHref="/hoat-hinh"
+            movies={animeData?.items ?? []}
+          />
+        )}
+      </div>
+
+      {/* ── 7. TV Show Mới ── */}
+      <div>
+        {tvShowLoading ? (
+          <div className="px-4 sm:px-6 lg:px-8">
+            <MovieRowSkeleton />
+          </div>
+        ) : (
+          <MovieRow
+            title="Chương Trình TV Show"
+            subtitle="Gameshow truyền hình và các chương trình thực tế thú vị"
+            seeAllHref="/tv-show"
+            movies={tvShowData?.items ?? []}
+          />
+        )}
+      </div>
+
+      {/* ── 8. Phim Hành Động Kịch Tính ── */}
+      <div>
+        {actionLoading ? (
+          <div className="px-4 sm:px-6 lg:px-8">
+            <MovieRowSkeleton />
+          </div>
+        ) : (
+          <MovieRow
+            title="Hành Động Kịch Tính"
+            subtitle="Nghẹt thở với những pha rượt đuổi và cận chiến mãn nhãn"
+            seeAllHref="/the-loai/hanh-dong"
+            movies={actionData?.items ?? []}
+          />
+        )}
+      </div>
+
+      {/* ── 9. Bom Tấn Âu Mỹ ── */}
+      <div>
+        {westernLoading ? (
+          <div className="px-4 sm:px-6 lg:px-8">
+            <MovieRowSkeleton />
+          </div>
+        ) : (
+          <MovieRow
+            title="Điện Ảnh Âu Mỹ"
+            subtitle="Hollywood đỉnh cao với kỹ xảo và âm thanh sống động"
+            seeAllHref="/quoc-gia/au-my"
+            movies={westernData?.items ?? []}
+          />
+        )}
+      </div>
+
+      {/* ── 10. K-Drama Hàn Quốc ── */}
+      <div>
+        {koreanLoading ? (
+          <div className="px-4 sm:px-6 lg:px-8">
+            <MovieRowSkeleton />
+          </div>
+        ) : (
+          <MovieRow
+            title="K-Drama Hàn Quốc Tuyển Chọn"
+            subtitle="Những câu chuyện tình cảm lãng mạn và kịch tính xứ sở kim chi"
+            seeAllHref="/quoc-gia/han-quoc"
+            movies={koreanData?.items ?? []}
+          />
+        )}
       </div>
     </main>
   );

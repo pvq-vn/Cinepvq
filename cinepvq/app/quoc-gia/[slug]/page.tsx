@@ -2,23 +2,23 @@
 
 import { useState } from "react";
 import { useParams } from "next/navigation";
-import { useFetchMoviesByGenre } from "@/hooks/useMovies";
-import { GENRE_MAP } from "@/lib/taxonomy";
+import { useFetchMoviesByCountry } from "@/hooks/useMovies";
+import { COUNTRY_MAP } from "@/lib/taxonomy";
 import CatalogPage from "@/components/CatalogPage";
 
-export default function GenreDetailPage() {
+export default function CountryDetailPage() {
   const { slug } = useParams<{ slug: string }>();
   const [page, setPage] = useState(1);
   const { data: movies, paginate, isLoading, isError, refetch } =
-    useFetchMoviesByGenre(slug, page);
+    useFetchMoviesByCountry(slug, page);
 
-  const genreName = GENRE_MAP[slug] || slug;
+  const countryName = COUNTRY_MAP[slug] || slug;
 
   return (
     <CatalogPage
-      title={`Phim ${genreName}`}
-      description={`Khám phá danh sách các bộ phim thể loại ${genreName} được chọn lọc và cập nhật mới nhất.`}
-      badge="Thể loại"
+      title={`Điện Ảnh ${countryName}`}
+      description={`Tuyển tập các tác phẩm điện ảnh xuất sắc và được yêu thích nhất đến từ ${countryName}.`}
+      badge="Quốc gia"
       movies={movies}
       paginate={paginate}
       isLoading={isLoading}

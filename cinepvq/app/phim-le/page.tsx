@@ -1,19 +1,19 @@
 "use client";
 
 import { useState } from "react";
-import { useFetchNewMovies } from "@/hooks/useMovies";
+import { useFetchMoviesByCategory } from "@/hooks/useMovies";
 import CatalogPage from "@/components/CatalogPage";
 
-export default function MoviesCatalogPage() {
+export default function SingleMoviesPage() {
   const [page, setPage] = useState(1);
   const { data: movies, paginate, isLoading, isError, refetch } =
-    useFetchNewMovies(page);
+    useFetchMoviesByCategory("phim-le", page);
 
   return (
     <CatalogPage
-      title="Kho Phim Mới Cập Nhật"
-      description="Khám phá toàn bộ các tác phẩm điện ảnh và phim truyền hình được cập nhật mới nhất trên hệ thống Cinépvq."
-      badge="Tất cả phim"
+      title="Phim Lẻ Chiếu Rạp"
+      description="Kho phim điện ảnh bom tấn chất lượng cao, trọn vẹn cảm xúc từ Hollywood, Châu Á đến điện ảnh thế giới."
+      badge="Movies Catalog"
       movies={movies}
       paginate={paginate}
       isLoading={isLoading}

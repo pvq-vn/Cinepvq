@@ -45,19 +45,19 @@ export const getLatestMovies = (page = 1) =>
     params: { page },
   });
 
-/** Phim theo danh mục (dang-chieu | phim-bo | phim-le | tv-shows) */
+/** Phim theo danh mục (dang-chieu | phim-bo | phim-le | tv-shows | hoat-hinh) */
 export const getMoviesByCategory = (slug: string, page = 1) =>
   get<PaginatedResponse>(`films/danh-sach/${slug}`, {
     params: { page },
   });
 
-/** Phim theo thể loại */
+/** Phim theo thể loại (hanh-dong, tinh-cam, phim-hai, kinh-di, v.v.) */
 export const getMoviesByGenre = (slug: string, page = 1) =>
   get<PaginatedResponse>(`films/the-loai/${slug}`, {
     params: { page },
   });
 
-/** Phim theo quốc gia */
+/** Phim theo quốc gia (trung-quoc, han-quoc, au-my, nhat-ban, thai-lan, viet-nam, v.v.) */
 export const getMoviesByCountry = (slug: string, page = 1) =>
   get<PaginatedResponse>(`films/quoc-gia/${slug}`, {
     params: { page },
@@ -72,9 +72,9 @@ export const getMoviesByYear = (year: number, page = 1) =>
 // ─── Search ────────────────────────────────────────────────────────────────
 
 /** Tìm kiếm phim theo từ khóa */
-export const searchMovies = (keyword: string) =>
+export const searchMovies = (keyword: string, page = 1) =>
   get<PaginatedResponse>("films/search", {
-    params: { keyword },
+    params: { keyword, page },
   });
 
 // ─── Detail ────────────────────────────────────────────────────────────────

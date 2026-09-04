@@ -4,6 +4,7 @@ import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import QueryProvider from "@/components/QueryProvider";
 import Navbar from "@/components/Navbar";
+import Footer from "@/components/Footer";
 import SmoothScrolling from "@/components/SmoothScrolling";
 
 const geistSans = Geist({
@@ -37,8 +38,11 @@ export default function RootLayout({
           <QueryProvider>
             <Navbar />
             <SmoothScrolling>
-              {children}
+              <div className="flex-1 flex flex-col">
+                {children}
+              </div>
             </SmoothScrolling>
+            <Footer />
           </QueryProvider>
         </ThemeProvider>
       </body>
