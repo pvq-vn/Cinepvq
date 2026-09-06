@@ -179,12 +179,19 @@ export function migrateGuestDataToUser(userId: string) {
           mergedMap.set(h.slug, h);
         } else {
           const existing = mergedMap.get(h.slug)!;
-          if (new Date(h.updatedAt) > new Date(existing.updatedAt)) {
+          const timeH = h.updatedAt ? new Date(h.updatedAt).getTime() : 0;
+          const timeExisting = existing.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
+          if (timeH > timeExisting) {
             mergedMap.set(h.slug, h);
           }
         }
       });
-      safeSetItem(userHistKey, Array.from(mergedMap.values()));
+      const mergedList = Array.from(mergedMap.values()).sort((a, b) => {
+        const timeA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+        const timeB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+        return timeB - timeA;
+      });
+      safeSetItem(userHistKey, mergedList.slice(0, 50));
       localStorage.removeItem(guestHistKey);
     }
 
@@ -274,7 +281,14 @@ export const favoritesStore = {
 export const historyStore = {
   getAll(): WatchHistoryItem[] {
     const key = getUserStorageKey(KEYS.HISTORY);
-    return safeGetItem<WatchHistoryItem[]>(key, []);
+    const raw = safeGetItem<WatchHistoryItem[]>(key, []);
+    return raw
+      .filter((item) => Boolean(item && item.slug))
+      .sort((a, b) => {
+        const timeA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+        const timeB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+        return timeB - timeA;
+      });
   },
 
   add(
@@ -285,8 +299,7 @@ export const historyStore = {
   ): void {
     const key = getUserStorageKey(KEYS.HISTORY);
     const items = this.getAll();
-    const existingIndex = items.findIndex((item) => item.slug === movie.slug);
-    const existing = existingIndex >= 0 ? items[existingIndex] : null;
+    const existing = items.find((item) => item.slug === movie.slug) || null;
 
     const record: WatchHistoryItem = {
       slug: movie.slug,
@@ -306,14 +319,13 @@ export const historyStore = {
       updatedAt: new Date().toISOString(),
     };
 
-    if (existingIndex >= 0) {
-      items.splice(existingIndex, 1);
-    }
-    items.unshift(record);
+    // Filter out ANY previous occurrences of this slug to guarantee no duplicates
+    const remaining = items.filter((item) => item.slug !== movie.slug);
+    remaining.unshift(record);
 
     // Keep max 50 items
-    if (items.length > 50) items.pop();
-    safeSetItem(key, items);
+    const finalItems = remaining.slice(0, 50);
+    safeSetItem(key, finalItems);
 
     // Also persist discrete per-episode progress to prevent cross-episode overwrites
     if (episode?.slug && typeof currentTime === "number") {
@@ -334,7 +346,27 @@ export const historyStore = {
 
   setAll(items: WatchHistoryItem[]): void {
     const key = getUserStorageKey(KEYS.HISTORY);
-    safeSetItem(key, items);
+    // Deduplicate by slug, preserving the latest record
+    const map = new Map<string, WatchHistoryItem>();
+    for (const item of items) {
+      if (!item || !item.slug) continue;
+      const existing = map.get(item.slug);
+      if (!existing) {
+        map.set(item.slug, item);
+      } else {
+        const timeExisting = existing.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
+        const timeItem = item.updatedAt ? new Date(item.updatedAt).getTime() : 0;
+        if (timeItem >= timeExisting) {
+          map.set(item.slug, item);
+        }
+      }
+    }
+    const deduplicated = Array.from(map.values()).sort((a, b) => {
+      const timeA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+      const timeB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+      return timeB - timeA;
+    });
+    safeSetItem(key, deduplicated.slice(0, 50));
   },
 };
 

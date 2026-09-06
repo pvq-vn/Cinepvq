@@ -31,7 +31,7 @@ export const historyRepository = {
        JOIN movies m ON wh.movie_id = m.id
        LEFT JOIN episodes e ON wh.episode_id = e.id
        WHERE wh.user_id = $1
-       ORDER BY wh.updated_at DESC
+       ORDER BY wh.updated_at DESC, wh.id DESC
        LIMIT $2`,
       [realUserId, limit]
     );
@@ -53,6 +53,7 @@ export const historyRepository = {
 
   /**
    * Upsert a watch history record for a user and movie/episode.
+   * Preserves validated client timestamp when available.
    */
   async upsertHistory(
     userId: string,
@@ -66,7 +67,8 @@ export const historyRepository = {
         },
     episode?: { slug: string; name?: string } | string,
     lastPositionSeconds = 0,
-    durationSeconds = 0
+    durationSeconds = 0,
+    clientUpdatedAt?: string | Date
   ): Promise<boolean> {
     const realUserId = await userRepository.resolveUserId(userId);
     if (!realUserId) return false;
@@ -114,15 +116,38 @@ export const historyRepository = {
       }
     }
 
+    // Validate client timestamp safely: ensure valid Date, not NaN, not far future
+    let validatedDate: Date | null = null;
+    if (clientUpdatedAt) {
+      const parsed = new Date(clientUpdatedAt);
+      const time = parsed.getTime();
+      const now = Date.now();
+      if (!isNaN(time) && time > 0 && time <= now + 86400000) {
+        validatedDate = parsed;
+      }
+    }
+
     await query(
       `INSERT INTO watch_history (user_id, movie_id, episode_id, last_position_seconds, duration_seconds, updated_at)
-       VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+       VALUES ($1, $2, $3, $4, $5, COALESCE($6, CURRENT_TIMESTAMP))
        ON CONFLICT (user_id, movie_id) DO UPDATE SET
-         episode_id = COALESCE(EXCLUDED.episode_id, watch_history.episode_id),
-         last_position_seconds = EXCLUDED.last_position_seconds,
-         duration_seconds = COALESCE(EXCLUDED.duration_seconds, watch_history.duration_seconds),
-         updated_at = CURRENT_TIMESTAMP`,
-      [realUserId, movieId, episodeId, lastPositionSeconds, durationSeconds]
+         episode_id = CASE
+           WHEN EXCLUDED.updated_at >= watch_history.updated_at
+           THEN COALESCE(EXCLUDED.episode_id, watch_history.episode_id)
+           ELSE watch_history.episode_id
+         END,
+         last_position_seconds = CASE
+           WHEN EXCLUDED.updated_at >= watch_history.updated_at
+           THEN EXCLUDED.last_position_seconds
+           ELSE watch_history.last_position_seconds
+         END,
+         duration_seconds = CASE
+           WHEN EXCLUDED.updated_at >= watch_history.updated_at
+           THEN COALESCE(EXCLUDED.duration_seconds, watch_history.duration_seconds)
+           ELSE watch_history.duration_seconds
+         END,
+         updated_at = GREATEST(watch_history.updated_at, EXCLUDED.updated_at)`,
+      [realUserId, movieId, episodeId, lastPositionSeconds, durationSeconds, validatedDate]
     );
 
     return true;
@@ -178,7 +203,8 @@ export const historyRepository = {
             ? { slug: item.episodeSlug, name: item.episodeName }
             : undefined,
           Math.floor(item.currentTime || 0),
-          Math.floor(item.duration || 0)
+          Math.floor(item.duration || 0),
+          item.updatedAt
         );
       } catch (err) {
         console.warn("[History bulkSync item error]", err);

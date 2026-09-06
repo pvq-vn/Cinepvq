@@ -123,7 +123,8 @@ export async function POST(request: NextRequest) {
       targetMovie,
       targetEpisode,
       typeof position === "number" ? Math.floor(position) : 0,
-      typeof duration === "number" ? Math.floor(duration) : 0
+      typeof duration === "number" ? Math.floor(duration) : 0,
+      body.updatedAt
     );
 
     return NextResponse.json({ status: "success", recorded: success });

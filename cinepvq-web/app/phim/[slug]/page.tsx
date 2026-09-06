@@ -239,6 +239,7 @@ export default function MovieDetailPage() {
       setNextEpisodeCountdown(null);
       setSelectedEpisodeSlug(ep.slug);
       setCustomResumeTime(initialSeek);
+      lastSavedTimeRef.current = initialSeek;
 
       // Keep active chunk in sync
       if (episodeChunks.length > 0) {
@@ -268,7 +269,8 @@ export default function MovieDetailPage() {
   // ─── Video Time Update ───────────────────────────────────────────────────
   const handleTimeUpdate = useCallback(
     (cur: number, dur: number) => {
-      if (Math.abs(cur - lastSavedTimeRef.current) >= 5 || cur === 0) {
+      // Only record progress when playback actually advances (> 0s) and moved at least 5s
+      if (cur > 0 && Math.abs(cur - lastSavedTimeRef.current) >= 5) {
         lastSavedTimeRef.current = cur;
         const currentEp = episodeItems.find((e) => e.slug === activeEpisodeSlug);
         if (currentEp && movie) {

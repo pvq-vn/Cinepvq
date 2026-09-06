@@ -18,6 +18,7 @@ import type {
   Movie,
   MovieDetail,
   FavoriteMovie,
+  WatchHistoryItem,
 } from "@/types/movie";
 
 let isSyncing = false;
@@ -111,7 +112,30 @@ export const userSyncManager = {
           .then((r) => r.json())
           .then((data) => {
             if (data.status === "success" && Array.isArray(data.history)) {
-              historyStore.setAll(data.history);
+              // Two-way merge: do not let older cloud data overwrite newer local data
+              const currentLocal = historyStore.getAll();
+              const mergedMap = new Map<string, WatchHistoryItem>();
+              data.history.forEach((h: WatchHistoryItem) => {
+                if (h && h.slug) mergedMap.set(h.slug, h);
+              });
+              currentLocal.forEach((loc) => {
+                if (!mergedMap.has(loc.slug)) {
+                  mergedMap.set(loc.slug, loc);
+                } else {
+                  const remote = mergedMap.get(loc.slug)!;
+                  const timeLoc = loc.updatedAt ? new Date(loc.updatedAt).getTime() : 0;
+                  const timeRemote = remote.updatedAt ? new Date(remote.updatedAt).getTime() : 0;
+                  if (timeLoc > timeRemote) {
+                    mergedMap.set(loc.slug, loc);
+                  }
+                }
+              });
+              const mergedList = Array.from(mergedMap.values()).sort((a, b) => {
+                const timeA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+                const timeB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+                return timeB - timeA;
+              });
+              historyStore.setAll(mergedList);
             }
           })
           .catch((err) => console.warn("[UserSync] Sync history failed", err)),
@@ -205,6 +229,7 @@ export const userSyncManager = {
           episode,
           position: typeof position === "number" ? Math.floor(position) : 0,
           duration: typeof duration === "number" ? Math.floor(duration) : 0,
+          updatedAt: new Date().toISOString(),
         }),
       });
     } catch (err) {
