@@ -3,6 +3,7 @@
 import type {
   UserProfile,
   FavoriteMovie,
+  WatchlistItem,
   WatchHistoryItem,
   AppNotification,
   AppSettings,
@@ -15,6 +16,7 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 const KEYS = {
   USER: "cinepvq_user",
   FAVORITES: "cinepvq_favorites",
+  WATCHLIST: "cinepvq_watchlist",
   HISTORY: "cinepvq_history",
   EPISODE_PROGRESS: "cinepvq_episode_progress",
   NOTIFICATIONS: "cinepvq_notifications",
@@ -206,6 +208,36 @@ export function migrateGuestDataToUser(userId: string) {
       localStorage.removeItem(guestProgKey);
     }
 
+    const guestWatchlistKey = getUserStorageKey(KEYS.WATCHLIST, "guest");
+    const userWatchlistKey = getUserStorageKey(KEYS.WATCHLIST, userId);
+    const guestWatchlist = safeGetItem<WatchlistItem[]>(guestWatchlistKey, []);
+    const userWatchlist = safeGetItem<WatchlistItem[]>(userWatchlistKey, []);
+
+    if (guestWatchlist.length > 0) {
+      const mergedMap = new Map<string, WatchlistItem>();
+      userWatchlist.forEach((w) => mergedMap.set(w.slug, w));
+      guestWatchlist.forEach((w) => {
+        if (!mergedMap.has(w.slug)) {
+          mergedMap.set(w.slug, w);
+        } else {
+          // If exists in both, retain the newer addedAt
+          const existing = mergedMap.get(w.slug)!;
+          const timeW = w.addedAt ? new Date(w.addedAt).getTime() : 0;
+          const timeExisting = existing.addedAt ? new Date(existing.addedAt).getTime() : 0;
+          if (timeW > timeExisting) {
+            mergedMap.set(w.slug, w);
+          }
+        }
+      });
+      const mergedList = Array.from(mergedMap.values()).sort((a, b) => {
+        const timeA = a.addedAt ? new Date(a.addedAt).getTime() : 0;
+        const timeB = b.addedAt ? new Date(b.addedAt).getTime() : 0;
+        return timeB - timeA;
+      });
+      safeSetItem(userWatchlistKey, mergedList.slice(0, 100));
+      localStorage.removeItem(guestWatchlistKey);
+    }
+
     const guestSettingsKey = getUserStorageKey(KEYS.SETTINGS, "guest");
     const userSettingsKey = getUserStorageKey(KEYS.SETTINGS, userId);
     const guestSettings = safeGetItem<AppSettings | null>(guestSettingsKey, null);
@@ -273,6 +305,110 @@ export const favoritesStore = {
   clearForCurrentUser(): void {
     const key = getUserStorageKey(KEYS.FAVORITES);
     safeSetItem(key, []);
+  },
+};
+
+// ─── Watchlist Repository (Strictly User-Scoped) ───────────────────────────
+
+export const watchlistStore = {
+  getAll(): WatchlistItem[] {
+    const key = getUserStorageKey(KEYS.WATCHLIST);
+    const raw = safeGetItem<WatchlistItem[]>(key, []);
+    return raw
+      .filter((item) => Boolean(item && item.slug))
+      .sort((a, b) => {
+        const timeA = a.addedAt ? new Date(a.addedAt).getTime() : 0;
+        const timeB = b.addedAt ? new Date(b.addedAt).getTime() : 0;
+        return timeB - timeA;
+      })
+      .slice(0, 100);
+  },
+
+  isWatchlist(slug: string): boolean {
+    const items = this.getAll();
+    return items.some((item) => item.slug === slug);
+  },
+
+  add(movie: Movie | MovieDetail | WatchlistItem | FavoriteMovie): boolean {
+    const key = getUserStorageKey(KEYS.WATCHLIST);
+    const items = this.getAll().filter((item) => item.slug !== movie.slug);
+
+    const yearVal = "year" in movie ? movie.year : undefined;
+    const typeVal =
+      "type" in movie && typeof (movie as { type?: unknown }).type === "string"
+        ? (movie as { type: string }).type
+        : undefined;
+    const posterVal = "poster_url" in movie ? movie.poster_url : undefined;
+    const addedAtVal =
+      "addedAt" in movie && typeof movie.addedAt === "string" && movie.addedAt
+        ? movie.addedAt
+        : new Date().toISOString();
+
+    const newItem: WatchlistItem = {
+      slug: movie.slug,
+      name: movie.name,
+      original_name: movie.original_name,
+      thumb_url: movie.thumb_url,
+      poster_url: posterVal,
+      year: yearVal,
+      quality: movie.quality,
+      current_episode: movie.current_episode,
+      type: typeVal,
+      addedAt: addedAtVal,
+    };
+
+    items.unshift(newItem);
+    const capped = items.slice(0, 100);
+    safeSetItem(key, capped);
+    return true;
+  },
+
+  remove(slug: string): void {
+    const key = getUserStorageKey(KEYS.WATCHLIST);
+    const items = this.getAll().filter((item) => item.slug !== slug);
+    safeSetItem(key, items);
+  },
+
+  toggle(movie: Movie | MovieDetail | WatchlistItem | FavoriteMovie): boolean {
+    if (this.isWatchlist(movie.slug)) {
+      this.remove(movie.slug);
+      return false; // Removed
+    } else {
+      this.add(movie);
+      return true; // Added
+    }
+  },
+
+  clear(): void {
+    const key = getUserStorageKey(KEYS.WATCHLIST);
+    safeSetItem(key, []);
+  },
+
+  setAll(items: WatchlistItem[]): void {
+    const key = getUserStorageKey(KEYS.WATCHLIST);
+    const dedupMap = new Map<string, WatchlistItem>();
+    items.forEach((item) => {
+      if (item && item.slug) {
+        if (!dedupMap.has(item.slug)) {
+          dedupMap.set(item.slug, item);
+        } else {
+          const existing = dedupMap.get(item.slug)!;
+          const timeItem = item.addedAt ? new Date(item.addedAt).getTime() : 0;
+          const timeExisting = existing.addedAt ? new Date(existing.addedAt).getTime() : 0;
+          if (timeItem > timeExisting) {
+            dedupMap.set(item.slug, item);
+          }
+        }
+      }
+    });
+    const sorted = Array.from(dedupMap.values())
+      .sort((a, b) => {
+        const timeA = a.addedAt ? new Date(a.addedAt).getTime() : 0;
+        const timeB = b.addedAt ? new Date(b.addedAt).getTime() : 0;
+        return timeB - timeA;
+      })
+      .slice(0, 100);
+    safeSetItem(key, sorted);
   },
 };
 

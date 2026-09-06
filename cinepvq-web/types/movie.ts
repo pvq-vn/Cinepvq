@@ -179,6 +179,19 @@ export interface FavoriteMovie {
   addedAt: string;
 }
 
+export interface WatchlistItem {
+  slug: string;
+  name: string;
+  original_name?: string;
+  thumb_url: string;
+  poster_url?: string;
+  year?: number | string;
+  quality?: string;
+  current_episode?: string;
+  type?: "movie" | "series" | string;
+  addedAt: string;
+}
+
 export interface WatchHistoryItem {
   slug: string;
   name: string;

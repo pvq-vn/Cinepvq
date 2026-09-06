@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import {
   User,
+  Bookmark,
   Heart,
   History,
   Settings,
@@ -27,6 +28,7 @@ export default function AccountPage() {
   const {
     user,
     favorites,
+    watchlist,
     history,
     mounted,
     logout,
@@ -35,7 +37,7 @@ export default function AccountPage() {
     clearHistory,
   } = useUserStore();
 
-  const [activeTab, setActiveTab] = useState<"favorites" | "history">("favorites");
+  const [activeTab, setActiveTab] = useState<"watchlist" | "favorites" | "history">("watchlist");
   const [isEditing, setIsEditing] = useState(false);
   const [newUsername, setNewUsername] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
@@ -182,6 +184,16 @@ export default function AccountPage() {
 
               <div className="flex items-center justify-center sm:justify-start gap-4 pt-1 text-[11px] text-zinc-400">
                 <Link
+                  href="/xem-sau"
+                  className="flex items-center gap-1 hover:text-amber-500 transition-colors"
+                >
+                  <Bookmark className="h-3.5 w-3.5 text-amber-500 fill-current" />
+                  <span className="font-semibold text-zinc-700 dark:text-zinc-300">
+                    {watchlist.length}
+                  </span>{" "}
+                  phim xem sau
+                </Link>
+                <Link
                   href="/yeu-thich"
                   className="flex items-center gap-1 hover:text-rose-500 transition-colors"
                 >
@@ -193,9 +205,9 @@ export default function AccountPage() {
                 </Link>
                 <Link
                   href="/lich-su"
-                  className="flex items-center gap-1 hover:text-amber-500 transition-colors"
+                  className="flex items-center gap-1 hover:text-blue-500 transition-colors"
                 >
-                  <History className="h-3.5 w-3.5 text-amber-500" />
+                  <History className="h-3.5 w-3.5 text-blue-500" />
                   <span className="font-semibold text-zinc-700 dark:text-zinc-300">
                     {history.length}
                   </span>{" "}
@@ -316,41 +328,118 @@ export default function AccountPage() {
 
         {/* Tab switcher */}
         <div className="flex items-center justify-between border-b border-zinc-200/60 dark:border-zinc-800/60 pb-3">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <button
+              onClick={() => setActiveTab("watchlist")}
+              className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl text-xs font-bold transition-colors ${
+                activeTab === "watchlist"
+                  ? "bg-violet-600 text-white shadow-md shadow-violet-600/30"
+                  : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              }`}
+            >
+              <Bookmark className="h-4 w-4 fill-current" />
+              Xem sau ({watchlist.length})
+            </button>
+
             <button
               onClick={() => setActiveTab("favorites")}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-colors ${
+              className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl text-xs font-bold transition-colors ${
                 activeTab === "favorites"
                   ? "bg-violet-600 text-white shadow-md shadow-violet-600/30"
                   : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
               }`}
             >
               <Heart className="h-4 w-4 fill-current" />
-              Phim yêu thích ({favorites.length})
+              Yêu thích ({favorites.length})
             </button>
 
             <button
               onClick={() => setActiveTab("history")}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-colors ${
+              className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl text-xs font-bold transition-colors ${
                 activeTab === "history"
                   ? "bg-violet-600 text-white shadow-md shadow-violet-600/30"
                   : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
               }`}
             >
               <History className="h-4 w-4" />
-              Lịch sử xem phim ({history.length})
+              Lịch sử ({history.length})
             </button>
           </div>
 
           <div className="hidden sm:flex items-center gap-2">
             <Link
-              href={activeTab === "favorites" ? "/yeu-thich" : "/lich-su"}
+              href={
+                activeTab === "watchlist"
+                  ? "/xem-sau"
+                  : activeTab === "favorites"
+                  ? "/yeu-thich"
+                  : "/lich-su"
+              }
               className="text-xs font-bold text-violet-600 dark:text-violet-400 hover:underline"
             >
               Xem trang đầy đủ →
             </Link>
           </div>
         </div>
+
+        {/* Tab Content: Watchlist */}
+        {activeTab === "watchlist" && (
+          <div className="space-y-4">
+            {watchlist.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-24 gap-3 text-center">
+                <Bookmark className="h-12 w-12 text-zinc-300 dark:text-zinc-700" />
+                <h3 className="text-base font-bold text-zinc-800 dark:text-zinc-200">
+                  Chưa có phim nào trong danh sách Xem sau
+                </h3>
+                <p className="text-xs text-zinc-500 max-w-sm">
+                  Khi duyệt phim, bạn có thể bấm biểu tượng Bookmark để lưu phim và xem lại bất cứ khi nào thuận tiện.
+                </p>
+                <Link
+                  href="/"
+                  className="mt-2 inline-flex items-center gap-2 rounded-xl bg-violet-600 px-4 py-2 text-xs font-bold text-white shadow-md hover:bg-violet-500 transition-colors"
+                >
+                  <Film className="h-4 w-4" />
+                  Khám phá phim ngay
+                </Link>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 sm:gap-6">
+                {watchlist.map((movie) => (
+                  <div
+                    key={movie.slug}
+                    className="group relative flex flex-col overflow-hidden rounded-xl bg-zinc-100 dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800/60 shadow-sm hover:shadow-xl transition-all"
+                  >
+                    <Link href={`/phim/${movie.slug}`} className="aspect-[2/3] w-full overflow-hidden relative">
+                      <img
+                        src={movie.thumb_url}
+                        alt={movie.name}
+                        className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+                      />
+                      {movie.quality && (
+                        <span className="absolute top-2 left-2 rounded-md bg-violet-600 px-2 py-0.5 text-[10px] font-bold text-white uppercase">
+                          {movie.quality}
+                        </span>
+                      )}
+                    </Link>
+                    <div className="p-3 flex flex-col gap-1">
+                      <Link
+                        href={`/phim/${movie.slug}`}
+                        className="text-xs font-bold text-zinc-900 dark:text-zinc-100 line-clamp-1 hover:text-violet-600"
+                      >
+                        {movie.name}
+                      </Link>
+                      {movie.year && (
+                        <p className="text-[11px] text-zinc-500 line-clamp-1">
+                          {movie.year}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Tab Content: Favorites */}
         {activeTab === "favorites" && (

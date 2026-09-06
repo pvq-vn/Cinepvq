@@ -15,6 +15,7 @@ import { MovieDetailSkeleton } from "@/components/Skeleton";
 import {
   Play,
   Heart,
+  Bookmark,
   Clock,
   Globe,
   Film,
@@ -83,7 +84,15 @@ export default function MovieDetailPage() {
   const { slug } = useParams<{ slug: string }>();
 
   const { data: movie, isLoading, isError, refetch } = useFetchMovieDetail(slug);
-  const { isFavorite, toggleFavorite, addHistory, history, mounted } = useUserStore();
+  const {
+    isFavorite,
+    toggleFavorite,
+    isWatchlist,
+    toggleWatchlist,
+    addHistory,
+    history,
+    mounted,
+  } = useUserStore();
 
   // User-selected Episode & Server states
   const [selectedEpisodeSlug, setSelectedEpisodeSlug] = useState<string | null>(null);
@@ -382,6 +391,7 @@ export default function MovieDetailPage() {
   }
 
   const favorited = mounted && isFavorite(movie.slug);
+  const inWatchlist = mounted && isWatchlist(movie.slug);
 
   const castList = movie.casts
     ? movie.casts.split(",").map((c) => c.trim()).filter(Boolean)
@@ -520,6 +530,7 @@ export default function MovieDetailPage() {
 
               {/* Favorite Button */}
               <button
+                type="button"
                 onClick={() => toggleFavorite(movie)}
                 className={`inline-flex items-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold backdrop-blur-md active:scale-95 transition-all ${
                   favorited
@@ -529,6 +540,20 @@ export default function MovieDetailPage() {
               >
                 <Heart className={`h-4 w-4 ${favorited ? "fill-current" : ""}`} />
                 <span>{favorited ? "Đã yêu thích" : "Thêm yêu thích"}</span>
+              </button>
+
+              {/* Watchlist Button */}
+              <button
+                type="button"
+                onClick={() => toggleWatchlist(movie)}
+                className={`inline-flex items-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold backdrop-blur-md active:scale-95 transition-all ${
+                  inWatchlist
+                    ? "bg-violet-600 text-white shadow-lg shadow-violet-600/30"
+                    : "bg-white/10 hover:bg-white/20 text-white"
+                }`}
+              >
+                <Bookmark className={`h-4 w-4 ${inWatchlist ? "fill-current" : ""}`} />
+                <span>{inWatchlist ? "Đã lưu xem sau" : "Xem sau"}</span>
               </button>
 
               {/* Share Button */}

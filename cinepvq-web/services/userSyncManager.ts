@@ -9,6 +9,7 @@
 import {
   authStore,
   favoritesStore,
+  watchlistStore,
   historyStore,
   settingsStore,
   notificationStore,
@@ -18,6 +19,7 @@ import type {
   Movie,
   MovieDetail,
   FavoriteMovie,
+  WatchlistItem,
   WatchHistoryItem,
 } from "@/types/movie";
 
@@ -81,6 +83,7 @@ export const userSyncManager = {
       // Step 3: Two-way sync: Push local items (if any) and pull remote items
       const localFavs = favoritesStore.getAll();
       const localHist = historyStore.getAll();
+      const localWatchlist = watchlistStore.getAll();
 
       await Promise.allSettled([
         // Sync favorites (push local if exists, else pull)
@@ -139,6 +142,49 @@ export const userSyncManager = {
             }
           })
           .catch((err) => console.warn("[UserSync] Sync history failed", err)),
+
+        // Sync watchlist (push local if exists, else pull)
+        (localWatchlist.length > 0
+          ? fetch("/api/watchlist", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "sync", watchlist: localWatchlist }),
+            })
+          : fetch("/api/watchlist")
+        )
+          .then((r) => r.json())
+          .then((data) => {
+            if (data.status === "success" && Array.isArray(data.watchlist)) {
+              const currentLocal = watchlistStore.getAll();
+              const mergedMap = new Map<string, WatchlistItem>();
+              data.watchlist.forEach((w: WatchlistItem) => {
+                if (w && w.slug) mergedMap.set(w.slug, w);
+              });
+              currentLocal.forEach((loc) => {
+                if (loc && loc.slug) {
+                  if (!mergedMap.has(loc.slug)) {
+                    mergedMap.set(loc.slug, loc);
+                  } else {
+                    const remote = mergedMap.get(loc.slug)!;
+                    const timeLoc = loc.addedAt ? new Date(loc.addedAt).getTime() : 0;
+                    const timeRemote = remote.addedAt ? new Date(remote.addedAt).getTime() : 0;
+                    if (timeLoc > timeRemote) {
+                      mergedMap.set(loc.slug, loc);
+                    }
+                  }
+                }
+              });
+              const mergedList = Array.from(mergedMap.values())
+                .sort((a, b) => {
+                  const timeA = a.addedAt ? new Date(a.addedAt).getTime() : 0;
+                  const timeB = b.addedAt ? new Date(b.addedAt).getTime() : 0;
+                  return timeB - timeA;
+                })
+                .slice(0, 100);
+              watchlistStore.setAll(mergedList);
+            }
+          })
+          .catch((err) => console.warn("[UserSync] Sync watchlist failed", err)),
 
         // Pull remote settings
         fetch("/api/settings")
@@ -303,6 +349,90 @@ export const userSyncManager = {
       });
     } catch (err) {
       console.warn("[UserSync] Notification read sync failed", err);
+    }
+  },
+
+  async syncWatchlistToggle(
+    movie: Movie | MovieDetail | WatchlistItem | FavoriteMovie,
+    isAdded: boolean
+  ) {
+    const user = authStore.getUser();
+    if (!user) return;
+
+    try {
+      if (isAdded) {
+        await fetch("/api/watchlist", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "add",
+            movie: {
+              slug: movie.slug,
+              name: movie.name,
+              original_name: movie.original_name,
+              thumb_url: movie.thumb_url,
+              poster_url: "poster_url" in movie ? movie.poster_url : undefined,
+              year: "year" in movie ? movie.year : undefined,
+              quality: movie.quality,
+              current_episode: movie.current_episode,
+              type:
+                "type" in movie && typeof (movie as { type?: unknown }).type === "string"
+                  ? (movie as { type: string }).type
+                  : undefined,
+              addedAt:
+                "addedAt" in movie && typeof movie.addedAt === "string" && movie.addedAt
+                  ? movie.addedAt
+                  : new Date().toISOString(),
+            },
+          }),
+        });
+      } else {
+        await fetch("/api/watchlist", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "remove",
+            slug: movie.slug,
+          }),
+        });
+      }
+    } catch (err) {
+      console.warn("[UserSync] Watchlist toggle sync failed", err);
+    }
+  },
+
+  async syncWatchlistRemove(slug: string) {
+    const user = authStore.getUser();
+    if (!user) return;
+
+    try {
+      await fetch("/api/watchlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "remove",
+          slug,
+        }),
+      });
+    } catch (err) {
+      console.warn("[UserSync] Watchlist remove sync failed", err);
+    }
+  },
+
+  async syncWatchlistClear() {
+    const user = authStore.getUser();
+    if (!user) return;
+
+    try {
+      await fetch("/api/watchlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "clear",
+        }),
+      });
+    } catch (err) {
+      console.warn("[UserSync] Watchlist clear sync failed", err);
     }
   },
 };

@@ -15,6 +15,7 @@ import {
   Download,
   Settings as SettingsIcon,
   Flame,
+  Bookmark,
   Heart,
   History,
   User,
@@ -472,11 +473,19 @@ export default function Navbar() {
             </div>
 
             {/* User Quick Links */}
-            <div className="grid grid-cols-3 gap-2 pt-1">
+            <div className="grid grid-cols-4 gap-1.5 pt-1">
+              <Link
+                href="/xem-sau"
+                onClick={() => setMobileOpen(false)}
+                className="flex items-center justify-center gap-1 p-2 rounded-xl bg-zinc-100 dark:bg-zinc-900 text-[11px] font-semibold text-zinc-700 dark:text-zinc-300 hover:text-amber-500 transition-colors"
+              >
+                <Bookmark className="h-3.5 w-3.5 text-amber-500" />
+                <span>Xem sau</span>
+              </Link>
               <Link
                 href="/yeu-thich"
                 onClick={() => setMobileOpen(false)}
-                className="flex items-center justify-center gap-1.5 p-2 rounded-xl bg-zinc-100 dark:bg-zinc-900 text-xs font-semibold text-zinc-700 dark:text-zinc-300 hover:text-rose-500 transition-colors"
+                className="flex items-center justify-center gap-1 p-2 rounded-xl bg-zinc-100 dark:bg-zinc-900 text-[11px] font-semibold text-zinc-700 dark:text-zinc-300 hover:text-rose-500 transition-colors"
               >
                 <Heart className="h-3.5 w-3.5 text-rose-500" />
                 <span>Yêu thích</span>
@@ -484,15 +493,15 @@ export default function Navbar() {
               <Link
                 href="/lich-su"
                 onClick={() => setMobileOpen(false)}
-                className="flex items-center justify-center gap-1.5 p-2 rounded-xl bg-zinc-100 dark:bg-zinc-900 text-xs font-semibold text-zinc-700 dark:text-zinc-300 hover:text-amber-500 transition-colors"
+                className="flex items-center justify-center gap-1 p-2 rounded-xl bg-zinc-100 dark:bg-zinc-900 text-[11px] font-semibold text-zinc-700 dark:text-zinc-300 hover:text-blue-500 transition-colors"
               >
-                <History className="h-3.5 w-3.5 text-amber-500" />
+                <History className="h-3.5 w-3.5 text-blue-500" />
                 <span>Lịch sử</span>
               </Link>
               <Link
                 href="/tai-khoan"
                 onClick={() => setMobileOpen(false)}
-                className="flex items-center justify-center gap-1.5 p-2 rounded-xl bg-zinc-100 dark:bg-zinc-900 text-xs font-semibold text-zinc-700 dark:text-zinc-300 hover:text-violet-500 transition-colors"
+                className="flex items-center justify-center gap-1 p-2 rounded-xl bg-zinc-100 dark:bg-zinc-900 text-[11px] font-semibold text-zinc-700 dark:text-zinc-300 hover:text-violet-500 transition-colors"
               >
                 <User className="h-3.5 w-3.5 text-violet-500" />
                 <span>Tài khoản</span>

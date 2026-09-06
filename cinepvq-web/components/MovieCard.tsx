@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Heart, Play } from "lucide-react";
+import { Bookmark, Heart, Play } from "lucide-react";
 import type { Movie } from "@/types/movie";
 import { useUserStore } from "@/hooks/useUserStore";
 
@@ -18,13 +18,20 @@ export default function MovieCard({
   rank,
   priority = false,
 }: MovieCardProps) {
-  const { isFavorite, toggleFavorite, mounted } = useUserStore();
+  const { isFavorite, toggleFavorite, isWatchlist, toggleWatchlist, mounted } = useUserStore();
   const favorited = mounted && isFavorite(movie.slug);
+  const inWatchlist = mounted && isWatchlist(movie.slug);
 
   const handleFavoriteClick = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     toggleFavorite(movie);
+  };
+
+  const handleWatchlistClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleWatchlist(movie);
   };
 
   const imageSrc = movie.thumb_url || movie.poster_url || "/placeholder-poster.png";
@@ -90,20 +97,36 @@ export default function MovieCard({
             </div>
           </div>
 
-          {/* Favorite button */}
-          <button
-            onClick={handleFavoriteClick}
-            aria-label={favorited ? "Xóa khỏi yêu thích" : "Thêm vào yêu thích"}
-            className={`absolute top-2 right-2 z-20 flex h-8 w-8 items-center justify-center rounded-full backdrop-blur-md transition-all duration-200 ${
-              favorited
-                ? "bg-rose-500 text-white shadow-md shadow-rose-500/30"
-                : "bg-black/50 text-white/80 hover:bg-black/80 hover:text-white"
-            }`}
-          >
-            <Heart
-              className={`h-4 w-4 ${favorited ? "fill-current text-white" : ""}`}
-            />
-          </button>
+          {/* Action buttons (Favorite & Watchlist) */}
+          <div className="absolute top-2 right-2 z-20 flex flex-col gap-1.5">
+            <button
+              onClick={handleFavoriteClick}
+              aria-label={favorited ? "Xóa khỏi yêu thích" : "Thêm vào yêu thích"}
+              className={`flex h-7 w-7 items-center justify-center rounded-full backdrop-blur-md transition-all duration-200 ${
+                favorited
+                  ? "bg-rose-500 text-white shadow-md shadow-rose-500/30"
+                  : "bg-black/50 text-white/80 hover:bg-black/80 hover:text-white"
+              }`}
+            >
+              <Heart
+                className={`h-3.5 w-3.5 ${favorited ? "fill-current text-white" : ""}`}
+              />
+            </button>
+
+            <button
+              onClick={handleWatchlistClick}
+              aria-label={inWatchlist ? "Xóa khỏi xem sau" : "Thêm vào xem sau"}
+              className={`flex h-7 w-7 items-center justify-center rounded-full backdrop-blur-md transition-all duration-200 ${
+                inWatchlist
+                  ? "bg-amber-500 text-white shadow-md shadow-amber-500/30 opacity-100"
+                  : "bg-black/50 text-white/80 hover:bg-black/80 hover:text-white md:opacity-0 md:group-hover:opacity-100"
+              }`}
+            >
+              <Bookmark
+                className={`h-3.5 w-3.5 ${inWatchlist ? "fill-current text-white" : ""}`}
+              />
+            </button>
+          </div>
 
           {/* Badges */}
           <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between text-[11px] pointer-events-none">
@@ -157,20 +180,36 @@ export default function MovieCard({
           </div>
         </div>
 
-        {/* Favorite button */}
-        <button
-          onClick={handleFavoriteClick}
-          aria-label={favorited ? "Xóa khỏi yêu thích" : "Thêm vào yêu thích"}
-          className={`absolute top-2 right-2 z-20 flex h-8 w-8 items-center justify-center rounded-full backdrop-blur-md transition-all duration-200 ${
-            favorited
-              ? "bg-rose-500 text-white shadow-md shadow-rose-500/30"
-              : "bg-black/50 text-white/80 hover:bg-black/80 hover:text-white"
-          }`}
-        >
-          <Heart
-            className={`h-4 w-4 ${favorited ? "fill-current text-white" : ""}`}
-          />
-        </button>
+        {/* Action buttons (Favorite & Watchlist) */}
+        <div className="absolute top-2 right-2 z-20 flex flex-col gap-1.5">
+          <button
+            onClick={handleFavoriteClick}
+            aria-label={favorited ? "Xóa khỏi yêu thích" : "Thêm vào yêu thích"}
+            className={`flex h-7 w-7 items-center justify-center rounded-full backdrop-blur-md transition-all duration-200 ${
+              favorited
+                ? "bg-rose-500 text-white shadow-md shadow-rose-500/30"
+                : "bg-black/50 text-white/80 hover:bg-black/80 hover:text-white"
+            }`}
+          >
+            <Heart
+              className={`h-3.5 w-3.5 ${favorited ? "fill-current text-white" : ""}`}
+            />
+          </button>
+
+          <button
+            onClick={handleWatchlistClick}
+            aria-label={inWatchlist ? "Xóa khỏi xem sau" : "Thêm vào xem sau"}
+            className={`flex h-7 w-7 items-center justify-center rounded-full backdrop-blur-md transition-all duration-200 ${
+              inWatchlist
+                ? "bg-amber-500 text-white shadow-md shadow-amber-500/30 opacity-100"
+                : "bg-black/50 text-white/80 hover:bg-black/80 hover:text-white md:opacity-0 md:group-hover:opacity-100"
+            }`}
+          >
+            <Bookmark
+              className={`h-3.5 w-3.5 ${inWatchlist ? "fill-current text-white" : ""}`}
+            />
+          </button>
+        </div>
 
         {/* Top left badge (Quality or Year) */}
         {movie.quality && (

@@ -3,6 +3,7 @@
 import { useSyncExternalStore, useCallback, useEffect } from "react";
 import {
   favoritesStore,
+  watchlistStore,
   historyStore,
   authStore,
   notificationStore,
@@ -14,6 +15,7 @@ import type {
   Movie,
   MovieDetail,
   FavoriteMovie,
+  WatchlistItem,
 } from "@/types/movie";
 
 // Version counter for external store
@@ -51,6 +53,7 @@ export function useUserStore() {
   );
 
   const favorites = mounted ? favoritesStore.getAll() : [];
+  const watchlist = mounted ? watchlistStore.getAll() : [];
   const history = mounted ? historyStore.getAll() : [];
   const user = mounted ? authStore.getUser() : null;
   const notifications = mounted ? notificationStore.getAll() : [];
@@ -84,6 +87,43 @@ export function useUserStore() {
     (slug: string) => favoritesStore.isFavorite(slug),
     []
   );
+
+  const toggleWatchlist = useCallback(
+    (movie: Movie | MovieDetail | WatchlistItem | FavoriteMovie) => {
+      const res = watchlistStore.toggle(movie);
+      notify();
+      userSyncManager.syncWatchlistToggle(movie, res);
+      return res;
+    },
+    []
+  );
+
+  const isWatchlist = useCallback(
+    (slug: string) => watchlistStore.isWatchlist(slug),
+    []
+  );
+
+  const addToWatchlist = useCallback(
+    (movie: Movie | MovieDetail | WatchlistItem | FavoriteMovie) => {
+      const res = watchlistStore.add(movie);
+      notify();
+      userSyncManager.syncWatchlistToggle(movie, true);
+      return res;
+    },
+    []
+  );
+
+  const removeFromWatchlist = useCallback((slug: string) => {
+    watchlistStore.remove(slug);
+    notify();
+    userSyncManager.syncWatchlistRemove(slug);
+  }, []);
+
+  const clearWatchlist = useCallback(() => {
+    watchlistStore.clear();
+    notify();
+    userSyncManager.syncWatchlistClear();
+  }, []);
 
   const addHistory = useCallback(
     (
@@ -166,12 +206,18 @@ export function useUserStore() {
     mounted,
     user,
     favorites,
+    watchlist,
     history,
     notifications,
     settings,
     unreadNotificationsCount: notifications.filter((n) => !n.read).length,
     toggleFavorite,
     isFavorite,
+    toggleWatchlist,
+    isWatchlist,
+    addToWatchlist,
+    removeFromWatchlist,
+    clearWatchlist,
     addHistory,
     removeHistory,
     clearHistory,

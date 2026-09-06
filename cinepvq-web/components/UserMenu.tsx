@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import {
   User as UserIcon,
+  Bookmark,
   Heart,
   History,
   Settings,
@@ -86,6 +87,14 @@ export default function UserMenu() {
             >
               <UserIcon className="h-4 w-4 text-violet-500" />
               <span>Tài khoản</span>
+            </Link>
+            <Link
+              href="/xem-sau"
+              onClick={() => setIsOpen(false)}
+              className="flex items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+            >
+              <Bookmark className="h-4 w-4 text-amber-500" />
+              <span>Xem sau</span>
             </Link>
             <Link
               href="/yeu-thich"
