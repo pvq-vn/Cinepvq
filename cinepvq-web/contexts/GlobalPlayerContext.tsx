@@ -44,6 +44,7 @@ interface GlobalPlayerContextType {
   session: GlobalPlayerSession | null;
   mode: GlobalPlayerMode;
   isPlaying: boolean;
+  isNativePip: boolean;
   currentTime: number;
   duration: number;
   videoRef: React.RefObject<HTMLVideoElement | null>;
@@ -73,12 +74,14 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   const [session, setSession] = useState<GlobalPlayerSession | null>(null);
   const [mode, setMode] = useState<GlobalPlayerMode>("hidden");
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isNativePip, setIsNativePip] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [episodeHandlers, setEpisodeHandlers] = useState<EpisodeHandlers>({});
   // Incremented each time user expands mini player — page.tsx watches this to scroll to player
   const [expandScrollTrigger, setExpandScrollTrigger] = useState(0);
 
+  const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const lastPathnameRef = useRef<string>(pathname);
   const lastSavedTimeRef = useRef<number>(0);
@@ -89,10 +92,52 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
 
   const registerVideoElement = useCallback((el: HTMLVideoElement | null) => {
     videoRef.current = el;
+    setVideoElement(el);
     if (el) {
       setIsPlaying(!el.paused && !el.ended);
+      setIsNativePip(Boolean(typeof document !== "undefined" && document.pictureInPictureElement === el));
+    } else {
+      setIsNativePip(false);
     }
   }, []);
+
+  // Synchronize native PiP lifecycle events
+  useEffect(() => {
+    const video = videoElement;
+    if (!video) return;
+
+    const onEnterPip = () => {
+      setIsNativePip(true);
+    };
+
+    const onLeavePip = () => {
+      setIsNativePip(false);
+      // When leaving native PiP:
+      // If currently on movie detail page: restore detail mode
+      // If on other pages: restore mini mode if video is playing, or hidden if paused
+      if (typeof window !== "undefined") {
+        const curPath = window.location.pathname;
+        if (session) {
+          const movieDetailPath = `/phim/${session.movieSlug}`;
+          if (curPath === movieDetailPath) {
+            setMode("detail");
+          } else if (!video.paused && !video.ended) {
+            setMode("mini");
+          } else {
+            setMode("hidden");
+          }
+        }
+      }
+    };
+
+    video.addEventListener("enterpictureinpicture", onEnterPip);
+    video.addEventListener("leavepictureinpicture", onLeavePip);
+
+    return () => {
+      video.removeEventListener("enterpictureinpicture", onEnterPip);
+      video.removeEventListener("leavepictureinpicture", onLeavePip);
+    };
+  }, [videoElement, session]);
 
   const registerEpisodeHandlers = useCallback((handlers: EpisodeHandlers) => {
     setEpisodeHandlers(handlers);
@@ -229,6 +274,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         session,
         mode,
         isPlaying,
+        isNativePip,
         currentTime,
         duration,
         videoRef,

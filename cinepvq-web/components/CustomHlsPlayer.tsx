@@ -379,19 +379,30 @@ export default function CustomHlsPlayer({
     // destroying and recreating the active Hls instance during playback speed or quality changes.
   }, [src]);
 
+function getFullscreenElement(): Element | null {
+  if (typeof document === "undefined") return null;
+  return (
+    document.fullscreenElement ||
+    (document as unknown as { webkitFullscreenElement?: Element }).webkitFullscreenElement ||
+    (document as unknown as { mozFullScreenElement?: Element }).mozFullScreenElement ||
+    (document as unknown as { msFullscreenElement?: Element }).msFullscreenElement ||
+    null
+  );
+}
+
   // 2. Fullscreen Listener with Orientation Management
   useEffect(() => {
     const handleFsChange = () => {
-      const isFs = Boolean(document.fullscreenElement);
+      const isFs = Boolean(getFullscreenElement());
       setIsFullscreen(isFs);
       if (!isFs) {
         try {
           if (
             typeof window !== "undefined" &&
             window.screen?.orientation &&
-            typeof (window.screen.orientation as { unlock?: () => void }).unlock === "function"
+            typeof (window.screen.orientation as unknown as { unlock?: () => void }).unlock === "function"
           ) {
-            (window.screen.orientation as { unlock: () => void }).unlock();
+            (window.screen.orientation as unknown as { unlock: () => void }).unlock();
           }
         } catch {
           // Ignored
@@ -399,15 +410,21 @@ export default function CustomHlsPlayer({
       }
     };
     document.addEventListener("fullscreenchange", handleFsChange);
+    document.addEventListener("webkitfullscreenchange", handleFsChange);
+    document.addEventListener("mozfullscreenchange", handleFsChange);
+    document.addEventListener("MSFullscreenChange", handleFsChange);
     return () => {
       document.removeEventListener("fullscreenchange", handleFsChange);
+      document.removeEventListener("webkitfullscreenchange", handleFsChange);
+      document.removeEventListener("mozfullscreenchange", handleFsChange);
+      document.removeEventListener("MSFullscreenChange", handleFsChange);
       try {
         if (
           typeof window !== "undefined" &&
           window.screen?.orientation &&
-          typeof (window.screen.orientation as { unlock?: () => void }).unlock === "function"
+          typeof (window.screen.orientation as unknown as { unlock?: () => void }).unlock === "function"
         ) {
-          (window.screen.orientation as { unlock: () => void }).unlock();
+          (window.screen.orientation as unknown as { unlock: () => void }).unlock();
         }
       } catch {
         // Ignored
@@ -415,13 +432,44 @@ export default function CustomHlsPlayer({
     };
   }, []);
 
-  // 3. Picture-in-Picture event listeners
+  // 3. Picture-in-Picture event listeners with Android Chromium rendering recovery
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
     const onEnterPip = () => setIsPip(true);
-    const onLeavePip = () => setIsPip(false);
+    const onLeavePip = () => {
+      setIsPip(false);
+
+      // Diagnostic lifecycle logging
+      console.log("[PiP] leavepictureinpicture lifecycle check:", {
+        isConnected: video.isConnected,
+        paused: video.paused,
+        currentTime: video.currentTime,
+        readyState: video.readyState,
+        videoWidth: video.videoWidth,
+        videoHeight: video.videoHeight,
+        src: video.src || "hls-stream",
+        pipElement: document.pictureInPictureElement,
+        fullscreenElement: getFullscreenElement(),
+        parentElement: video.parentElement?.tagName,
+      });
+
+      // Recover video rendering surface on Android Chromium:
+      // Force layout recalculation and compositor quad re-attachment
+      void video.offsetHeight;
+      const prevTransform = video.style.transform;
+      video.style.transform = "translateZ(0.001px)";
+      requestAnimationFrame(() => {
+        video.style.transform = prevTransform;
+        void video.offsetHeight;
+      });
+
+      // Ensure playback pipeline continues if unpaused
+      if (!video.paused && video.readyState >= 2) {
+        video.play().catch(() => {});
+      }
+    };
 
     video.addEventListener("enterpictureinpicture", onEnterPip);
     video.addEventListener("leavepictureinpicture", onLeavePip);
@@ -497,21 +545,37 @@ export default function CustomHlsPlayer({
     }
   }, []);
 
-  // 8. Fullscreen toggle with Mobile Landscape Preference
+  // 8. Fullscreen toggle with Cross-Browser and Mobile Landscape Support
   const toggleFullscreen = useCallback(async () => {
     const container = containerRef.current;
+    const video = videoRef.current;
     if (!container) return;
+
+    const fsElement = getFullscreenElement();
     try {
-      if (!document.fullscreenElement) {
-        await container.requestFullscreen();
-        // Priority to Landscape on mobile devices if supported
+      if (!fsElement) {
+        // Request fullscreen on container with vendor fallbacks
+        const reqFn =
+          container.requestFullscreen ||
+          (container as unknown as { webkitRequestFullscreen?: () => Promise<void> }).webkitRequestFullscreen ||
+          (container as unknown as { mozRequestFullScreen?: () => Promise<void> }).mozRequestFullScreen ||
+          (container as unknown as { msRequestFullscreen?: () => Promise<void> }).msRequestFullscreen;
+
+        if (reqFn) {
+          await reqFn.call(container);
+        } else if (video && (video as unknown as { webkitEnterFullscreen?: () => void }).webkitEnterFullscreen) {
+          (video as unknown as { webkitEnterFullscreen: () => void }).webkitEnterFullscreen();
+          return;
+        }
+
+        // Priority to Landscape on mobile devices if supported (non-blocking)
         try {
           if (
             typeof window !== "undefined" &&
             window.screen?.orientation &&
             typeof (window.screen.orientation as unknown as { lock?: (o: string) => Promise<void> }).lock === "function"
           ) {
-            await (window.screen.orientation as unknown as { lock: (o: string) => Promise<void> })
+            (window.screen.orientation as unknown as { lock: (o: string) => Promise<void> })
               .lock("landscape")
               .catch(() => {});
           }
@@ -519,7 +583,16 @@ export default function CustomHlsPlayer({
           // Graceful fallback if device/browser disallows orientation lock
         }
       } else {
-        await document.exitFullscreen();
+        const exitFn =
+          document.exitFullscreen ||
+          (document as unknown as { webkitExitFullscreen?: () => Promise<void> }).webkitExitFullscreen ||
+          (document as unknown as { mozCancelFullScreen?: () => Promise<void> }).mozCancelFullScreen ||
+          (document as unknown as { msExitFullscreen?: () => Promise<void> }).msExitFullscreen;
+
+        if (exitFn) {
+          await exitFn.call(document);
+        }
+
         try {
           if (
             typeof window !== "undefined" &&
@@ -533,7 +606,7 @@ export default function CustomHlsPlayer({
         }
       }
     } catch (err) {
-      console.warn("Fullscreen toggle error", err);
+      console.warn("[Fullscreen] Toggle error:", err);
     }
   }, []);
 
@@ -708,11 +781,12 @@ export default function CustomHlsPlayer({
       // Single tap on video:
       // - NEVER play/pause
       // - If controls are currently shown -> HIDE them
-      // - If controls are currently hidden -> SHOW them
+      // - If controls are currently hidden -> SHOW them and arm 3s inactivity auto-hide
       // Video continues playing without interruption!
       setShowControls((prev) => {
         if (prev) {
           setShowSettings(false);
+          if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
           return false;
         } else {
           triggerControls();
@@ -728,7 +802,7 @@ export default function CustomHlsPlayer({
       return;
     }
     // Ignore synthetic mouse click following mobile touch
-    if (Date.now() - lastTouchEndTime.current < 600) {
+    if (Date.now() - lastTouchEndTime.current < 1000) {
       return;
     }
     if (isLocked) return;
@@ -737,6 +811,7 @@ export default function CustomHlsPlayer({
     setShowControls((prev) => {
       if (prev) {
         setShowSettings(false);
+        if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
         return false;
       } else {
         triggerControls();
@@ -876,18 +951,32 @@ export default function CustomHlsPlayer({
     <div
       ref={containerRef}
       onClick={isMini ? undefined : handleContainerClick}
-      onMouseMove={isMini ? undefined : triggerControls}
+      onMouseMove={() => {
+        if (isMini) return;
+        // Ignore synthetic mousemove following touch
+        if (Date.now() - lastTouchEndTime.current < 1000) return;
+        triggerControls();
+      }}
       onMouseLeave={() => {
         if (isMini) return;
+        // Ignore synthetic mouseleave triggered after touch events on mobile
+        if (Date.now() - lastTouchEndTime.current < 2500) return;
+        if (typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches) {
+          return;
+        }
         if (isPlaying) setShowControls(false);
         setShowSettings(false);
       }}
       onTouchStart={isMini ? undefined : handleTouchStart}
       onTouchMove={isMini ? undefined : handleTouchMove}
       onTouchEnd={isMini ? undefined : handleTouchEnd}
-      className={`group relative w-full aspect-video overflow-hidden ${
-        isMini ? "h-full rounded-none" : "rounded-2xl shadow-2xl shadow-black/80"
-      } bg-black select-none flex items-center justify-center font-sans touch-none`}
+      className={`group relative w-full ${
+        isFullscreen
+          ? "h-full rounded-none aspect-auto"
+          : isMini
+          ? "h-full rounded-none aspect-video"
+          : "aspect-video rounded-2xl shadow-2xl shadow-black/80"
+      } overflow-hidden bg-black select-none flex items-center justify-center font-sans touch-none`}
     >
       {/* Video Element */}
       <video

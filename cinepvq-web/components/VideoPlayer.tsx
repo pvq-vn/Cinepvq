@@ -291,38 +291,39 @@ export default function VideoPlayer({
       {!isMini && (
         <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs">
           {/* Active Source Badge */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             {isResolving ? (
               <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-500/10 text-violet-400 px-3 py-1 font-semibold border border-violet-500/20 animate-pulse">
-                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                Đang tối ưu nguồn phát...
+                <RefreshCw className="h-3.5 w-3.5 animate-spin shrink-0" />
+                <span className="truncate">Đang tối ưu nguồn phát...</span>
               </span>
             ) : activeSource ? (
               <span
-                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-semibold border transition-all ${
+                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-semibold border transition-all max-w-[180px] sm:max-w-xs md:max-w-sm ${
                   activeSource.type === "hls"
                     ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30 shadow-sm shadow-emerald-500/10"
                     : "bg-amber-500/10 text-amber-400 border-amber-500/30"
                 }`}
+                title={`Nguồn phát: ${activeSource.name}`}
               >
                 {activeSource.type === "hls" ? (
-                  <Sparkles className="h-3.5 w-3.5" />
+                  <Sparkles className="h-3.5 w-3.5 shrink-0" />
                 ) : (
-                  <ShieldAlert className="h-3.5 w-3.5" />
+                  <ShieldAlert className="h-3.5 w-3.5 shrink-0" />
                 )}
-                Nguồn phát: {activeSource.name}
+                <span className="truncate">Nguồn phát: {activeSource.name}</span>
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-zinc-800 text-zinc-400 px-3 py-1 font-semibold border border-zinc-700">
-                <ShieldAlert className="h-3.5 w-3.5" />
-                Nguồn phát: Server Dự Phòng
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-zinc-800 text-zinc-400 px-3 py-1 font-semibold border border-zinc-700 max-w-[180px] sm:max-w-xs md:max-w-sm">
+                <ShieldAlert className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">Nguồn phát: Server Dự Phòng</span>
               </span>
             )}
           </div>
 
           {/* Multi-Source Switcher Menu */}
           {sources.length > 0 && (
-            <div className="relative" ref={menuRef}>
+            <div className="relative shrink-0" ref={menuRef}>
               <button
                 onClick={() => setIsMenuOpen((prev) => !prev)}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-800/80 hover:bg-zinc-700/80 text-zinc-200 px-3 py-1.5 font-medium border border-zinc-700/80 shadow-sm transition-all active:scale-95"

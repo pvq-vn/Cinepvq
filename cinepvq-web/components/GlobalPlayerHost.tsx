@@ -33,6 +33,7 @@ export default function GlobalPlayerHost() {
     session,
     mode,
     isPlaying,
+    isNativePip,
     videoRef,
     episodeHandlers,
     closeMiniPlayer,
@@ -94,17 +95,38 @@ export default function GlobalPlayerHost() {
           slot.style.minHeight = `${wrapperHeight}px`;
         }
       }
-      setSlotRect(slot.getBoundingClientRect());
+      const rect = slot.getBoundingClientRect();
+      if (rect.width > 0) {
+        setSlotRect(rect);
+      }
     } else {
       setSlotRect(null);
     }
   }, [mode]);
 
+  // Robust recovery and measurement on leavepictureinpicture
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const onLeavePip = () => {
+      updateSlotRect();
+      requestAnimationFrame(() => updateSlotRect());
+      setTimeout(() => updateSlotRect(), 150);
+      setTimeout(() => updateSlotRect(), 500);
+    };
+
+    video.addEventListener("leavepictureinpicture", onLeavePip);
+    return () => {
+      video.removeEventListener("leavepictureinpicture", onLeavePip);
+    };
+  }, [videoRef, updateSlotRect]);
+
   useEffect(() => {
     if (!isClient || !session) return;
 
     if (mode === "detail") {
-      // Initial measurement via RAF (avoid synchronous setState in effect)
+      // RAF measurement to sync after reflow (avoids setState in effect)
       const rafId = requestAnimationFrame(() => {
         updateSlotRect();
       });
@@ -122,10 +144,12 @@ export default function GlobalPlayerHost() {
         slotObserverRef.current = ro;
       }
 
-      // Watch for scroll (slot moves on scroll)
-      const onScroll = () => updateSlotRect();
-      window.addEventListener("scroll", onScroll, { passive: true });
-      scrollListenerRef.current = onScroll;
+      // Watch for scroll and resize (slot moves on scroll / orientation changes)
+      const onViewportChange = () => updateSlotRect();
+      window.addEventListener("scroll", onViewportChange, { passive: true });
+      window.addEventListener("resize", onViewportChange, { passive: true });
+      window.visualViewport?.addEventListener("resize", onViewportChange);
+      scrollListenerRef.current = onViewportChange;
 
       return () => {
         cancelAnimationFrame(rafId);
@@ -133,6 +157,8 @@ export default function GlobalPlayerHost() {
         slotObserverRef.current = null;
         if (scrollListenerRef.current) {
           window.removeEventListener("scroll", scrollListenerRef.current);
+          window.removeEventListener("resize", scrollListenerRef.current);
+          window.visualViewport?.removeEventListener("resize", scrollListenerRef.current);
           scrollListenerRef.current = null;
         }
         // RAF to avoid synchronous setState in cleanup
@@ -144,6 +170,8 @@ export default function GlobalPlayerHost() {
       slotObserverRef.current = null;
       if (scrollListenerRef.current) {
         window.removeEventListener("scroll", scrollListenerRef.current);
+        window.removeEventListener("resize", scrollListenerRef.current);
+        window.visualViewport?.removeEventListener("resize", scrollListenerRef.current);
         scrollListenerRef.current = null;
       }
       // RAF to avoid synchronous setState in effect
@@ -175,7 +203,7 @@ export default function GlobalPlayerHost() {
         overflow: "visible",
       }
     : {
-        // Slot not found yet — hide until measured
+        // Slot not measured yet — hide until measured
         position: "fixed",
         opacity: 0,
         pointerEvents: "none",
@@ -187,18 +215,34 @@ export default function GlobalPlayerHost() {
         zIndex: 30,
       };
 
+  const isPipActive =
+    isNativePip ||
+    Boolean(typeof document !== "undefined" && document.pictureInPictureElement);
+
   // Mini mode: fixed bottom-right video overlay (video only; controls bar portaled separately below)
-  const miniVideoStyle: React.CSSProperties = {
-    position: "fixed",
-    bottom: "calc(max(0.75rem, env(safe-area-inset-bottom, 0.75rem)) + 60px)",
-    right: "0.75rem",
-    width: "min(calc(100vw - 1.5rem), 400px)",
-    aspectRatio: "16/9",
-    zIndex: 9999,
-    borderRadius: "1rem 1rem 0 0",
-    overflow: "hidden",
-    backgroundColor: "#000",
-  };
+  // If native PiP is active, keep video element connected in DOM with minimal offscreen size to prevent browser from terminating PiP
+  const miniVideoStyle: React.CSSProperties = isPipActive
+    ? {
+        position: "fixed",
+        bottom: 0,
+        right: 0,
+        width: "1px",
+        height: "1px",
+        opacity: 0,
+        pointerEvents: "none",
+        zIndex: -1,
+      }
+    : {
+        position: "fixed",
+        bottom: "calc(max(0.75rem, env(safe-area-inset-bottom, 0.75rem)) + 60px)",
+        right: "0.75rem",
+        width: "min(calc(100vw - 1.5rem), 400px)",
+        aspectRatio: "16/9",
+        zIndex: 9999,
+        borderRadius: "1rem 1rem 0 0",
+        overflow: "hidden",
+        backgroundColor: "#000",
+      };
 
   return (
     <>
@@ -266,7 +310,7 @@ export default function GlobalPlayerHost() {
       <div id="cinepvq-global-player-home" aria-hidden="true" style={{ display: "none" }} />
 
       {/* Mini mode controls card — portaled into body, sits below the fixed video overlay */}
-      {isMini && createPortal(
+      {isMini && !isPipActive && createPortal(
         <div
           id="cinepvq-mini-player-card"
           className="fixed z-[9999] select-none left-3 right-3 sm:left-auto sm:right-3 w-[calc(100vw-24px)] sm:w-[400px]"

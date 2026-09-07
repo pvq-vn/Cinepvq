@@ -930,7 +930,7 @@ export default function MovieDetailPage() {
                 {/* Multi-Source Video Player Host Slot — represents entire player area: [Source toolbar] + [Video 16:9] */}
                 <div
                   id="cinepvq-player-slot"
-                  className="relative w-full space-y-2"
+                  className="relative w-full space-y-2 overflow-visible"
                 >
                   {/* Source Toolbar spacer: reserves exact height for active source badge & switcher */}
                   <div
