@@ -46,9 +46,10 @@ interface GlobalPlayerContextType {
   isPlaying: boolean;
   currentTime: number;
   duration: number;
-  playerContainerRef: React.RefObject<HTMLDivElement | null>;
   videoRef: React.RefObject<HTMLVideoElement | null>;
   episodeHandlers: EpisodeHandlers;
+  /** Incremented each time restoreToDetail is called — page.tsx watches this to scroll to player */
+  expandScrollTrigger: number;
   startPlayback: (session: GlobalPlayerSession) => void;
   setMode: (mode: GlobalPlayerMode) => void;
   closeMiniPlayer: () => void;
@@ -75,8 +76,9 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [episodeHandlers, setEpisodeHandlers] = useState<EpisodeHandlers>({});
+  // Incremented each time user expands mini player — page.tsx watches this to scroll to player
+  const [expandScrollTrigger, setExpandScrollTrigger] = useState(0);
 
-  const playerContainerRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const lastPathnameRef = useRef<string>(pathname);
   const lastSavedTimeRef = useRef<number>(0);
@@ -182,9 +184,11 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     if (!session) return;
     const epSlug = session.episodeSlug;
     const targetUrl = epSlug
-      ? `/phim/${session.movieSlug}?ep=${epSlug}`
-      : `/phim/${session.movieSlug}`;
+      ? `/phim/${session.movieSlug}?ep=${epSlug}&watch=true`
+      : `/phim/${session.movieSlug}?watch=true`;
     setMode("detail");
+    // Signal page.tsx to scroll to player once it renders in detail mode
+    setExpandScrollTrigger((n) => n + 1);
     router.push(targetUrl);
   }, [session, router]);
 
@@ -227,9 +231,9 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         isPlaying,
         currentTime,
         duration,
-        playerContainerRef,
         videoRef,
         episodeHandlers,
+        expandScrollTrigger,
         startPlayback,
         setMode,
         closeMiniPlayer,

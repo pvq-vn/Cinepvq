@@ -42,6 +42,7 @@ export interface CustomHlsPlayerProps {
   onError?: (error: string) => void;
   onPlayingChange?: (playing: boolean) => void;
   onVideoRef?: (el: HTMLVideoElement | null) => void;
+  isMini?: boolean;
 }
 
 interface QualityLevel {
@@ -116,6 +117,7 @@ export default function CustomHlsPlayer({
   onError,
   onPlayingChange,
   onVideoRef,
+  isMini = false,
 }: CustomHlsPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -206,13 +208,14 @@ export default function CustomHlsPlayer({
 
   // Reset controls timer on user activity
   const triggerControls = useCallback(() => {
+    if (isMini) return;
     setShowControls(true);
     if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
     hideControlsTimer.current = setTimeout(() => {
       setShowControls(false);
       setShowSettings(false);
     }, 3000);
-  }, []);
+  }, [isMini]);
 
   const onErrorRef = useRef(onError);
   useEffect(() => {
@@ -563,6 +566,7 @@ export default function CustomHlsPlayer({
   const lastTapRef = useRef<{ time: number; side: "left" | "right" } | null>(null);
 
   const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (isMini) return;
     const target = e.target as HTMLElement;
     if (target.closest("button, input, select, a, [role='button']")) {
       return;
@@ -866,16 +870,19 @@ export default function CustomHlsPlayer({
   return (
     <div
       ref={containerRef}
-      onClick={handleContainerClick}
-      onMouseMove={triggerControls}
+      onClick={isMini ? undefined : handleContainerClick}
+      onMouseMove={isMini ? undefined : triggerControls}
       onMouseLeave={() => {
+        if (isMini) return;
         if (isPlaying) setShowControls(false);
         setShowSettings(false);
       }}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
-      className="group relative w-full aspect-video overflow-hidden rounded-2xl bg-black select-none shadow-2xl shadow-black/80 flex items-center justify-center font-sans touch-none"
+      onTouchStart={isMini ? undefined : handleTouchStart}
+      onTouchMove={isMini ? undefined : handleTouchMove}
+      onTouchEnd={isMini ? undefined : handleTouchEnd}
+      className={`group relative w-full aspect-video overflow-hidden ${
+        isMini ? "h-full rounded-none" : "rounded-2xl shadow-2xl shadow-black/80"
+      } bg-black select-none flex items-center justify-center font-sans touch-none`}
     >
       {/* Video Element */}
       <video
@@ -909,8 +916,8 @@ export default function CustomHlsPlayer({
         aria-hidden="true"
       />
 
-      {/* Floating Unlock Button when LOCKED */}
-      {isLocked && (
+      {/* Floating Unlock Button when LOCKED (Only in detail mode) */}
+      {!isMini && isLocked && (
         <div className="absolute top-4 left-4 z-40 animate-in fade-in duration-200">
           <button
             onClick={(e) => {
@@ -928,8 +935,8 @@ export default function CustomHlsPlayer({
         </div>
       )}
 
-      {/* Double Tap Seek Feedback Overlay */}
-      {doubleTapFeedback && (
+      {/* Double Tap Seek Feedback Overlay (Only in detail mode) */}
+      {!isMini && doubleTapFeedback && (
         <div
           className={`absolute inset-y-0 flex items-center justify-center pointer-events-none z-30 transition-all duration-200 animate-in fade-in zoom-in-95 ${
             doubleTapFeedback.side === "left"
@@ -957,8 +964,8 @@ export default function CustomHlsPlayer({
         </div>
       )}
 
-      {/* Gesture Feedback HUD Overlay (Volume / Brightness) */}
-      {gestureHud && !isLocked && (
+      {/* Gesture Feedback HUD Overlay (Volume / Brightness) (Only in detail mode) */}
+      {!isMini && gestureHud && !isLocked && (
         <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-30 animate-in fade-in zoom-in-95 duration-150">
           <div className="flex flex-col items-center gap-2 rounded-2xl bg-black/80 backdrop-blur-md px-5 py-4 text-white shadow-2xl border border-white/10 min-w-[130px]">
             {gestureHud.type === "volume" ? (
@@ -1023,8 +1030,8 @@ export default function CustomHlsPlayer({
         </div>
       )}
 
-      {/* Central 3-Button Controls [ PREV EP ] [ PLAY/PAUSE ] [ NEXT EP ] */}
-      {showControls && !isLocked && !errorMsg && (
+      {/* Central 3-Button Controls [ PREV EP ] [ PLAY/PAUSE ] [ NEXT EP ] (Only in detail mode) */}
+      {!isMini && showControls && !isLocked && !errorMsg && (
         <div className="absolute inset-0 m-auto flex items-center justify-center gap-6 sm:gap-10 pointer-events-none z-20">
           {/* Previous Episode Button */}
           <button
@@ -1082,14 +1089,15 @@ export default function CustomHlsPlayer({
         </div>
       )}
 
-      {/* Video Controls HUD */}
-      <div
-        className={`absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-3 sm:p-4 transition-opacity duration-300 ${
-          showControls && !isLocked
-            ? "opacity-100 pointer-events-auto"
-            : "opacity-0 pointer-events-none"
-        }`}
-      >
+      {/* Video Controls HUD (Only in detail mode) */}
+      {!isMini && (
+        <div
+          className={`absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-3 sm:p-4 transition-opacity duration-300 ${
+            showControls && !isLocked
+              ? "opacity-100 pointer-events-auto"
+              : "opacity-0 pointer-events-none"
+          }`}
+        >
         {/* Progress / Seek Bar */}
         <div className="relative mb-3 flex items-center group/bar cursor-pointer">
           <input
@@ -1385,6 +1393,7 @@ export default function CustomHlsPlayer({
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }

@@ -1,16 +1,38 @@
 "use client";
 
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState, useSyncExternalStore, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useGlobalPlayer } from "@/contexts/GlobalPlayerContext";
 import VideoPlayer from "@/components/VideoPlayer";
 import { X, Maximize2, Tv, PictureInPicture, Play, Pause } from "lucide-react";
 
+const emptySubscribe = () => () => {};
+const getClientSnapshot = () => true;
+const getServerSnapshot = () => false;
+
+/**
+ * GlobalPlayerHost — Single video player orchestrator.
+ *
+ * Architecture (NO DOM relocation, NO unmount between mode changes):
+ *
+ *  VideoPlayer renders ONCE in a fixed root container.
+ *  Mode switching is purely CSS-based:
+ *    - "hidden": root container is display:none (HLS alive, no paint)
+ *    - "detail": root container is position:fixed, sized + positioned to match
+ *                #cinepvq-player-slot (tracked via ResizeObserver + scroll listener)
+ *    - "mini":   root container is position:fixed bottom-right mini video overlay
+ *
+ *  Guarantees:
+ *    A. Always exactly 1 HTMLVideoElement in the DOM.
+ *    B. Always exactly 1 HLS instance — never destroyed between mode changes.
+ *    C. No React tree re-mount across mode changes.
+ *    D. No DOM relocation or Portal target race conditions.
+ */
 export default function GlobalPlayerHost() {
   const {
     session,
     mode,
     isPlaying,
-    playerContainerRef,
     videoRef,
     episodeHandlers,
     closeMiniPlayer,
@@ -23,7 +45,18 @@ export default function GlobalPlayerHost() {
     registerVideoElement,
   } = useGlobalPlayer();
 
-  const miniContainerRef = useRef<HTMLDivElement>(null);
+  const isClient = useSyncExternalStore(emptySubscribe, getClientSnapshot, getServerSnapshot);
+
+  // Slot rect tracking for detail-mode overlay positioning
+  const [slotRect, setSlotRect] = useState<DOMRect | null>(null);
+  const slotObserverRef = useRef<ResizeObserver | null>(null);
+  const scrollListenerRef = useRef<(() => void) | null>(null);
+
+  const supportsPip =
+    isClient &&
+    typeof document !== "undefined" &&
+    "pictureInPictureEnabled" in document &&
+    Boolean(document.pictureInPictureEnabled);
 
   const togglePlay = () => {
     const video = videoRef.current;
@@ -35,30 +68,6 @@ export default function GlobalPlayerHost() {
     }
   };
 
-  // Synchronize player container DOM placement according to current mode
-  useEffect(() => {
-    const el = playerContainerRef.current;
-    if (!el || !session) return;
-
-    if (mode === "detail") {
-      const slot = document.getElementById("cinepvq-player-slot");
-      if (slot && el.parentElement !== slot) {
-        slot.appendChild(el);
-      }
-    } else if (mode === "mini") {
-      const miniSlot = document.getElementById("cinepvq-mini-slot");
-      if (miniSlot && el.parentElement !== miniSlot) {
-        miniSlot.appendChild(el);
-      }
-    } else {
-      const homeSlot = document.getElementById("cinepvq-global-player-home");
-      if (homeSlot && el.parentElement !== homeSlot) {
-        homeSlot.appendChild(el);
-      }
-    }
-  }, [mode, session, playerContainerRef]);
-
-  // Standard Browser PiP toggle helper
   const handleToggleBrowserPiP = async () => {
     const video = videoRef.current;
     if (!video || typeof document === "undefined" || !document.pictureInPictureEnabled) return;
@@ -69,174 +78,287 @@ export default function GlobalPlayerHost() {
         await video.requestPictureInPicture();
       }
     } catch (err) {
-      console.warn("[GlobalMiniPlayer] PiP toggle error:", err);
+      console.warn("[GlobalPlayerHost] PiP toggle error:", err);
     }
+  };
+
+  // Track slot position for detail-mode overlay
+  const updateSlotRect = useCallback(() => {
+    const slot = document.getElementById("cinepvq-player-slot");
+    if (slot) {
+      setSlotRect(slot.getBoundingClientRect());
+    } else {
+      setSlotRect(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isClient || !session) return;
+
+    if (mode === "detail") {
+      // Initial measurement via RAF (avoid synchronous setState in effect)
+      const rafId = requestAnimationFrame(() => {
+        updateSlotRect();
+      });
+
+      // Watch for slot size changes
+      const slot = document.getElementById("cinepvq-player-slot");
+      if (slot) {
+        const ro = new ResizeObserver(() => {
+          updateSlotRect();
+        });
+        ro.observe(slot);
+        slotObserverRef.current = ro;
+      }
+
+      // Watch for scroll (slot moves on scroll)
+      const onScroll = () => updateSlotRect();
+      window.addEventListener("scroll", onScroll, { passive: true });
+      scrollListenerRef.current = onScroll;
+
+      return () => {
+        cancelAnimationFrame(rafId);
+        slotObserverRef.current?.disconnect();
+        slotObserverRef.current = null;
+        if (scrollListenerRef.current) {
+          window.removeEventListener("scroll", scrollListenerRef.current);
+          scrollListenerRef.current = null;
+        }
+        // RAF to avoid synchronous setState in cleanup
+        requestAnimationFrame(() => setSlotRect(null));
+      };
+    } else {
+      // Cleanup observers when not in detail mode
+      slotObserverRef.current?.disconnect();
+      slotObserverRef.current = null;
+      if (scrollListenerRef.current) {
+        window.removeEventListener("scroll", scrollListenerRef.current);
+        scrollListenerRef.current = null;
+      }
+      // RAF to avoid synchronous setState in effect
+      const clearRafId = requestAnimationFrame(() => setSlotRect(null));
+      return () => cancelAnimationFrame(clearRafId);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, session, isClient]);
+
+  if (!isClient || !session) {
+    return null;
+  }
+
+  const isHidden = mode === "hidden";
+  const isMini = mode === "mini";
+  const isDetail = mode === "detail";
+
+  // Detail mode: fixed overlay matching slot position
+  const detailStyle: React.CSSProperties = slotRect
+    ? {
+        position: "fixed",
+        top: slotRect.top,
+        left: slotRect.left,
+        width: slotRect.width,
+        height: slotRect.height,
+        zIndex: 50,
+        borderRadius: "1rem",
+        overflow: "hidden",
+        boxShadow: "0 25px 50px -12px rgba(0,0,0,0.8)",
+      }
+    : {
+        // Slot not found yet — hide until measured
+        position: "fixed",
+        opacity: 0,
+        pointerEvents: "none",
+        top: 0,
+        left: 0,
+        width: "100vw",
+        height: "56.25vw",
+        maxHeight: "100vh",
+        zIndex: 50,
+      };
+
+  // Mini mode: fixed bottom-right video overlay (video only; controls bar portaled separately below)
+  const miniVideoStyle: React.CSSProperties = {
+    position: "fixed",
+    bottom: "calc(max(0.75rem, env(safe-area-inset-bottom, 0.75rem)) + 60px)",
+    right: "0.75rem",
+    width: "min(calc(100vw - 1.5rem), 400px)",
+    aspectRatio: "16/9",
+    zIndex: 9999,
+    borderRadius: "1rem 1rem 0 0",
+    overflow: "hidden",
+    backgroundColor: "#000",
   };
 
   return (
     <>
-      {/* 1. Permanent Hidden Anchor in Root Layout */}
-      <div id="cinepvq-global-player-home" className="hidden" aria-hidden="true">
-        {session && (
-          <div
-            ref={playerContainerRef}
-            id="cinepvq-global-player-wrapper"
-            className="w-full h-full"
-          >
-            <VideoPlayer
-              key={`${session.movieSlug}_${session.serverName || ""}_${session.episodeSlug || ""}_${session.videoUrl}`}
-              videoUrl={session.videoUrl}
-              movieSlug={session.movieSlug}
-              movieTitle={session.movieTitle}
-              imdbId={session.imdbId}
-              tmdbId={session.tmdbId}
-              season={session.season}
-              episode={session.episode}
-              type={session.type}
-              poster={session.poster}
-              initialTime={session.initialTime || 0}
-              serverName={session.serverName}
-              episodeSlug={session.episodeSlug}
-              onTimeUpdate={(cur, dur) => {
-                handleTimeUpdate(cur, dur);
-                episodeHandlers.onTimeUpdate?.(cur, dur);
-              }}
-              onEnded={() => {
-                handleVideoEnded();
-                episodeHandlers.onEnded?.();
-              }}
-              hasPrevEpisode={
-                episodeHandlers.hasPrevEpisode ??
-                Boolean(
-                  session.episodes &&
-                  (session.currentEpisodeIndex ??
-                    session.episodes.findIndex((e) => e.slug === session.episodeSlug)) > 0
-                )
-              }
-              hasNextEpisode={
-                episodeHandlers.hasNextEpisode ??
-                Boolean(
-                  session.episodes &&
-                  (session.currentEpisodeIndex ??
-                    session.episodes.findIndex((e) => e.slug === session.episodeSlug)) <
-                    session.episodes.length - 1
-                )
-              }
-              onPrevEpisode={episodeHandlers.onPrevEpisode || goToPrevEpisode}
-              onNextEpisode={episodeHandlers.onNextEpisode || goToNextEpisode}
-              onPlayingChange={handlePlayingChange}
-              onVideoRef={registerVideoElement}
-            />
-          </div>
-        )}
+      {/* Single VideoPlayer — always mounted, never destroyed between mode changes */}
+      <div
+        id="cinepvq-global-player-wrapper"
+        style={
+          isHidden
+            ? { display: "none" }
+            : isDetail
+            ? detailStyle
+            : miniVideoStyle
+        }
+        aria-hidden={isHidden || isMini ? true : undefined}
+      >
+        <VideoPlayer
+          key={`${session.movieSlug}_${session.serverName || ""}_${session.episodeSlug || ""}_${session.videoUrl}`}
+          videoUrl={session.videoUrl}
+          movieSlug={session.movieSlug}
+          movieTitle={session.movieTitle}
+          imdbId={session.imdbId}
+          tmdbId={session.tmdbId}
+          season={session.season}
+          episode={session.episode}
+          type={session.type}
+          poster={session.poster}
+          initialTime={session.initialTime || 0}
+          serverName={session.serverName}
+          episodeSlug={session.episodeSlug}
+          isMini={isMini}
+          onTimeUpdate={(cur, dur) => {
+            handleTimeUpdate(cur, dur);
+            episodeHandlers.onTimeUpdate?.(cur, dur);
+          }}
+          onEnded={() => {
+            handleVideoEnded();
+            episodeHandlers.onEnded?.();
+          }}
+          hasPrevEpisode={
+            episodeHandlers.hasPrevEpisode ??
+            Boolean(
+              session.episodes &&
+              (session.currentEpisodeIndex ??
+                session.episodes.findIndex((e) => e.slug === session.episodeSlug)) > 0
+            )
+          }
+          hasNextEpisode={
+            episodeHandlers.hasNextEpisode ??
+            Boolean(
+              session.episodes &&
+              (session.currentEpisodeIndex ??
+                session.episodes.findIndex((e) => e.slug === session.episodeSlug)) <
+                session.episodes.length - 1
+            )
+          }
+          onPrevEpisode={episodeHandlers.onPrevEpisode || goToPrevEpisode}
+          onNextEpisode={episodeHandlers.onNextEpisode || goToNextEpisode}
+          onPlayingChange={handlePlayingChange}
+          onVideoRef={registerVideoElement}
+        />
       </div>
 
-      {/* 2. Global Floating Mini Player (Visible when in mini mode) */}
-      {session && mode === "mini" && (
+      {/* Hidden anchor div — always in DOM */}
+      <div id="cinepvq-global-player-home" aria-hidden="true" style={{ display: "none" }} />
+
+      {/* Mini mode controls card — portaled into body, sits below the fixed video overlay */}
+      {isMini && createPortal(
         <div
-          ref={miniContainerRef}
           id="cinepvq-mini-player-card"
-          className="fixed bottom-4 right-4 sm:bottom-6 sm:right-6 z-50 w-[300px] sm:w-[380px] max-w-[calc(100vw-2rem)] rounded-2xl shadow-2xl overflow-hidden border border-zinc-700/80 bg-zinc-950 backdrop-blur-xl animate-in fade-in slide-in-from-bottom-5 duration-200 group"
+          className="fixed z-[9999] select-none"
+          style={{
+            bottom: "max(0.75rem, env(safe-area-inset-bottom, 0.75rem))",
+            right: "0.75rem",
+            width: "min(calc(100vw - 1.5rem), 400px)",
+          }}
           role="region"
           aria-label="Trình phát thu nhỏ"
         >
-          {/* Mini Player Video Slot */}
+          {/* Transparent click overlay over the video area to capture expand click */}
           <div
-            id="cinepvq-mini-slot"
-            className="w-full aspect-video relative bg-black cursor-pointer overflow-hidden"
+            className="w-full cursor-pointer"
+            style={{ aspectRatio: "16/9" }}
             onClick={(e) => {
-              // Clicking outside controls restores to movie detail
               const target = e.target as HTMLElement;
               if (target.closest("button, input, [role='button']")) return;
               restoreToDetail();
             }}
-          />
+            title="Bấm để mở lại trang phim"
+          >
+            {/* Hover expand hint */}
+            <div className="w-full h-full flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity rounded-t-2xl">
+              <div className="px-3 py-1.5 rounded-xl bg-black/80 text-white text-xs font-semibold flex items-center gap-1.5 shadow-lg backdrop-blur-sm border border-white/10">
+                <Maximize2 className="h-3.5 w-3.5" />
+                <span>Mở rộng</span>
+              </div>
+            </div>
+          </div>
 
-          {/* Mini Player Top Control Bar */}
-          <div className="absolute top-0 inset-x-0 bg-gradient-to-b from-black/90 via-black/50 to-transparent p-2 sm:p-2.5 flex items-center justify-between text-white z-20 pointer-events-auto">
+          {/* Controls bar */}
+          <div className="bg-zinc-950/95 backdrop-blur-2xl rounded-b-2xl border border-zinc-700/80 shadow-2xl ring-1 ring-white/10 p-2 sm:p-2.5 flex items-center justify-between text-white gap-2">
+            {/* Movie info — click to expand */}
             <div
               onClick={restoreToDetail}
-              className="flex items-center gap-2 cursor-pointer flex-1 min-w-0 pr-2"
-              title="Bấm để quay lại trang phim"
+              className="flex items-center gap-2 cursor-pointer flex-1 min-w-0 pr-1 hover:opacity-85 active:opacity-75 transition-opacity"
             >
-              <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-violet-600/30 text-violet-400 shrink-0">
-                <Tv className="h-3.5 w-3.5" />
+              <div className="relative flex h-8 w-8 items-center justify-center rounded-xl bg-violet-600/20 text-violet-400 shrink-0 border border-violet-500/20">
+                <Tv className="h-4 w-4" />
+                {isPlaying && (
+                  <span className="absolute -top-0.5 -right-0.5 flex h-2.5 w-2.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+                  </span>
+                )}
               </div>
               <div className="truncate">
-                <p className="text-xs font-bold truncate leading-tight">
+                <p className="text-xs sm:text-sm font-bold truncate leading-snug text-zinc-100">
                   {session.movieTitle}
                 </p>
-                <p className="text-[10px] text-violet-400 font-medium leading-tight">
+                <p className="text-[11px] text-violet-400 font-medium truncate leading-tight">
                   {session.type === "movie" ? "Bản Full" : `Tập ${session.episode || 1}`}
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-1 shrink-0">
-              {/* Play / Pause Toggle */}
+            {/* Action buttons */}
+            <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+              {/* Play / Pause */}
               <button
                 type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  togglePlay();
-                }}
-                className="p-1.5 rounded-lg hover:bg-white/20 text-zinc-300 hover:text-white transition-colors cursor-pointer"
-                title={isPlaying ? "Tạm dừng" : "Phát tiếp"}
+                onClick={(e) => { e.stopPropagation(); togglePlay(); }}
+                className="p-1.5 sm:p-2 min-h-[36px] min-w-[36px] rounded-xl hover:bg-white/15 active:scale-95 text-zinc-200 hover:text-white transition-all flex items-center justify-center cursor-pointer bg-white/5"
                 aria-label={isPlaying ? "Tạm dừng" : "Phát tiếp"}
               >
-                {isPlaying ? (
-                  <Pause className="h-3.5 w-3.5 fill-current" />
-                ) : (
-                  <Play className="h-3.5 w-3.5 fill-current" />
-                )}
+                {isPlaying ? <Pause className="h-4 w-4 fill-current" /> : <Play className="h-4 w-4 fill-current" />}
               </button>
 
-              {/* Browser PiP Button */}
-              {typeof document !== "undefined" && document.pictureInPictureEnabled && (
+              {/* Browser PiP */}
+              {supportsPip && (
                 <button
                   type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleToggleBrowserPiP();
-                  }}
-                  className="p-1.5 rounded-lg hover:bg-white/20 text-zinc-300 hover:text-white transition-colors cursor-pointer"
-                  title="Hình trong hình hệ thống"
-                  aria-label="Hình trong hình hệ thống"
+                  onClick={(e) => { e.stopPropagation(); handleToggleBrowserPiP(); }}
+                  className="p-1.5 sm:p-2 min-h-[36px] min-w-[36px] rounded-xl hover:bg-white/15 active:scale-95 text-zinc-200 hover:text-white transition-all flex items-center justify-center cursor-pointer bg-white/5"
+                  aria-label="Picture-in-Picture"
                 >
-                  <PictureInPicture className="h-3.5 w-3.5" />
+                  <PictureInPicture className="h-4 w-4" />
                 </button>
               )}
 
-              {/* Restore to Full Page */}
+              {/* Expand — navigate only, NO PiP call */}
               <button
                 type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  restoreToDetail();
-                }}
-                className="p-1.5 rounded-lg hover:bg-white/20 text-zinc-300 hover:text-white transition-colors cursor-pointer"
-                title="Mở toàn trang"
-                aria-label="Mở toàn trang"
+                onClick={(e) => { e.stopPropagation(); restoreToDetail(); }}
+                className="p-1.5 sm:p-2 min-h-[36px] min-w-[36px] rounded-xl hover:bg-violet-600 active:scale-95 text-violet-400 hover:text-white transition-all flex items-center justify-center cursor-pointer bg-violet-600/15"
+                aria-label="Mở lại trang phim"
               >
-                <Maximize2 className="h-3.5 w-3.5" />
+                <Maximize2 className="h-4 w-4" />
               </button>
 
-              {/* Close Mini Player */}
+              {/* Close */}
               <button
                 type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeMiniPlayer();
-                }}
-                className="p-1.5 rounded-lg hover:bg-rose-600/80 text-zinc-300 hover:text-white transition-colors cursor-pointer"
-                title="Đóng trình phát thu nhỏ"
-                aria-label="Đóng trình phát thu nhỏ"
+                onClick={(e) => { e.stopPropagation(); closeMiniPlayer(); }}
+                className="p-1.5 sm:p-2 min-h-[36px] min-w-[36px] rounded-xl hover:bg-rose-600 active:scale-95 text-zinc-400 hover:text-white transition-all flex items-center justify-center cursor-pointer bg-white/5"
+                aria-label="Đóng trình phát"
               >
-                <X className="h-3.5 w-3.5" />
+                <X className="h-4 w-4" />
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );

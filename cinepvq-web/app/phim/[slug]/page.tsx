@@ -99,8 +99,8 @@ export default function MovieDetailPage() {
     mode,
     startPlayback,
     setMode,
-    playerContainerRef,
     registerEpisodeHandlers,
+    expandScrollTrigger,
   } = useGlobalPlayer();
 
   // User-selected Episode & Server states
@@ -123,6 +123,13 @@ export default function MovieDetailPage() {
   });
 
   const isWatching = isWatchingManual || Boolean(session && session.movieSlug === slug);
+
+  // Auto-scroll to top instantly when watching to ensure player is in view
+  useEffect(() => {
+    if (isWatching) {
+      window.scrollTo({ top: 0, behavior: "instant" });
+    }
+  }, [isWatching]);
 
   const playerRef = useRef<HTMLDivElement>(null);
   const lastSavedTimeRef = useRef<number>(0);
@@ -212,6 +219,12 @@ export default function MovieDetailPage() {
       if (found) return found;
     }
 
+    // 1.5 Active global player session for this movie (keeps running episode intact)
+    if (session && session.movieSlug === (movie?.slug || slug) && session.episodeSlug) {
+      const found = episodeItems.find((e) => e.slug === session.episodeSlug);
+      if (found) return found;
+    }
+
     // 2. URL parameter ?ep=tap-X
     const urlEpSlug = searchParams.get("ep") || searchParams.get("episode");
     if (urlEpSlug) {
@@ -229,7 +242,7 @@ export default function MovieDetailPage() {
 
     // 4. Default: First episode
     return episodeItems[0] || null;
-  }, [episodeItems, selectedEpisodeSlug, searchParams, savedHistory]);
+  }, [episodeItems, selectedEpisodeSlug, session, movie?.slug, slug, searchParams, savedHistory]);
 
   const currentVideoUrl = activeEpisode?.embed || "";
   const activeEpisodeSlug = activeEpisode?.slug || "";
@@ -390,15 +403,15 @@ export default function MovieDetailPage() {
   useEffect(() => {
     if (!isWatching || !movie || !activeEpisode || !currentVideoUrl) return;
 
-    if (
-      session?.movieSlug === (movie.slug || slug) &&
-      session?.episodeSlug === activeEpisodeSlug &&
-      session?.videoUrl === currentVideoUrl
-    ) {
-      if (mode !== "detail") {
-        setMode("detail");
+    // If global player session is already active for this movie:
+    if (session?.movieSlug === (movie.slug || slug)) {
+      // If user hasn't explicitly chosen a different episode, or current session episode matches active episode:
+      if (!selectedEpisodeSlug || session?.episodeSlug === activeEpisodeSlug) {
+        if (mode !== "detail") {
+          setMode("detail");
+        }
+        return;
       }
-      return;
     }
 
     startPlayback({
@@ -431,6 +444,7 @@ export default function MovieDetailPage() {
     slug,
     activeEpisode,
     activeEpisodeSlug,
+    selectedEpisodeSlug,
     currentVideoUrl,
     currentSeason,
     episodeItems,
@@ -468,21 +482,19 @@ export default function MovieDetailPage() {
     registerEpisodeHandlers,
   ]);
 
-  // Dock player into movie detail slot and rescue to layout home on unmount
+  // Scroll to player when expanding from mini player (expandScrollTrigger increments)
   useEffect(() => {
-    if (!isWatching) return;
-    const slot = document.getElementById("cinepvq-player-slot");
-    const el = playerContainerRef.current;
-    if (slot && el && el.parentElement !== slot) {
-      slot.appendChild(el);
-    }
-    return () => {
-      const home = document.getElementById("cinepvq-global-player-home");
-      if (home && el && el.parentElement === slot) {
-        home.appendChild(el);
+    if (!expandScrollTrigger) return;
+    // Give page time to render the player slot before scrolling (200ms to be safe)
+    const timer = setTimeout(() => {
+      if (playerRef.current) {
+        playerRef.current.scrollIntoView({ behavior: "instant", block: "start" });
+      } else {
+        window.scrollTo({ top: 0, behavior: "instant" });
       }
-    };
-  }, [isWatching, playerContainerRef, mode]);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [expandScrollTrigger]);
 
   // ─── Error State ─────────────────────────────────────────────────────────
   if (isError) {
@@ -531,8 +543,10 @@ export default function MovieDetailPage() {
 
   return (
     <main className="flex-1 pb-20">
-      {/* ── 1. Hero Cinematic Banner ── */}
-      <section className="relative w-full min-h-[50vh] overflow-hidden bg-zinc-950">
+      {!isWatching ? (
+        <>
+          {/* ── 1. Hero Cinematic Banner ── */}
+          <section className="relative w-full min-h-[50vh] overflow-hidden bg-zinc-950">
         {/* Multi-layer Backdrop Image */}
         <div className="absolute inset-0">
           <img
@@ -708,10 +722,8 @@ export default function MovieDetailPage() {
         </div>
       </section>
 
-      {/* ── 2. Movie Detail Content (STATE 1 vs STATE 2) ── */}
-      {!isWatching ? (
-        /* ── STATE 1: Chưa bấm xem (Thông tin phim trước, KHÔNG mount Player, KHÔNG mount danh sách tập) ── */
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-8 space-y-10">
+      {/* ── STATE 1 Content: Chưa bấm xem (Thông tin phim trước, KHÔNG mount Player, KHÔNG mount danh sách tập) ── */}
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-8 space-y-10">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             {/* Main Area: Synopsis & Cast & Comments */}
             <div className="lg:col-span-2 space-y-8">
@@ -856,9 +868,10 @@ export default function MovieDetailPage() {
             currentSlug={movie.slug}
           />
         </div>
+        </>
       ) : (
-        /* ── STATE 2: Đã bấm xem (Player + Danh sách tập + Diễn viên + Bình luận) ── */
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-8 space-y-10">
+        /* ── STATE 2: Đang xem phim (Player nằm ngay trên cùng, KHÔNG có banner che khuất) ── */
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-20 sm:pt-24 space-y-8">
           <section ref={playerRef} className="space-y-4">
             {/* Player Header Bar */}
             {currentVideoUrl ? (
@@ -886,22 +899,39 @@ export default function MovieDetailPage() {
                     </div>
                   </div>
 
-                  {/* Next Episode Action Button */}
-                  {nextEpisode && (
+                  <div className="flex items-center gap-2">
+                    {/* Back to Movie Info toggle button */}
                     <button
-                      onClick={() => handleSelectEpisode(nextEpisode, 0)}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-violet-600/10 hover:bg-violet-600 text-violet-600 hover:text-white dark:text-violet-300 dark:hover:text-white px-3.5 py-1.5 text-xs font-bold transition-all shadow-sm"
+                      type="button"
+                      onClick={() => {
+                        setIsWatchingManual(false);
+                        window.scrollTo({ top: 0, behavior: "smooth" });
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 px-3 py-1.5 text-xs font-semibold transition-colors cursor-pointer"
+                      title="Xem thông tin chi tiết phim"
                     >
-                      <span>Tập tiếp theo (Tập {nextEpisode.name})</span>
-                      <ChevronRight className="h-3.5 w-3.5" />
+                      <Film className="h-3.5 w-3.5 text-violet-500" />
+                      <span>Thông tin phim</span>
                     </button>
-                  )}
+
+                    {/* Next Episode Action Button */}
+                    {nextEpisode && (
+                      <button
+                        onClick={() => handleSelectEpisode(nextEpisode, 0)}
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-violet-600/10 hover:bg-violet-600 text-violet-600 hover:text-white dark:text-violet-300 dark:hover:text-white px-3.5 py-1.5 text-xs font-bold transition-all shadow-sm cursor-pointer"
+                      >
+                        <span>Tập tiếp theo (Tập {nextEpisode.name})</span>
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
-                {/* Multi-Source Video Player Host Slot */}
+                {/* Multi-Source Video Player Host Slot — portal target for GlobalPlayerHost */}
                 <div
                   id="cinepvq-player-slot"
-                  className="relative w-full aspect-video rounded-2xl overflow-hidden bg-black shadow-2xl shadow-black/80"
+                  className="relative w-full rounded-2xl bg-black shadow-2xl shadow-black/80"
+                  style={{ aspectRatio: "16/9", minHeight: "180px" }}
                 />
 
                 {/* Auto Next Episode Countdown Notification Banner */}
