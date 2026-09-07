@@ -6,14 +6,49 @@
 
 import { Pool, type QueryResult, type PoolClient, type QueryResultRow } from "pg";
 
-const connectionString = process.env.DATABASE_URL;
-
 const globalForDb = globalThis as unknown as {
   pgPool?: Pool;
 };
 
 export function isDbConfigured(): boolean {
-  return Boolean(connectionString && connectionString.trim().length > 0);
+  const envUrl = process.env.DATABASE_URL;
+  return Boolean(envUrl && envUrl.trim().length > 0);
+}
+
+/**
+ * Normalizes and resolves the database connection string for serverless environments.
+ * If the connection string points to a direct Supabase host (db.<ref>.supabase.co),
+ * which only resolves over IPv6 and fails on Vercel Serverless (IPv4-only), it automatically
+ * routes through the IPv4-compatible Supavisor Connection Pooler (aws-0-ap-southeast-1.pooler.supabase.com:6543).
+ */
+export function getCleanConnectionString(rawUrl?: string): string | null {
+  if (!rawUrl || rawUrl.trim().length === 0) return null;
+
+  let workingUrl = rawUrl.trim();
+
+  try {
+    const parsed = new URL(workingUrl);
+
+    // Check if hostname is direct Supabase (db.<ref>.supabase.co) which is IPv6-only
+    const directMatch = parsed.host.match(/^db\.([a-z0-9]+)\.supabase\.co(?::\d+)?$/i);
+    if (directMatch) {
+      const ref = directMatch[1];
+      parsed.hostname = "aws-0-ap-southeast-1.pooler.supabase.com";
+      parsed.port = "6543";
+      if (!parsed.username.includes(".")) {
+        parsed.username = `postgres.${ref}`;
+      }
+      workingUrl = parsed.toString();
+    }
+  } catch {
+    // If URL parsing fails, retain raw string and attempt regex clean
+  }
+
+  // Strip sslmode from query string to prevent pg-connection-string from
+  // overriding explicit ssl: { rejectUnauthorized: false } options.
+  return workingUrl
+    .replace(/([?&])sslmode=[^&]+(&|$)/, (_, p1, p2) => (p1 === "?" && p2 ? "?" : ""))
+    .replace(/\?$/, "");
 }
 
 export function getPool(): Pool | null {
@@ -22,23 +57,28 @@ export function getPool(): Pool | null {
   }
 
   if (!globalForDb.pgPool) {
-    const isSsl =
-      Boolean(
-        connectionString?.includes("sslmode=") ||
-        connectionString?.includes("supabase.co") ||
-        (connectionString && !connectionString.includes("localhost") && !connectionString.includes("127.0.0.1"))
-      );
+    const rawConnectionString = process.env.DATABASE_URL;
+    const cleanConnectionString = getCleanConnectionString(rawConnectionString);
 
-    const cleanConnectionString = connectionString
-      ?.replace(/([?&])sslmode=[^&]+(&|$)/, (_, p1, p2) => (p1 === "?" && p2 ? "?" : ""))
-      .replace(/\?$/, "");
+    if (!cleanConnectionString) {
+      return null;
+    }
+
+    const isSsl = Boolean(
+      cleanConnectionString.includes("sslmode=") ||
+      cleanConnectionString.includes("supabase.co") ||
+      cleanConnectionString.includes("supabase.com") ||
+      cleanConnectionString.includes("pooler.supabase.com") ||
+      (!cleanConnectionString.includes("localhost") && !cleanConnectionString.includes("127.0.0.1"))
+    );
 
     globalForDb.pgPool = new Pool({
       connectionString: cleanConnectionString,
-      max: 10,
-      idleTimeoutMillis: 30_000,
-      connectionTimeoutMillis: 5_000,
+      max: process.env.NODE_ENV === "production" ? 3 : 5,
+      idleTimeoutMillis: 15_000,
+      connectionTimeoutMillis: 8_000,
       ssl: isSsl ? { rejectUnauthorized: false } : undefined,
+      allowExitOnIdle: true,
     });
 
     globalForDb.pgPool.on("error", (err) => {
