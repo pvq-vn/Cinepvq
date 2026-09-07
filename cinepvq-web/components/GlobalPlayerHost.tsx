@@ -51,6 +51,7 @@ export default function GlobalPlayerHost() {
   const [slotRect, setSlotRect] = useState<DOMRect | null>(null);
   const slotObserverRef = useRef<ResizeObserver | null>(null);
   const scrollListenerRef = useRef<(() => void) | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
 
   const supportsPip =
     isClient &&
@@ -86,11 +87,18 @@ export default function GlobalPlayerHost() {
   const updateSlotRect = useCallback(() => {
     const slot = document.getElementById("cinepvq-player-slot");
     if (slot) {
+      // Sync slot height with rendered VideoPlayer height to prevent content overlap
+      if (wrapperRef.current && mode === "detail") {
+        const wrapperHeight = wrapperRef.current.offsetHeight;
+        if (wrapperHeight > 0) {
+          slot.style.minHeight = `${wrapperHeight}px`;
+        }
+      }
       setSlotRect(slot.getBoundingClientRect());
     } else {
       setSlotRect(null);
     }
-  }, []);
+  }, [mode]);
 
   useEffect(() => {
     if (!isClient || !session) return;
@@ -101,13 +109,16 @@ export default function GlobalPlayerHost() {
         updateSlotRect();
       });
 
-      // Watch for slot size changes
+      // Watch for slot size changes and wrapper size changes
       const slot = document.getElementById("cinepvq-player-slot");
       if (slot) {
         const ro = new ResizeObserver(() => {
           updateSlotRect();
         });
         ro.observe(slot);
+        if (wrapperRef.current) {
+          ro.observe(wrapperRef.current);
+        }
         slotObserverRef.current = ro;
       }
 
@@ -150,7 +161,9 @@ export default function GlobalPlayerHost() {
   const isMini = mode === "mini";
   const isDetail = mode === "detail";
 
-  // Detail mode: fixed overlay matching slot position
+  // Detail mode: fixed overlay matching slot position.
+  // zIndex 30 ensures player is below Navbar (z-40) when scrolling.
+  // overflow visible ensures controls and dropdown menus are never cropped.
   const detailStyle: React.CSSProperties = slotRect
     ? {
         position: "fixed",
@@ -158,10 +171,8 @@ export default function GlobalPlayerHost() {
         left: slotRect.left,
         width: slotRect.width,
         height: slotRect.height,
-        zIndex: 50,
-        borderRadius: "1rem",
-        overflow: "hidden",
-        boxShadow: "0 25px 50px -12px rgba(0,0,0,0.8)",
+        zIndex: 30,
+        overflow: "visible",
       }
     : {
         // Slot not found yet — hide until measured
@@ -173,7 +184,7 @@ export default function GlobalPlayerHost() {
         width: "100vw",
         height: "56.25vw",
         maxHeight: "100vh",
-        zIndex: 50,
+        zIndex: 30,
       };
 
   // Mini mode: fixed bottom-right video overlay (video only; controls bar portaled separately below)
@@ -193,6 +204,7 @@ export default function GlobalPlayerHost() {
     <>
       {/* Single VideoPlayer — always mounted, never destroyed between mode changes */}
       <div
+        ref={wrapperRef}
         id="cinepvq-global-player-wrapper"
         style={
           isHidden
@@ -257,7 +269,7 @@ export default function GlobalPlayerHost() {
       {isMini && createPortal(
         <div
           id="cinepvq-mini-player-card"
-          className="fixed z-[9999] select-none"
+          className="fixed z-[9999] select-none left-3 right-3 sm:left-auto sm:right-3 w-[calc(100vw-24px)] sm:w-[400px]"
           style={{
             bottom: "max(0.75rem, env(safe-area-inset-bottom, 0.75rem))",
             right: "0.75rem",
@@ -287,7 +299,7 @@ export default function GlobalPlayerHost() {
           </div>
 
           {/* Controls bar */}
-          <div className="bg-zinc-950/95 backdrop-blur-2xl rounded-b-2xl border border-zinc-700/80 shadow-2xl ring-1 ring-white/10 p-2 sm:p-2.5 flex items-center justify-between text-white gap-2">
+          <div className="bg-zinc-950/95 backdrop-blur-2xl rounded-b-2xl border border-zinc-700/80 border-t border-zinc-800/80 shadow-2xl ring-1 ring-white/10 p-2 sm:p-2.5 flex items-center justify-between text-white gap-2">
             {/* Movie info — click to expand */}
             <div
               onClick={restoreToDetail}

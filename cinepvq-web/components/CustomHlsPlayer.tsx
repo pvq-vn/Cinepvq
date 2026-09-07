@@ -225,6 +225,30 @@ export default function CustomHlsPlayer({
   const initialTimeRef = useRef(initialTime);
   const initialTimeAppliedRef = useRef(false);
 
+  const playbackRateRef = useRef(playbackRate);
+  useEffect(() => {
+    playbackRateRef.current = playbackRate;
+    if (videoRef.current) {
+      videoRef.current.playbackRate = playbackRate;
+    }
+  }, [playbackRate]);
+
+  const preferredQualityRef = useRef(preferredQuality);
+  useEffect(() => {
+    preferredQualityRef.current = preferredQuality;
+    // Dynamic quality change: if HLS is active, switch level seamlessly without recreate
+    if (hlsRef.current && qualityLevels.length > 0) {
+      const targetQualityIdx = selectQualityLevel(qualityLevels, preferredQuality);
+      hlsRef.current.currentLevel = targetQualityIdx;
+      setCurrentQuality(targetQualityIdx);
+    }
+  }, [preferredQuality, qualityLevels]);
+
+  const autoPlayRef = useRef(autoPlay);
+  useEffect(() => {
+    autoPlayRef.current = autoPlay;
+  }, [autoPlay]);
+
   // 1. Initialize HLS.js or Native Video
   useEffect(() => {
     const video = videoRef.current;
@@ -255,10 +279,10 @@ export default function CustomHlsPlayer({
         setIsBuffering(false);
         // Apply default playback rate
         if (video) {
-          video.playbackRate = playbackRate;
+          video.playbackRate = playbackRateRef.current;
         }
 
-        // Extract quality levels & auto-select 1080p if available
+        // Extract quality levels & auto-select preferred quality if available
         if (data.levels && data.levels.length > 0) {
           const levels: QualityLevel[] = data.levels.map((lvl, index) => ({
             height: lvl.height,
@@ -268,7 +292,7 @@ export default function CustomHlsPlayer({
           }));
           setQualityLevels(levels);
 
-          const targetQualityIdx = selectQualityLevel(levels, preferredQuality);
+          const targetQualityIdx = selectQualityLevel(levels, preferredQualityRef.current);
           if (hlsInstance) {
             if (targetQualityIdx !== -1) {
               hlsInstance.currentLevel = targetQualityIdx;
@@ -286,7 +310,7 @@ export default function CustomHlsPlayer({
           initialTimeAppliedRef.current = true;
         }
 
-        if (autoPlay) {
+        if (autoPlayRef.current) {
           video.play().catch(() => {
             // Autoplay with sound might be blocked by browser policy
             video.muted = true;
@@ -318,17 +342,17 @@ export default function CustomHlsPlayer({
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
       // Native Safari/iOS support
       video.src = src;
-      video.playbackRate = playbackRate;
+      video.playbackRate = playbackRateRef.current;
       video.addEventListener("loadedmetadata", () => {
         setIsBuffering(false);
         if (video) {
-          video.playbackRate = playbackRate;
+          video.playbackRate = playbackRateRef.current;
         }
         if (!initialTimeAppliedRef.current && initialTimeRef.current > 5) {
           video.currentTime = initialTimeRef.current;
           initialTimeAppliedRef.current = true;
         }
-        if (autoPlay) {
+        if (autoPlayRef.current) {
           video.play().catch(() => {});
         }
       });
@@ -350,7 +374,10 @@ export default function CustomHlsPlayer({
         video.load();
       }
     };
-  }, [src, autoPlay, playbackRate, preferredQuality]);
+    // HLS lifecycle is strictly tied to stream source (src).
+    // playbackRate, preferredQuality, and autoPlay are decoupled via refs to prevent
+    // destroying and recreating the active Hls instance during playback speed or quality changes.
+  }, [src]);
 
   // 2. Fullscreen Listener with Orientation Management
   useEffect(() => {
@@ -405,28 +432,6 @@ export default function CustomHlsPlayer({
     };
   }, []);
 
-  // Auto PiP when video is playing and user backgrounds/navigates (best effort standard API)
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (
-        document.visibilityState === "hidden" &&
-        isPlaying &&
-        videoRef.current &&
-        typeof document !== "undefined" &&
-        document.pictureInPictureEnabled &&
-        !document.pictureInPictureElement
-      ) {
-        videoRef.current.requestPictureInPicture().catch(() => {
-          // Graceful fallback if browser requires user gesture
-        });
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [isPlaying]);
 
   // 4. Play / Pause
   const togglePlay = useCallback(() => {

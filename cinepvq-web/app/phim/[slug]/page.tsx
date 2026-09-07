@@ -872,7 +872,7 @@ export default function MovieDetailPage() {
       ) : (
         /* ── STATE 2: Đang xem phim (Player nằm ngay trên cùng, KHÔNG có banner che khuất) ── */
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-20 sm:pt-24 space-y-8">
-          <section ref={playerRef} className="space-y-4">
+          <section ref={playerRef} className="space-y-4 scroll-mt-20 sm:scroll-mt-24">
             {/* Player Header Bar */}
             {currentVideoUrl ? (
               <div className="space-y-3">
@@ -927,12 +927,34 @@ export default function MovieDetailPage() {
                   </div>
                 </div>
 
-                {/* Multi-Source Video Player Host Slot — portal target for GlobalPlayerHost */}
+                {/* Multi-Source Video Player Host Slot — represents entire player area: [Source toolbar] + [Video 16:9] */}
                 <div
                   id="cinepvq-player-slot"
-                  className="relative w-full rounded-2xl bg-black shadow-2xl shadow-black/80"
-                  style={{ aspectRatio: "16/9", minHeight: "180px" }}
-                />
+                  className="relative w-full space-y-2"
+                >
+                  {/* Source Toolbar spacer: reserves exact height for active source badge & switcher */}
+                  <div
+                    className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs min-h-[32px] sm:min-h-[36px] invisible pointer-events-none select-none"
+                    aria-hidden="true"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-semibold border">
+                        Nguồn phát: Đang tải...
+                      </span>
+                    </div>
+                    <div>
+                      <span className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-medium border">
+                        Đổi nguồn
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Video 16:9 viewport placeholder */}
+                  <div
+                    className="relative w-full rounded-2xl bg-black shadow-2xl shadow-black/80 aspect-video border border-zinc-800/80"
+                    style={{ minHeight: "180px" }}
+                  />
+                </div>
 
                 {/* Auto Next Episode Countdown Notification Banner */}
                 {nextEpisodeCountdown !== null && nextEpisode && (
