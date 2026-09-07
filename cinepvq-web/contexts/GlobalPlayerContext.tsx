@@ -113,7 +113,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     const onLeavePip = () => {
       setIsNativePip(false);
       // When leaving native PiP:
-      // If currently on movie detail page: restore detail mode
+      // If currently on movie detail page: restore detail mode & trigger scroll
       // If on other pages: restore mini mode if video is playing, or hidden if paused
       if (typeof window !== "undefined") {
         const curPath = window.location.pathname;
@@ -121,6 +121,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
           const movieDetailPath = `/phim/${session.movieSlug}`;
           if (curPath === movieDetailPath) {
             setMode("detail");
+            setExpandScrollTrigger((n) => n + 1);
           } else if (!video.paused && !video.ended) {
             setMode("mini");
           } else {

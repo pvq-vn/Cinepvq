@@ -289,17 +289,17 @@ export default function VideoPlayer({
     <div className={isMini ? "w-full h-full" : "space-y-2"}>
       {/* Stream Source Selector Toolbar (Hidden in mini mode) */}
       {!isMini && (
-        <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs">
+        <div className="flex items-center justify-between gap-2 px-1 text-xs min-w-0">
           {/* Active Source Badge */}
-          <div className="flex items-center gap-2 min-w-0">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
             {isResolving ? (
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-500/10 text-violet-400 px-3 py-1 font-semibold border border-violet-500/20 animate-pulse">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-500/10 text-violet-400 px-3 py-1 font-semibold border border-violet-500/20 animate-pulse truncate">
                 <RefreshCw className="h-3.5 w-3.5 animate-spin shrink-0" />
                 <span className="truncate">Đang tối ưu nguồn phát...</span>
               </span>
             ) : activeSource ? (
               <span
-                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-semibold border transition-all max-w-[180px] sm:max-w-xs md:max-w-sm ${
+                className={`inline-flex items-center gap-1.5 rounded-full px-2.5 sm:px-3 py-1 font-semibold border transition-all truncate max-w-[190px] sm:max-w-xs md:max-w-sm ${
                   activeSource.type === "hls"
                     ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30 shadow-sm shadow-emerald-500/10"
                     : "bg-amber-500/10 text-amber-400 border-amber-500/30"
@@ -314,7 +314,7 @@ export default function VideoPlayer({
                 <span className="truncate">Nguồn phát: {activeSource.name}</span>
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-zinc-800 text-zinc-400 px-3 py-1 font-semibold border border-zinc-700 max-w-[180px] sm:max-w-xs md:max-w-sm">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-zinc-800 text-zinc-400 px-2.5 sm:px-3 py-1 font-semibold border border-zinc-700 truncate max-w-[190px] sm:max-w-xs md:max-w-sm">
                 <ShieldAlert className="h-3.5 w-3.5 shrink-0" />
                 <span className="truncate">Nguồn phát: Server Dự Phòng</span>
               </span>
@@ -326,13 +326,13 @@ export default function VideoPlayer({
             <div className="relative shrink-0" ref={menuRef}>
               <button
                 onClick={() => setIsMenuOpen((prev) => !prev)}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-800/80 hover:bg-zinc-700/80 text-zinc-200 px-3 py-1.5 font-medium border border-zinc-700/80 shadow-sm transition-all active:scale-95"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-800/80 hover:bg-zinc-700/80 text-zinc-200 px-2.5 sm:px-3 py-1.5 font-medium border border-zinc-700/80 shadow-sm transition-all active:scale-95 shrink-0 whitespace-nowrap"
                 title="Mở danh sách nguồn phát khả dụng"
               >
-                <Tv className="h-3.5 w-3.5 text-violet-400" />
-                <span>Đổi nguồn ({sources.length})</span>
+                <Tv className="h-3.5 w-3.5 text-violet-400 shrink-0" />
+                <span className="whitespace-nowrap">Đổi nguồn ({sources.length})</span>
                 <ChevronDown
-                  className={`h-3 w-3 text-zinc-400 transition-transform ${
+                  className={`h-3 w-3 text-zinc-400 shrink-0 transition-transform ${
                     isMenuOpen ? "rotate-180" : ""
                   }`}
                 />

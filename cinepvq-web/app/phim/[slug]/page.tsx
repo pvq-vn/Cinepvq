@@ -277,6 +277,23 @@ export default function MovieDetailPage() {
     return episodeChunks[activeChunkIndex]?.items || episodeItems;
   }, [episodeChunks, activeChunkIndex, episodeItems]);
 
+  // ─── Scroll to Player Helper (Respects fixed navbar and current visibility) ─
+  const scrollToPlayer = useCallback(() => {
+    const slot = document.getElementById("cinepvq-player-slot") || playerRef.current;
+    if (!slot) {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    const rect = slot.getBoundingClientRect();
+    const navbarHeight = 70; // 64px fixed Navbar + padding
+    // If player is already nicely visible in viewport, do not cause sudden jump
+    const isVisible = rect.top >= navbarHeight - 30 && rect.top <= window.innerHeight * 0.45;
+    if (!isVisible) {
+      const targetY = window.scrollY + rect.top - navbarHeight;
+      window.scrollTo({ top: Math.max(0, targetY), behavior: "smooth" });
+    }
+  }, []);
+
   // ─── Select Episode Handler ──────────────────────────────────────────────
   const handleSelectEpisode = useCallback(
     (ep: EpisodeItem, initialSeek = 0) => {
@@ -307,10 +324,10 @@ export default function MovieDetailPage() {
       }
 
       setTimeout(() => {
-        playerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+        scrollToPlayer();
       }, 150);
     },
-    [movie, episodeItems, episodeChunks, addHistory]
+    [movie, episodeItems, episodeChunks, addHistory, scrollToPlayer]
   );
 
   // ─── Video Time Update ───────────────────────────────────────────────────
@@ -368,9 +385,9 @@ export default function MovieDetailPage() {
       handleSelectEpisode(episodeItems[0], 0);
     }
     setTimeout(() => {
-      playerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      scrollToPlayer();
     }, 150);
-  }, [episodeItems, handleSelectEpisode]);
+  }, [episodeItems, handleSelectEpisode, scrollToPlayer]);
 
   const handleResumeWatching = useCallback(() => {
     setIsWatchingManual(true);
@@ -383,13 +400,13 @@ export default function MovieDetailPage() {
           0;
         handleSelectEpisode(ep, savedTime);
         setTimeout(() => {
-          playerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+          scrollToPlayer();
         }, 150);
         return;
       }
     }
     handleWatchNow();
-  }, [savedHistory, episodeItems, movie?.slug, currentSeason, handleSelectEpisode, handleWatchNow]);
+  }, [savedHistory, episodeItems, movie?.slug, currentSeason, handleSelectEpisode, handleWatchNow, scrollToPlayer]);
 
   const handleShare = useCallback(() => {
     if (typeof window !== "undefined") {
@@ -482,19 +499,14 @@ export default function MovieDetailPage() {
     registerEpisodeHandlers,
   ]);
 
-  // Scroll to player when expanding from mini player (expandScrollTrigger increments)
+  // Scroll to player when expanding from mini player or restoring from native PiP
   useEffect(() => {
     if (!expandScrollTrigger) return;
-    // Give page time to render the player slot before scrolling (200ms to be safe)
     const timer = setTimeout(() => {
-      if (playerRef.current) {
-        playerRef.current.scrollIntoView({ behavior: "instant", block: "start" });
-      } else {
-        window.scrollTo({ top: 0, behavior: "instant" });
-      }
-    }, 200);
+      scrollToPlayer();
+    }, 150);
     return () => clearTimeout(timer);
-  }, [expandScrollTrigger]);
+  }, [expandScrollTrigger, scrollToPlayer]);
 
   // ─── Error State ─────────────────────────────────────────────────────────
   if (isError) {
@@ -934,16 +946,16 @@ export default function MovieDetailPage() {
                 >
                   {/* Source Toolbar spacer: reserves exact height for active source badge & switcher */}
                   <div
-                    className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs min-h-[32px] sm:min-h-[36px] invisible pointer-events-none select-none"
+                    className="flex items-center justify-between gap-2 px-1 text-xs min-h-[32px] sm:min-h-[36px] min-w-0 invisible pointer-events-none select-none"
                     aria-hidden="true"
                   >
-                    <div className="flex items-center gap-2">
-                      <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-semibold border">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 sm:px-3 py-1 font-semibold border truncate max-w-[190px] sm:max-w-xs">
                         Nguồn phát: Đang tải...
                       </span>
                     </div>
-                    <div>
-                      <span className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-medium border">
+                    <div className="shrink-0">
+                      <span className="inline-flex items-center gap-1.5 rounded-lg px-2.5 sm:px-3 py-1.5 font-medium border whitespace-nowrap">
                         Đổi nguồn
                       </span>
                     </div>
