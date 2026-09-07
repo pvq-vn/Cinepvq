@@ -31,6 +31,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   preferredQuality: "auto",
   playbackSpeed: 1,
   preferredSource: "auto",
+  skipSeconds: 10,
 };
 
 // Initial welcome notifications

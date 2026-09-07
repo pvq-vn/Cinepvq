@@ -32,6 +32,12 @@ export interface VideoPlayerProps {
   episodeSlug?: string;
   onTimeUpdate?: (currentTime: number, duration: number) => void;
   onEnded?: () => void;
+  hasPrevEpisode?: boolean;
+  hasNextEpisode?: boolean;
+  onPrevEpisode?: () => void;
+  onNextEpisode?: () => void;
+  onPlayingChange?: (playing: boolean) => void;
+  onVideoRef?: (el: HTMLVideoElement | null) => void;
 }
 
 export default function VideoPlayer({
@@ -49,8 +55,14 @@ export default function VideoPlayer({
   episodeSlug,
   onTimeUpdate,
   onEnded,
+  hasPrevEpisode,
+  hasNextEpisode,
+  onPrevEpisode,
+  onNextEpisode,
+  onPlayingChange,
+  onVideoRef,
 }: VideoPlayerProps) {
-  const { settings } = useUserStore();
+  const { settings, updateSettings } = useUserStore();
   const [sources, setSources] = useState<ResolvedSource[]>([]);
   const [resolvedKey, setResolvedKey] = useState<string | null>(null);
   const [activeSourceId, setActiveSourceId] = useState<VideoSourceId | null>(null);
@@ -396,9 +408,19 @@ export default function VideoPlayer({
           poster={poster}
           initialTime={resumeTime}
           initialPlaybackRate={settings?.playbackSpeed || 1}
+          skipSeconds={settings?.skipSeconds || 10}
+          preferredQuality={settings?.preferredQuality || "auto"}
+          autoPlayNext={settings?.autoPlay ?? true}
+          onAutoPlayNextChange={(val) => updateSettings({ autoPlay: val })}
+          hasPrevEpisode={hasPrevEpisode}
+          hasNextEpisode={hasNextEpisode}
+          onPrevEpisode={onPrevEpisode}
+          onNextEpisode={onNextEpisode}
           onTimeUpdate={handleTimeUpdate}
           onEnded={onEnded}
           onError={handleFatalError}
+          onPlayingChange={onPlayingChange}
+          onVideoRef={onVideoRef}
         />
       ) : activeSource && activeSource.type === "iframe" ? (
         <div className="relative w-full overflow-hidden rounded-2xl bg-black shadow-2xl shadow-black/60 aspect-video border border-zinc-800/80">

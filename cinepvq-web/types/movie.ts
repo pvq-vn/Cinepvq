@@ -220,4 +220,5 @@ export interface AppSettings {
   preferredQuality: "auto" | "HD" | "FHD";
   playbackSpeed?: number;
   preferredSource?: "auto" | "k20" | "vsmov" | "kkphim" | "nguonc";
+  skipSeconds?: number;
 }

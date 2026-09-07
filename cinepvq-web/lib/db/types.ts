@@ -206,5 +206,6 @@ export function mapSettingsRowToAppSettings(row: UserSettingsRow): AppSettings {
     preferredQuality: row.preferred_quality,
     playbackSpeed: cleanSpeed,
     preferredSource: cleanSource,
+    skipSeconds: 10,
   };
 }

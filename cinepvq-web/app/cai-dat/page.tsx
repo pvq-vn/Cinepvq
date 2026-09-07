@@ -9,13 +9,13 @@ import {
   Sun,
   Moon,
   Monitor,
-  Play,
   Volume2,
   Tv,
   Cloud,
   LogIn,
   Gauge,
   Layers,
+  RotateCw,
 } from "lucide-react";
 
 export default function SettingsPage() {
@@ -202,35 +202,36 @@ export default function SettingsPage() {
               </select>
             </div>
 
-            {/* Auto Play Next Episode */}
+            {/* Skip Seconds */}
             <div className="pt-4 flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600">
-                  <Play className="h-4 w-4" />
+                  <RotateCw className="h-4 w-4" />
                 </div>
                 <div>
                   <h3 className="text-xs sm:text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                    Tự động chuyển tập tiếp theo
+                    Thời gian tua (phím J / L và double-tap)
                   </h3>
                   <p className="text-[11px] text-zinc-500">
-                    Tự động phát tập phim kế tiếp khi tập hiện tại kết thúc.
+                    Số giây tua tiến / lùi khi double-tap màn hình hoặc bấm phím J / L.
                   </p>
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={() => updateSettings({ autoPlay: !settings.autoPlay })}
-                className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                  settings.autoPlay ? "bg-violet-600" : "bg-zinc-300 dark:bg-zinc-700"
-                }`}
+              <select
+                value={settings.skipSeconds || 10}
+                onChange={(e) =>
+                  updateSettings({
+                    skipSeconds: parseInt(e.target.value, 10) || 10,
+                  })
+                }
+                className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-1.5 text-xs text-zinc-900 dark:text-zinc-100 font-medium outline-none cursor-pointer"
               >
-                <span
-                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                    settings.autoPlay ? "translate-x-5" : "translate-x-0"
-                  }`}
-                />
-              </button>
+                <option value="5">5 giây</option>
+                <option value="10">10 giây (Mặc định)</option>
+                <option value="15">15 giây</option>
+                <option value="30">30 giây</option>
+              </select>
             </div>
 
             {/* Sound Effects */}

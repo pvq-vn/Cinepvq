@@ -7,8 +7,8 @@ import { useFetchMovieDetail } from "@/hooks/useMovies";
 import { searchMovies } from "@/services/api";
 import { extractCategoriesFromMovie } from "@/types/movie";
 import { useUserStore } from "@/hooks/useUserStore";
+import { useGlobalPlayer } from "@/contexts/GlobalPlayerContext";
 import { episodeProgressStore } from "@/services/userStore";
-import VideoPlayer from "@/components/VideoPlayer";
 import SimilarMovies from "@/components/MovieDetail/SimilarMovies";
 import MovieComments from "@/components/MovieDetail/MovieComments";
 import { MovieDetailSkeleton } from "@/components/Skeleton";
@@ -92,7 +92,16 @@ export default function MovieDetailPage() {
     addHistory,
     history,
     mounted,
+    settings,
   } = useUserStore();
+  const {
+    session,
+    mode,
+    startPlayback,
+    setMode,
+    playerContainerRef,
+    registerEpisodeHandlers,
+  } = useGlobalPlayer();
 
   // User-selected Episode & Server states
   const [selectedEpisodeSlug, setSelectedEpisodeSlug] = useState<string | null>(null);
@@ -101,7 +110,7 @@ export default function MovieDetailPage() {
   const [copiedLink, setCopiedLink] = useState(false);
   const [nextEpisodeCountdown, setNextEpisodeCountdown] = useState<number | null>(null);
   const [activeChunkIndex, setActiveChunkIndex] = useState<number>(0);
-  const [isWatching, setIsWatching] = useState<boolean>(() => {
+  const [isWatchingManual, setIsWatchingManual] = useState<boolean>(() => {
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
       return Boolean(
@@ -112,6 +121,8 @@ export default function MovieDetailPage() {
     }
     return false;
   });
+
+  const isWatching = isWatchingManual || Boolean(session && session.movieSlug === slug);
 
   const playerRef = useRef<HTMLDivElement>(null);
   const lastSavedTimeRef = useRef<number>(0);
@@ -256,7 +267,7 @@ export default function MovieDetailPage() {
   // ─── Select Episode Handler ──────────────────────────────────────────────
   const handleSelectEpisode = useCallback(
     (ep: EpisodeItem, initialSeek = 0) => {
-      setIsWatching(true);
+      setIsWatchingManual(true);
       setNextEpisodeCountdown(null);
       setSelectedEpisodeSlug(ep.slug);
       setCustomResumeTime(initialSeek);
@@ -306,16 +317,19 @@ export default function MovieDetailPage() {
 
   // ─── Video Ended: Next Episode Countdown ─────────────────────────────────
   const currentEpIndex = episodeItems.findIndex((e) => e.slug === activeEpisodeSlug);
+  const prevEpisode =
+    currentEpIndex > 0 ? episodeItems[currentEpIndex - 1] : null;
   const nextEpisode =
     currentEpIndex >= 0 && currentEpIndex < episodeItems.length - 1
       ? episodeItems[currentEpIndex + 1]
       : null;
 
   const handleVideoEnded = useCallback(() => {
-    if (nextEpisode) {
+    // Only auto-advance if settings.autoPlay is enabled and nextEpisode exists
+    if (settings?.autoPlay && nextEpisode) {
       setNextEpisodeCountdown(5);
     }
-  }, [nextEpisode]);
+  }, [nextEpisode, settings?.autoPlay]);
 
   useEffect(() => {
     if (nextEpisodeCountdown === null) return;
@@ -336,7 +350,7 @@ export default function MovieDetailPage() {
 
   // ─── Primary Hero Actions ────────────────────────────────────────────────
   const handleWatchNow = useCallback(() => {
-    setIsWatching(true);
+    setIsWatchingManual(true);
     if (episodeItems.length > 0) {
       handleSelectEpisode(episodeItems[0], 0);
     }
@@ -346,7 +360,7 @@ export default function MovieDetailPage() {
   }, [episodeItems, handleSelectEpisode]);
 
   const handleResumeWatching = useCallback(() => {
-    setIsWatching(true);
+    setIsWatchingManual(true);
     if (savedHistory?.episodeSlug) {
       const ep = episodeItems.find((e) => e.slug === savedHistory.episodeSlug);
       if (ep) {
@@ -371,6 +385,104 @@ export default function MovieDetailPage() {
       setTimeout(() => setCopiedLink(false), 2000);
     }
   }, []);
+
+  // ─── Global Player Synchronization ───────────────────────────────────────
+  useEffect(() => {
+    if (!isWatching || !movie || !activeEpisode || !currentVideoUrl) return;
+
+    if (
+      session?.movieSlug === (movie.slug || slug) &&
+      session?.episodeSlug === activeEpisodeSlug &&
+      session?.videoUrl === currentVideoUrl
+    ) {
+      if (mode !== "detail") {
+        setMode("detail");
+      }
+      return;
+    }
+
+    startPlayback({
+      videoUrl: currentVideoUrl,
+      movieSlug: movie.slug || slug,
+      movieTitle: movie.name || movie.original_name,
+      imdbId: movie.imdb_id || undefined,
+      season: currentSeason,
+      episode:
+        parseInt(
+          episodeItems.find((e) => e.slug === activeEpisodeSlug)?.name || ""
+        ) ||
+        parseInt(activeEpisodeSlug.replace(/\D/g, "")) ||
+        1,
+      serverName: currentServer?.server_name || "Vietsub",
+      episodeSlug: activeEpisodeSlug,
+      type: isMovie ? "movie" : "series",
+      poster: movie.poster_url || movie.thumb_url,
+      initialTime: resumeTime,
+      episodes: episodeItems.map((e) => ({
+        name: e.name,
+        slug: e.slug,
+        embed: e.embed,
+      })),
+      currentEpisodeIndex: episodeItems.findIndex((e) => e.slug === activeEpisodeSlug),
+    });
+  }, [
+    isWatching,
+    movie,
+    slug,
+    activeEpisode,
+    activeEpisodeSlug,
+    currentVideoUrl,
+    currentSeason,
+    episodeItems,
+    currentServer,
+    isMovie,
+    resumeTime,
+    session?.movieSlug,
+    session?.episodeSlug,
+    session?.videoUrl,
+    mode,
+    startPlayback,
+    setMode,
+  ]);
+
+  // Register episode navigation handlers with GlobalPlayer
+  useEffect(() => {
+    registerEpisodeHandlers({
+      hasPrevEpisode: Boolean(prevEpisode),
+      hasNextEpisode: Boolean(nextEpisode),
+      onPrevEpisode: () => {
+        if (prevEpisode) handleSelectEpisode(prevEpisode, 0);
+      },
+      onNextEpisode: () => {
+        if (nextEpisode) handleSelectEpisode(nextEpisode, 0);
+      },
+      onTimeUpdate: handleTimeUpdate,
+      onEnded: handleVideoEnded,
+    });
+  }, [
+    prevEpisode,
+    nextEpisode,
+    handleSelectEpisode,
+    handleTimeUpdate,
+    handleVideoEnded,
+    registerEpisodeHandlers,
+  ]);
+
+  // Dock player into movie detail slot and rescue to layout home on unmount
+  useEffect(() => {
+    if (!isWatching) return;
+    const slot = document.getElementById("cinepvq-player-slot");
+    const el = playerContainerRef.current;
+    if (slot && el && el.parentElement !== slot) {
+      slot.appendChild(el);
+    }
+    return () => {
+      const home = document.getElementById("cinepvq-global-player-home");
+      if (home && el && el.parentElement === slot) {
+        home.appendChild(el);
+      }
+    };
+  }, [isWatching, playerContainerRef, mode]);
 
   // ─── Error State ─────────────────────────────────────────────────────────
   if (isError) {
@@ -786,27 +898,10 @@ export default function MovieDetailPage() {
                   )}
                 </div>
 
-                {/* Multi-Source Video Player */}
-                <VideoPlayer
-                  videoUrl={currentVideoUrl}
-                  movieSlug={movie.slug || slug}
-                  movieTitle={movie.name || movie.original_name}
-                  imdbId={movie.imdb_id || undefined}
-                  season={currentSeason}
-                  episode={
-                    parseInt(
-                      episodeItems.find((e) => e.slug === activeEpisodeSlug)?.name || ""
-                    ) ||
-                    parseInt(activeEpisodeSlug.replace(/\D/g, "")) ||
-                    1
-                  }
-                  serverName={currentServer?.server_name || "Vietsub"}
-                  episodeSlug={activeEpisodeSlug}
-                  type={isMovie ? "movie" : "series"}
-                  poster={movie.poster_url || movie.thumb_url}
-                  initialTime={resumeTime}
-                  onTimeUpdate={handleTimeUpdate}
-                  onEnded={handleVideoEnded}
+                {/* Multi-Source Video Player Host Slot */}
+                <div
+                  id="cinepvq-player-slot"
+                  className="relative w-full aspect-video rounded-2xl overflow-hidden bg-black shadow-2xl shadow-black/80"
                 />
 
                 {/* Auto Next Episode Countdown Notification Banner */}

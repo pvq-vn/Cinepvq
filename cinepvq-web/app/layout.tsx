@@ -3,6 +3,8 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import QueryProvider from "@/components/QueryProvider";
+import { GlobalPlayerProvider } from "@/contexts/GlobalPlayerContext";
+import GlobalPlayerHost from "@/components/GlobalPlayerHost";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import SmoothScrolling from "@/components/SmoothScrolling";
@@ -36,13 +38,16 @@ export default function RootLayout({
       <body className="min-h-screen flex flex-col bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-50 transition-colors duration-300">
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
           <QueryProvider>
-            <Navbar />
-            <SmoothScrolling>
-              <div className="flex-1 flex flex-col">
-                {children}
-              </div>
-            </SmoothScrolling>
-            <Footer />
+            <GlobalPlayerProvider>
+              <Navbar />
+              <SmoothScrolling>
+                <div className="flex-1 flex flex-col">
+                  {children}
+                </div>
+              </SmoothScrolling>
+              <Footer />
+              <GlobalPlayerHost />
+            </GlobalPlayerProvider>
           </QueryProvider>
         </ThemeProvider>
       </body>
