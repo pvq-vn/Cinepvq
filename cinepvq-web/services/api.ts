@@ -1,102 +1,139 @@
-import axios, { type AxiosRequestConfig } from "axios";
+import axios, { type AxiosResponse } from "axios";
 import type {
   PaginatedResponse,
   MovieDetailResponse,
 } from "@/types/movie";
+import {
+  kkphimCatalogAdapter,
+  mapCategorySlugToKKPhim,
+  mapGenreSlugToKKPhim,
+  type KKPhimRawLatestResponse,
+  type KKPhimRawV1ListResponse,
+  type KKPhimRawDetailResponse,
+} from "./kkphimCatalogAdapter";
 
-// ─── Axios instance ────────────────────────────────────────────────────────
+// ─── Axios Instance ─────────────────────────────────────────────────────────
 
-const api = axios.create({
-  baseURL: "/api/proxy/nguonc/",
-  timeout: 10_000,
-  headers: { Accept: "application/json" },
-});
+const kkphimBaseUrl = (
+  process.env.NEXT_PUBLIC_KKPHIM_API_URL ?? "https://phimapi.com"
+).replace(/\/+$/, "");
 
-// Some networks block the server-side proxy from reaching NguonC while the
-// visitor's browser can still reach its public API. Keep the proxy as the
-// primary path and use the public API only for upstream connection failures.
 const directApi = axios.create({
-  baseURL:
-    process.env.NEXT_PUBLIC_NGUONC_API_URL ?? "https://phim.nguonc.com/api/",
+  baseURL: kkphimBaseUrl,
   timeout: 10_000,
   headers: { Accept: "application/json" },
 });
 
-async function get<T>(path: string, config?: AxiosRequestConfig) {
-  try {
-    return await api.get<T>(path, config);
-  } catch (error) {
-    if (
-      !axios.isAxiosError(error) ||
-      (error.response && ![502, 504].includes(error.response.status))
-    ) {
-      throw error;
-    }
+export const api = directApi;
 
-    return directApi.get<T>(path, config);
-  }
-}
-
-// ─── List endpoints ────────────────────────────────────────────────────────
+// ─── List Endpoints ──────────────────────────────────────────────────────────
 
 /** Phim mới cập nhật */
-export const getLatestMovies = (page = 1) =>
-  get<PaginatedResponse>("films/phim-moi-cap-nhat", {
-    params: { page },
-  });
+export const getLatestMovies = async (
+  page = 1
+): Promise<AxiosResponse<PaginatedResponse>> => {
+  const res = await directApi.get<KKPhimRawLatestResponse>(
+    "danh-sach/phim-moi-cap-nhat",
+    { params: { page } }
+  );
+  return {
+    ...res,
+    data: kkphimCatalogAdapter.normalizeLatestResponse(res.data),
+  };
+};
 
 /** Phim theo danh mục (dang-chieu | phim-bo | phim-le | tv-shows | hoat-hinh) */
-export const getMoviesByCategory = (slug: string, page = 1) =>
-  get<PaginatedResponse>(`films/danh-sach/${slug}`, {
-    params: { page },
-  });
+export const getMoviesByCategory = async (
+  slug: string,
+  page = 1
+): Promise<AxiosResponse<PaginatedResponse>> => {
+  const mappedSlug = mapCategorySlugToKKPhim(slug);
+  const res = await directApi.get<KKPhimRawV1ListResponse>(
+    `v1/api/danh-sach/${mappedSlug}`,
+    { params: { page } }
+  );
+  return {
+    ...res,
+    data: kkphimCatalogAdapter.normalizeV1ListResponse(res.data),
+  };
+};
 
 /** Phim theo thể loại (hanh-dong, tinh-cam, phim-hai, kinh-di, v.v.) */
-export const getMoviesByGenre = (slug: string, page = 1) =>
-  get<PaginatedResponse>(`films/the-loai/${slug}`, {
-    params: { page },
-  });
+export const getMoviesByGenre = async (
+  slug: string,
+  page = 1
+): Promise<AxiosResponse<PaginatedResponse>> => {
+  const mappedSlug = mapGenreSlugToKKPhim(slug);
+  const res = await directApi.get<KKPhimRawV1ListResponse>(
+    `v1/api/the-loai/${mappedSlug}`,
+    { params: { page } }
+  );
+  return {
+    ...res,
+    data: kkphimCatalogAdapter.normalizeV1ListResponse(res.data),
+  };
+};
 
 /** Phim theo quốc gia (trung-quoc, han-quoc, au-my, nhat-ban, thai-lan, viet-nam, v.v.) */
-export const getMoviesByCountry = (slug: string, page = 1) =>
-  get<PaginatedResponse>(`films/quoc-gia/${slug}`, {
-    params: { page },
-  });
+export const getMoviesByCountry = async (
+  slug: string,
+  page = 1
+): Promise<AxiosResponse<PaginatedResponse>> => {
+  const res = await directApi.get<KKPhimRawV1ListResponse>(
+    `v1/api/quoc-gia/${slug}`,
+    { params: { page } }
+  );
+  return {
+    ...res,
+    data: kkphimCatalogAdapter.normalizeV1ListResponse(res.data),
+  };
+};
 
 /** Phim theo năm phát hành */
-export const getMoviesByYear = (year: number, page = 1) =>
-  get<PaginatedResponse>(`films/nam-phat-hanh/${year}`, {
-    params: { page },
-  });
+export const getMoviesByYear = async (
+  year: number,
+  page = 1
+): Promise<AxiosResponse<PaginatedResponse>> => {
+  const res = await directApi.get<KKPhimRawV1ListResponse>(
+    `v1/api/nam/${year}`,
+    { params: { page } }
+  );
+  return {
+    ...res,
+    data: kkphimCatalogAdapter.normalizeV1ListResponse(res.data),
+  };
+};
 
-// ─── Search ────────────────────────────────────────────────────────────────
+// ─── Search Endpoint ─────────────────────────────────────────────────────────
 
 /** Tìm kiếm phim theo từ khóa */
-export const searchMovies = (keyword: string, page = 1) =>
-  get<PaginatedResponse>("films/search", {
-    params: { keyword, page },
-  });
+export const searchMovies = async (
+  keyword: string,
+  page = 1
+): Promise<AxiosResponse<PaginatedResponse>> => {
+  const res = await directApi.get<KKPhimRawV1ListResponse>(
+    "v1/api/tim-kiem",
+    { params: { keyword, page } }
+  );
+  return {
+    ...res,
+    data: kkphimCatalogAdapter.normalizeV1ListResponse(res.data),
+  };
+};
 
-// ─── Detail ────────────────────────────────────────────────────────────────
+// ─── Movie Detail Endpoint ───────────────────────────────────────────────────
 
-/** Chi tiết phim + danh sách tập (tự động qua cache layer /api/movies/[slug] với fallback an toàn) */
-export const getMovieDetail = async (slug: string) => {
-  try {
-    const cachedRes = await axios.get<MovieDetailResponse>(
-      `/api/movies/${encodeURIComponent(slug)}`,
-      {
-        timeout: 10_000,
-        headers: { Accept: "application/json" },
-      }
-    );
-    if (cachedRes.data?.status === "success" && cachedRes.data?.movie) {
-      return cachedRes;
-    }
-  } catch {
-    // Fallback an toàn về proxy và direct API nếu cache API chưa sẵn sàng
-  }
-
-  return get<MovieDetailResponse>(`film/${slug}`);
+/** Chi tiết phim + danh sách tập từ KKPhim */
+export const getMovieDetail = async (
+  slug: string
+): Promise<AxiosResponse<MovieDetailResponse>> => {
+  const res = await directApi.get<KKPhimRawDetailResponse>(
+    `phim/${encodeURIComponent(slug)}`
+  );
+  return {
+    ...res,
+    data: kkphimCatalogAdapter.normalizeDetailResponse(res.data),
+  };
 };
 
 export default api;
