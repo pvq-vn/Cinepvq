@@ -15,6 +15,7 @@ import {
   Settings,
   Loader2,
   AlertCircle,
+  Sun,
 } from "lucide-react";
 
 export interface CustomHlsPlayerProps {
@@ -22,6 +23,7 @@ export interface CustomHlsPlayerProps {
   poster?: string;
   initialTime?: number;
   autoPlay?: boolean;
+  initialPlaybackRate?: number;
   onTimeUpdate?: (currentTime: number, duration: number) => void;
   onEnded?: () => void;
   onError?: (error: string) => void;
@@ -50,6 +52,7 @@ export default function CustomHlsPlayer({
   poster,
   initialTime = 0,
   autoPlay = true,
+  initialPlaybackRate = 1,
   onTimeUpdate,
   onEnded,
   onError,
@@ -65,7 +68,12 @@ export default function CustomHlsPlayer({
   const [buffered, setBuffered] = useState(0);
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
-  const [playbackRate, setPlaybackRate] = useState(1);
+  const [playbackRate, setPlaybackRate] = useState(initialPlaybackRate || 1);
+  const [prevInitialPlaybackRate, setPrevInitialPlaybackRate] = useState(initialPlaybackRate);
+  if (initialPlaybackRate !== prevInitialPlaybackRate) {
+    setPrevInitialPlaybackRate(initialPlaybackRate);
+    setPlaybackRate(initialPlaybackRate || 1);
+  }
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isBuffering, setIsBuffering] = useState(true);
   const [showControls, setShowControls] = useState(true);
@@ -75,6 +83,29 @@ export default function CustomHlsPlayer({
   // Quality levels
   const [qualityLevels, setQualityLevels] = useState<QualityLevel[]>([]);
   const [currentQuality, setCurrentQuality] = useState<number>(-1); // -1 = Auto
+
+  // Brightness simulation overlay (0.3 to 1.0)
+  const [brightness, setBrightness] = useState<number>(1);
+  const [gestureHud, setGestureHud] = useState<{
+    type: "volume" | "brightness";
+    value: number;
+  } | null>(null);
+  const gestureHudTimer = useRef<NodeJS.Timeout | null>(null);
+
+  const showGestureHud = useCallback((type: "volume" | "brightness", val: number) => {
+    setGestureHud({ type, value: val });
+    if (gestureHudTimer.current) clearTimeout(gestureHudTimer.current);
+    gestureHudTimer.current = setTimeout(() => {
+      setGestureHud(null);
+    }, 1200);
+  }, []);
+
+  // Update video element playback rate when initialPlaybackRate changes
+  useEffect(() => {
+    if (videoRef.current && initialPlaybackRate) {
+      videoRef.current.playbackRate = initialPlaybackRate;
+    }
+  }, [initialPlaybackRate]);
 
   // Reset controls timer on user activity
   const triggerControls = useCallback(() => {
@@ -122,6 +153,11 @@ export default function CustomHlsPlayer({
 
       hlsInstance.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
         setIsBuffering(false);
+        // Apply default playback rate
+        if (video) {
+          video.playbackRate = playbackRate;
+        }
+
         // Extract quality levels
         if (data.levels && data.levels.length > 0) {
           const levels: QualityLevel[] = data.levels.map((lvl, index) => ({
@@ -171,8 +207,12 @@ export default function CustomHlsPlayer({
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
       // Native Safari/iOS support
       video.src = src;
+      video.playbackRate = playbackRate;
       video.addEventListener("loadedmetadata", () => {
         setIsBuffering(false);
+        if (video) {
+          video.playbackRate = playbackRate;
+        }
         if (!initialTimeAppliedRef.current && initialTimeRef.current > 5) {
           video.currentTime = initialTimeRef.current;
           initialTimeAppliedRef.current = true;
@@ -199,15 +239,42 @@ export default function CustomHlsPlayer({
         video.load();
       }
     };
-  }, [src, autoPlay]);
+  }, [src, autoPlay, playbackRate]);
 
-  // 2. Fullscreen Listener
+  // 2. Fullscreen Listener with Orientation Management
   useEffect(() => {
     const handleFsChange = () => {
-      setIsFullscreen(Boolean(document.fullscreenElement));
+      const isFs = Boolean(document.fullscreenElement);
+      setIsFullscreen(isFs);
+      if (!isFs) {
+        try {
+          if (
+            typeof window !== "undefined" &&
+            window.screen?.orientation &&
+            typeof (window.screen.orientation as { unlock?: () => void }).unlock === "function"
+          ) {
+            (window.screen.orientation as { unlock: () => void }).unlock();
+          }
+        } catch {
+          // Ignored
+        }
+      }
     };
     document.addEventListener("fullscreenchange", handleFsChange);
-    return () => document.removeEventListener("fullscreenchange", handleFsChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFsChange);
+      try {
+        if (
+          typeof window !== "undefined" &&
+          window.screen?.orientation &&
+          typeof (window.screen.orientation as { unlock?: () => void }).unlock === "function"
+        ) {
+          (window.screen.orientation as { unlock: () => void }).unlock();
+        }
+      } catch {
+        // Ignored
+      }
+    };
   }, []);
 
   // 3. Play / Pause
@@ -259,15 +326,40 @@ export default function CustomHlsPlayer({
     triggerControls();
   }, [isMuted, volume, triggerControls]);
 
-  // 6. Fullscreen
+  // 6. Fullscreen toggle with Mobile Landscape Preference
   const toggleFullscreen = useCallback(async () => {
     const container = containerRef.current;
     if (!container) return;
     try {
       if (!document.fullscreenElement) {
         await container.requestFullscreen();
+        // Priority to Landscape on mobile devices if supported
+        try {
+          if (
+            typeof window !== "undefined" &&
+            window.screen?.orientation &&
+            typeof (window.screen.orientation as unknown as { lock?: (o: string) => Promise<void> }).lock === "function"
+          ) {
+            await (window.screen.orientation as unknown as { lock: (o: string) => Promise<void> })
+              .lock("landscape")
+              .catch(() => {});
+          }
+        } catch {
+          // Graceful fallback if device/browser disallows orientation lock
+        }
       } else {
         await document.exitFullscreen();
+        try {
+          if (
+            typeof window !== "undefined" &&
+            window.screen?.orientation &&
+            typeof (window.screen.orientation as unknown as { unlock?: () => void }).unlock === "function"
+          ) {
+            (window.screen.orientation as unknown as { unlock: () => void }).unlock();
+          }
+        } catch {
+          // Ignored
+        }
       }
     } catch (err) {
       console.warn("Fullscreen toggle error", err);
@@ -294,10 +386,78 @@ export default function CustomHlsPlayer({
     triggerControls();
   };
 
-  // 9. Keyboard Shortcuts
+  // 9. Touch Gestures (Volume on Right Half, Brightness on Left Half)
+  const touchState = useRef<{
+    startX: number;
+    startY: number;
+    startVal: number;
+    mode: "volume" | "brightness";
+    active: boolean;
+  } | null>(null);
+
+  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+    if (target.closest("button, input, select, a, [role='button']")) {
+      return;
+    }
+    if (e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const isRightSide = touch.clientX - rect.left >= rect.width / 2;
+    touchState.current = {
+      startX: touch.clientX,
+      startY: touch.clientY,
+      startVal: isRightSide ? volume : brightness,
+      mode: isRightSide ? "volume" : "brightness",
+      active: false,
+    };
+  };
+
+  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (!touchState.current || e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    const deltaX = touch.clientX - touchState.current.startX;
+    const deltaY = touchState.current.startY - touch.clientY; // Upward is positive
+
+    if (!touchState.current.active) {
+      if (Math.abs(deltaY) > 12 && Math.abs(deltaY) > Math.abs(deltaX) * 1.3) {
+        touchState.current.active = true;
+      } else {
+        return;
+      }
+    }
+
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const sensitivity = rect.height * 0.75;
+    const step = deltaY / sensitivity;
+
+    if (touchState.current.mode === "volume") {
+      const nextVol = Math.max(0, Math.min(1, touchState.current.startVal + step));
+      const video = videoRef.current;
+      if (video) {
+        video.volume = nextVol;
+        video.muted = nextVol === 0;
+      }
+      setVolume(nextVol);
+      setIsMuted(nextVol === 0);
+      showGestureHud("volume", nextVol);
+    } else if (touchState.current.mode === "brightness") {
+      const nextBri = Math.max(0.3, Math.min(1, touchState.current.startVal + step));
+      setBrightness(nextBri);
+      showGestureHud("brightness", nextBri);
+    }
+  };
+
+  const handleTouchEnd = () => {
+    touchState.current = null;
+  };
+
+  // 10. Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't intercept typing in inputs
       if (["input", "textarea"].includes((e.target as HTMLElement)?.tagName?.toLowerCase())) {
         return;
       }
@@ -372,7 +532,10 @@ export default function CustomHlsPlayer({
         if (isPlaying) setShowControls(false);
         setShowSettings(false);
       }}
-      className="group relative w-full aspect-video overflow-hidden rounded-2xl bg-black select-none shadow-2xl shadow-black/80 flex items-center justify-center font-sans"
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      className="group relative w-full aspect-video overflow-hidden rounded-2xl bg-black select-none shadow-2xl shadow-black/80 flex items-center justify-center font-sans touch-none"
     >
       {/* Video Element */}
       <video
@@ -396,9 +559,55 @@ export default function CustomHlsPlayer({
         className="w-full h-full object-contain cursor-pointer"
       />
 
+      {/* Brightness Filter Overlay (Hardware/Eye-comfort simulation) */}
+      <div
+        className="absolute inset-0 pointer-events-none bg-black transition-opacity duration-75 z-[5]"
+        style={{ opacity: Math.max(0, (1 - brightness) * 0.85) }}
+        aria-hidden="true"
+      />
+
+      {/* Gesture Feedback HUD Overlay */}
+      {gestureHud && (
+        <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-30 animate-in fade-in zoom-in-95 duration-150">
+          <div className="flex flex-col items-center gap-2 rounded-2xl bg-black/80 backdrop-blur-md px-5 py-4 text-white shadow-2xl border border-white/10 min-w-[130px]">
+            {gestureHud.type === "volume" ? (
+              <>
+                {gestureHud.value === 0 ? (
+                  <VolumeX className="h-7 w-7 text-rose-400" />
+                ) : (
+                  <Volume2 className="h-7 w-7 text-violet-400" />
+                )}
+                <span className="text-xs font-bold">
+                  Âm lượng {Math.round(gestureHud.value * 100)}%
+                </span>
+                <div className="h-1.5 w-24 rounded-full bg-white/20 overflow-hidden">
+                  <div
+                    className="h-full bg-violet-500 rounded-full"
+                    style={{ width: `${Math.round(gestureHud.value * 100)}%` }}
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                <Sun className="h-7 w-7 text-amber-400" />
+                <span className="text-xs font-bold">
+                  Độ sáng {Math.round(gestureHud.value * 100)}%
+                </span>
+                <div className="h-1.5 w-24 rounded-full bg-white/20 overflow-hidden">
+                  <div
+                    className="h-full bg-amber-400 rounded-full"
+                    style={{ width: `${Math.round(gestureHud.value * 100)}%` }}
+                  />
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Buffering Spinner */}
       {isBuffering && !errorMsg && (
-        <div className="absolute inset-0 pointer-events-none flex items-center justify-center bg-black/30 backdrop-blur-[2px] transition-all">
+        <div className="absolute inset-0 pointer-events-none flex items-center justify-center bg-black/30 backdrop-blur-[2px] transition-all z-10">
           <div className="flex flex-col items-center gap-2 text-white">
             <Loader2 className="h-10 w-10 animate-spin text-violet-500" />
             <span className="text-xs font-medium text-zinc-300">Đang tải video...</span>
@@ -433,7 +642,7 @@ export default function CustomHlsPlayer({
 
       {/* Video Controls HUD */}
       <div
-        className={`absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-4 transition-opacity duration-300 ${
+        className={`absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-3 sm:p-4 transition-opacity duration-300 ${
           showControls || !isPlaying ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
         }`}
       >
@@ -475,12 +684,13 @@ export default function CustomHlsPlayer({
 
         {/* Bottom Bar: Action Buttons & Metrics */}
         <div className="flex items-center justify-between gap-2 text-white">
-          {/* Left: Play, Rewind, Fast-Forward, Time, Volume */}
-          <div className="flex items-center gap-3">
+          {/* Left: Play, Rewind, Fast-Forward, Volume, Time */}
+          <div className="flex items-center gap-2 sm:gap-3">
             <button
               onClick={togglePlay}
-              className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"
+              className="p-2 min-h-[36px] min-w-[36px] rounded-lg hover:bg-white/10 transition-colors flex items-center justify-center"
               title={isPlaying ? "Tạm dừng (Space)" : "Phát (Space)"}
+              aria-label={isPlaying ? "Tạm dừng" : "Phát"}
             >
               {isPlaying ? <Pause className="h-5 w-5 fill-current" /> : <Play className="h-5 w-5 fill-current" />}
             </button>
@@ -489,6 +699,7 @@ export default function CustomHlsPlayer({
               onClick={() => seekRelative(-10)}
               className="p-1.5 rounded-lg hover:bg-white/10 transition-colors hidden sm:inline-flex"
               title="Tua lại 10s (←)"
+              aria-label="Tua lại 10 giây"
             >
               <RotateCcw className="h-4 w-4" />
             </button>
@@ -497,6 +708,7 @@ export default function CustomHlsPlayer({
               onClick={() => seekRelative(10)}
               className="p-1.5 rounded-lg hover:bg-white/10 transition-colors hidden sm:inline-flex"
               title="Tua tiếp 10s (→)"
+              aria-label="Tua tiếp 10 giây"
             >
               <RotateCw className="h-4 w-4" />
             </button>
@@ -505,8 +717,9 @@ export default function CustomHlsPlayer({
             <div className="flex items-center gap-1.5 group/vol">
               <button
                 onClick={toggleMute}
-                className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"
+                className="p-2 min-h-[36px] min-w-[36px] rounded-lg hover:bg-white/10 transition-colors flex items-center justify-center"
                 title="Bật/Tắt tiếng (M)"
+                aria-label="Bật hoặc tắt âm thanh"
               >
                 {isMuted || volume === 0 ? (
                   <VolumeX className="h-5 w-5 text-red-400" />
@@ -524,42 +737,44 @@ export default function CustomHlsPlayer({
                 value={isMuted ? 0 : volume}
                 onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
                 className="w-16 h-1 rounded-lg bg-white/20 accent-violet-500 cursor-pointer hidden sm:block"
+                aria-label="Thanh điều chỉnh âm lượng"
               />
             </div>
 
             {/* Time Indicator */}
-            <div className="text-xs font-medium text-zinc-300 tabular-nums">
+            <div className="text-[11px] sm:text-xs font-medium text-zinc-300 tabular-nums">
               <span>{formatTime(currentTime)}</span>
               <span className="mx-1 text-zinc-500">/</span>
               <span>{formatTime(duration)}</span>
             </div>
           </div>
 
-          {/* Right: Quality / Speed Settings & Fullscreen */}
-          <div className="flex items-center gap-2 relative">
+          {/* Right: Settings & Fullscreen */}
+          <div className="flex items-center gap-1.5 sm:gap-2 relative">
             {/* Settings Trigger */}
             <button
               onClick={() => setShowSettings(!showSettings)}
-              className={`p-1.5 rounded-lg transition-colors ${
+              className={`p-2 min-h-[36px] min-w-[36px] rounded-lg transition-colors flex items-center justify-center ${
                 showSettings ? "bg-white/20 text-violet-400" : "hover:bg-white/10 text-zinc-300"
               }`}
               title="Cài đặt phát video"
+              aria-label="Cài đặt phát video"
             >
               <Settings className="h-5 w-5" />
             </button>
 
             {/* Settings Menu Popup */}
             {showSettings && (
-              <div className="absolute right-0 bottom-12 w-48 rounded-2xl bg-zinc-900/95 border border-zinc-700/60 shadow-2xl p-3 space-y-3 z-30 backdrop-blur-md text-xs">
+              <div className="absolute right-0 bottom-12 w-52 max-w-[calc(100vw-2rem)] rounded-2xl bg-zinc-900/95 border border-zinc-700/60 shadow-2xl p-3 space-y-3 z-30 backdrop-blur-md text-xs animate-in fade-in zoom-in-95 duration-150">
                 {/* Playback Speed */}
                 <div>
                   <div className="font-semibold text-zinc-400 mb-1.5 px-1">Tốc độ phát:</div>
-                  <div className="grid grid-cols-3 gap-1">
-                    {[0.75, 1, 1.25, 1.5, 2].map((rate) => (
+                  <div className="grid grid-cols-4 gap-1">
+                    {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((rate) => (
                       <button
                         key={rate}
                         onClick={() => handlePlaybackRateChange(rate)}
-                        className={`px-2 py-1 rounded-md text-center transition-all ${
+                        className={`px-1.5 py-1 rounded-md text-center text-[11px] transition-all ${
                           playbackRate === rate
                             ? "bg-violet-600 text-white font-bold shadow"
                             : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
@@ -608,8 +823,9 @@ export default function CustomHlsPlayer({
             {/* Fullscreen Button */}
             <button
               onClick={toggleFullscreen}
-              className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"
+              className="p-2 min-h-[36px] min-w-[36px] rounded-lg hover:bg-white/10 transition-colors flex items-center justify-center"
               title={isFullscreen ? "Thoát toàn màn hình (F)" : "Toàn màn hình (F)"}
+              aria-label={isFullscreen ? "Thoát toàn màn hình" : "Toàn màn hình"}
             >
               {isFullscreen ? <Minimize className="h-5 w-5" /> : <Maximize className="h-5 w-5" />}
             </button>

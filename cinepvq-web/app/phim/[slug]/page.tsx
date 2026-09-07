@@ -101,6 +101,17 @@ export default function MovieDetailPage() {
   const [copiedLink, setCopiedLink] = useState(false);
   const [nextEpisodeCountdown, setNextEpisodeCountdown] = useState<number | null>(null);
   const [activeChunkIndex, setActiveChunkIndex] = useState<number>(0);
+  const [isWatching, setIsWatching] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      return Boolean(
+        params.get("ep") ||
+        window.location.hash === "#player" ||
+        params.get("watch") === "true"
+      );
+    }
+    return false;
+  });
 
   const playerRef = useRef<HTMLDivElement>(null);
   const lastSavedTimeRef = useRef<number>(0);
@@ -245,6 +256,7 @@ export default function MovieDetailPage() {
   // ─── Select Episode Handler ──────────────────────────────────────────────
   const handleSelectEpisode = useCallback(
     (ep: EpisodeItem, initialSeek = 0) => {
+      setIsWatching(true);
       setNextEpisodeCountdown(null);
       setSelectedEpisodeSlug(ep.slug);
       setCustomResumeTime(initialSeek);
@@ -270,7 +282,9 @@ export default function MovieDetailPage() {
         window.history.replaceState(null, "", url.toString());
       }
 
-      playerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      setTimeout(() => {
+        playerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 150);
     },
     [movie, episodeItems, episodeChunks, addHistory]
   );
@@ -322,13 +336,17 @@ export default function MovieDetailPage() {
 
   // ─── Primary Hero Actions ────────────────────────────────────────────────
   const handleWatchNow = useCallback(() => {
+    setIsWatching(true);
     if (episodeItems.length > 0) {
       handleSelectEpisode(episodeItems[0], 0);
     }
-    playerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setTimeout(() => {
+      playerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 150);
   }, [episodeItems, handleSelectEpisode]);
 
   const handleResumeWatching = useCallback(() => {
+    setIsWatching(true);
     if (savedHistory?.episodeSlug) {
       const ep = episodeItems.find((e) => e.slug === savedHistory.episodeSlug);
       if (ep) {
@@ -337,7 +355,9 @@ export default function MovieDetailPage() {
           savedHistory.currentTime ||
           0;
         handleSelectEpisode(ep, savedTime);
-        playerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+        setTimeout(() => {
+          playerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 150);
         return;
       }
     }
@@ -400,7 +420,7 @@ export default function MovieDetailPage() {
   return (
     <main className="flex-1 pb-20">
       {/* ── 1. Hero Cinematic Banner ── */}
-      <section className="relative w-full min-h-[62vh] max-h-[720px] overflow-hidden bg-zinc-950">
+      <section className="relative w-full min-h-[50vh] overflow-hidden bg-zinc-950">
         {/* Multi-layer Backdrop Image */}
         <div className="absolute inset-0">
           <img
@@ -413,9 +433,9 @@ export default function MovieDetailPage() {
         </div>
 
         {/* Hero Content Container */}
-        <div className="relative z-10 mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-24 pb-12 sm:pt-28 sm:pb-16 flex flex-col md:flex-row items-center md:items-end gap-8">
+        <div className="relative z-10 mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-24 pb-12 sm:pt-28 sm:pb-16 flex flex-col md:flex-row items-center md:items-end gap-6 sm:gap-8">
           {/* Poster Card */}
-          <div className="w-48 sm:w-56 md:w-64 aspect-[2/3] flex-shrink-0 overflow-hidden rounded-2xl shadow-2xl ring-1 ring-white/10 bg-zinc-900 group">
+          <div className="w-44 sm:w-56 md:w-64 aspect-[2/3] flex-shrink-0 overflow-hidden rounded-2xl shadow-2xl ring-1 ring-white/10 bg-zinc-900 group">
             <img
               src={movie.thumb_url || movie.poster_url}
               alt={movie.name}
@@ -489,13 +509,13 @@ export default function MovieDetailPage() {
             </div>
 
             {/* Primary Action Buttons */}
-            <div className="pt-3 flex flex-wrap items-center justify-center md:justify-start gap-3">
+            <div className="pt-3 flex flex-wrap items-center justify-center md:justify-start gap-2.5 sm:gap-3">
               {/* Resume vs Watch Now button */}
               {savedHistory && savedHistory.episodeSlug ? (
                 <>
                   <button
                     onClick={handleResumeWatching}
-                    className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-6 py-3 text-sm font-bold text-white shadow-lg shadow-violet-600/40 hover:bg-violet-500 active:scale-95 transition-all"
+                    className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-5 sm:px-6 py-2.5 sm:py-3 text-xs sm:text-sm font-bold text-white shadow-lg shadow-violet-600/40 hover:bg-violet-500 active:scale-95 transition-all"
                   >
                     <Play className="h-4 w-4 fill-current" />
                     <span>
@@ -512,7 +532,7 @@ export default function MovieDetailPage() {
 
                   <button
                     onClick={handleWatchNow}
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-white/10 hover:bg-white/20 px-4 py-3 text-sm font-medium text-zinc-300 transition-colors"
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-white/10 hover:bg-white/20 px-3.5 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium text-zinc-300 transition-colors"
                   >
                     <RotateCcw className="h-3.5 w-3.5" />
                     <span>Xem từ đầu</span>
@@ -521,7 +541,7 @@ export default function MovieDetailPage() {
               ) : (
                 <button
                   onClick={handleWatchNow}
-                  className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-6 py-3 text-sm font-bold text-white shadow-lg shadow-violet-600/40 hover:bg-violet-500 active:scale-95 transition-all"
+                  className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-5 sm:px-6 py-2.5 sm:py-3 text-xs sm:text-sm font-bold text-white shadow-lg shadow-violet-600/40 hover:bg-violet-500 active:scale-95 transition-all"
                 >
                   <Play className="h-4 w-4 fill-current" />
                   <span>{isMovie ? "Xem phim" : "Xem ngay (Tập 1)"}</span>
@@ -532,21 +552,21 @@ export default function MovieDetailPage() {
               <button
                 type="button"
                 onClick={() => toggleFavorite(movie)}
-                className={`inline-flex items-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold backdrop-blur-md active:scale-95 transition-all ${
+                className={`inline-flex items-center gap-2 rounded-xl px-3.5 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-semibold backdrop-blur-md active:scale-95 transition-all ${
                   favorited
                     ? "bg-rose-600 text-white shadow-lg shadow-rose-600/30"
                     : "bg-white/10 hover:bg-white/20 text-white"
                 }`}
               >
                 <Heart className={`h-4 w-4 ${favorited ? "fill-current" : ""}`} />
-                <span>{favorited ? "Đã yêu thích" : "Thêm yêu thích"}</span>
+                <span>{favorited ? "Đã yêu thích" : "Yêu thích"}</span>
               </button>
 
               {/* Watchlist Button */}
               <button
                 type="button"
                 onClick={() => toggleWatchlist(movie)}
-                className={`inline-flex items-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold backdrop-blur-md active:scale-95 transition-all ${
+                className={`inline-flex items-center gap-2 rounded-xl px-3.5 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-semibold backdrop-blur-md active:scale-95 transition-all ${
                   inWatchlist
                     ? "bg-violet-600 text-white shadow-lg shadow-violet-600/30"
                     : "bg-white/10 hover:bg-white/20 text-white"
@@ -560,7 +580,7 @@ export default function MovieDetailPage() {
               <button
                 onClick={handleShare}
                 aria-label="Chia sẻ phim"
-                className="inline-flex items-center justify-center h-11 w-11 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-colors"
+                className="inline-flex items-center justify-center h-10 w-10 sm:h-11 sm:w-11 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-colors"
                 title={copiedLink ? "Đã sao chép link!" : "Chia sẻ phim"}
               >
                 <Share2 className="h-4 w-4" />
@@ -576,278 +596,410 @@ export default function MovieDetailPage() {
         </div>
       </section>
 
-      {/* ── 2. Video Player & Episode List ── */}
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-8 space-y-10">
-        <section ref={playerRef} className="space-y-4">
-          {/* Player Header Bar */}
-          {currentVideoUrl ? (
-            <div className="space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-3 bg-zinc-100 dark:bg-zinc-900/90 p-3.5 rounded-2xl border border-zinc-200 dark:border-zinc-800">
-                <div className="flex items-center gap-2.5">
-                  <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-600/10 text-violet-600 dark:text-violet-400">
-                    <Tv className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
-                      Đang phát:{" "}
-                      <span className="text-violet-600 dark:text-violet-400">
-                        {isMovie
-                          ? "Bản Full"
-                          : `Tập ${
-                              episodeItems.find((e) => e.slug === activeEpisodeSlug)?.name ||
-                              activeEpisodeSlug.replace("tap-", "")
-                            }`}
-                      </span>
-                    </h3>
-                    <span className="text-[11px] text-zinc-500">
-                      {currentServer?.server_name || "Server chính"}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Next Episode Action Button */}
-                {nextEpisode && (
-                  <button
-                    onClick={() => handleSelectEpisode(nextEpisode, 0)}
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-violet-600/10 hover:bg-violet-600 text-violet-600 hover:text-white dark:text-violet-300 dark:hover:text-white px-3.5 py-1.5 text-xs font-bold transition-all shadow-sm"
-                  >
-                    <span>Tập tiếp theo (Tập {nextEpisode.name})</span>
-                    <ChevronRight className="h-3.5 w-3.5" />
-                  </button>
-                )}
-              </div>
-
-              {/* Multi-Source Video Player */}
-              <VideoPlayer
-                videoUrl={currentVideoUrl}
-                movieSlug={movie.slug || slug}
-                movieTitle={movie.name || movie.original_name}
-                imdbId={movie.imdb_id || undefined}
-                season={currentSeason}
-                episode={
-                  parseInt(
-                    episodeItems.find((e) => e.slug === activeEpisodeSlug)?.name || ""
-                  ) ||
-                  parseInt(activeEpisodeSlug.replace(/\D/g, "")) ||
-                  1
-                }
-                serverName={currentServer?.server_name || "Vietsub"}
-                episodeSlug={activeEpisodeSlug}
-                type={isMovie ? "movie" : "series"}
-                poster={movie.poster_url || movie.thumb_url}
-                initialTime={resumeTime}
-                onTimeUpdate={handleTimeUpdate}
-                onEnded={handleVideoEnded}
-              />
-
-              {/* Auto Next Episode Countdown Notification Banner */}
-              {nextEpisodeCountdown !== null && nextEpisode && (
-                <div className="flex items-center justify-between p-3.5 rounded-xl bg-violet-600/15 border border-violet-500/30 text-xs shadow-md">
-                  <div className="flex items-center gap-2 text-zinc-800 dark:text-zinc-200">
-                    <Clock className="h-4 w-4 text-violet-500 dark:text-violet-400 animate-pulse" />
-                    <span>
-                      Tập tiếp theo (<strong>Tập {nextEpisode.name}</strong>) sẽ tự động phát sau{" "}
-                      <strong className="text-violet-600 dark:text-violet-400 text-sm">
-                        {nextEpisodeCountdown}s
-                      </strong>
-                      ...
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => {
-                        handleSelectEpisode(nextEpisode, 0);
-                        setNextEpisodeCountdown(null);
-                      }}
-                      className="px-3 py-1.5 rounded-lg bg-violet-600 text-white font-bold hover:bg-violet-500 transition-colors shadow"
-                    >
-                      Phát ngay
-                    </button>
-                    <button
-                      onClick={() => setNextEpisodeCountdown(null)}
-                      className="px-2.5 py-1.5 rounded-lg bg-zinc-200 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200 transition-colors"
-                    >
-                      Hủy
-                    </button>
-                  </div>
-                </div>
+      {/* ── 2. Movie Detail Content (STATE 1 vs STATE 2) ── */}
+      {!isWatching ? (
+        /* ── STATE 1: Chưa bấm xem (Thông tin phim trước, KHÔNG mount Player, KHÔNG mount danh sách tập) ── */
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-8 space-y-10">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            {/* Main Area: Synopsis & Cast & Comments */}
+            <div className="lg:col-span-2 space-y-8">
+              {/* Synopsis */}
+              {movie.description && (
+                <section className="rounded-2xl bg-zinc-50 dark:bg-zinc-900/60 p-6 sm:p-8 border border-zinc-200/60 dark:border-zinc-800/60 space-y-3">
+                  <h3 className="text-lg font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+                    <Film className="h-5 w-5 text-violet-500" />
+                    Nội Dung Phim
+                  </h3>
+                  <div
+                    className="prose prose-sm dark:prose-invert max-w-none text-zinc-600 dark:text-zinc-300 leading-relaxed"
+                    dangerouslySetInnerHTML={{ __html: movie.description }}
+                  />
+                </section>
               )}
-            </div>
-          ) : (
-            <div className="relative w-full aspect-video rounded-2xl bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 flex flex-col items-center justify-center gap-3 p-6 text-center shadow-lg">
-              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-violet-600/10 text-violet-600 dark:text-violet-400">
-                <Play className="h-7 w-7 fill-current translate-x-0.5" />
-              </div>
-              <p className="text-sm font-bold text-zinc-800 dark:text-zinc-200">
-                Sẵn sàng phát video
-              </p>
-              <p className="text-xs text-zinc-500 max-w-sm">
-                Bấm nút &ldquo;Xem ngay&rdquo; hoặc chọn một tập phim bên dưới để bắt đầu thưởng thức.
-              </p>
-              <button
-                onClick={handleWatchNow}
-                className="mt-2 inline-flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-2.5 text-xs font-bold text-white shadow-md hover:bg-violet-500 transition-colors"
-              >
-                <Play className="h-3.5 w-3.5 fill-current" />
-                {isMovie ? "Bắt đầu xem" : "Phát tập 1"}
-              </button>
-            </div>
-          )}
 
-          {/* Episode & Season Controls Section */}
-          <div className="rounded-2xl bg-zinc-50 dark:bg-zinc-900/60 p-5 sm:p-6 border border-zinc-200/70 dark:border-zinc-800/70 space-y-5">
-            {/* 1. Franchise Season Selector (if multi-season franchise discovered) */}
-            {franchiseSeasons.length > 1 && (
-              <div className="flex flex-wrap items-center gap-2 pb-3 border-b border-zinc-200/60 dark:border-zinc-800/60">
-                <span className="text-xs font-semibold text-zinc-500 flex items-center gap-1 mr-1">
-                  <Layers className="h-3.5 w-3.5 text-violet-500" />
-                  Mùa phim:
-                </span>
-                {franchiseSeasons.map((fs) => {
-                  const isCurrent = fs.slug === movie.slug;
-                  return (
-                    <Link
-                      key={fs.slug}
-                      href={`/phim/${fs.slug}`}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                        isCurrent
-                          ? "bg-violet-600 text-white shadow-md shadow-violet-600/30"
-                          : "bg-white dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-violet-500/10 hover:text-violet-600 border border-zinc-200 dark:border-zinc-700/80"
-                      }`}
-                    >
-                      {fs.name} {isCurrent && "✓"}
-                    </Link>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* 2. Audio Track / Server selector tabs (Vietsub, Thuyết minh, Lồng tiếng) */}
-            {servers.length > 1 && (
-              <div className="flex flex-wrap items-center gap-2 pb-2">
-                <span className="text-xs font-semibold text-zinc-500 mr-1">
-                  Bản dịch / Nguồn:
-                </span>
-                {servers.map((server, sIdx) => (
-                  <button
-                    key={server.server_name}
-                    onClick={() => {
-                      setActiveServerIndex(sIdx);
-                      // Preserve matching episode in new server
-                      const targetServer = servers[sIdx];
-                      if (targetServer && targetServer.items && activeEpisode) {
-                        const curName = activeEpisode.name;
-                        const curSlug = activeEpisode.slug;
-                        const curNum = parseInt(curName.replace(/\D/g, ""), 10);
-                        const match = targetServer.items.find((e) => {
-                          if (e.slug === curSlug || e.name === curName) return true;
-                          if (e.slug.toLowerCase() === curSlug.toLowerCase()) return true;
-                          const eNum = parseInt(e.name.replace(/\D/g, ""), 10);
-                          return !isNaN(curNum) && !isNaN(eNum) && curNum === eNum;
-                        });
-                        if (match) {
-                          setSelectedEpisodeSlug(match.slug);
-                        }
-                      }
-                    }}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
-                      activeServerIndex === sIdx
-                        ? "bg-violet-600 text-white shadow-md"
-                        : "bg-zinc-200/70 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-300 dark:hover:bg-zinc-700"
-                    }`}
-                  >
-                    {server.server_name}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {/* 3. Episode Selector */}
-            <div>
-              <div className="flex flex-wrap items-center justify-between gap-3 mb-3.5">
-                <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">
-                  <Film className="h-3.5 w-3.5 text-violet-500" />
-                  Danh sách tập ({episodeItems.length} tập)
-                </h4>
-
-                {/* Chunk selector tabs for series with > 30 episodes */}
-                {episodeChunks.length > 1 && (
-                  <div className="flex items-center gap-1.5 overflow-x-auto max-w-full pb-1">
-                    {episodeChunks.map((chunk, cIdx) => (
-                      <button
-                        key={chunk.label}
-                        onClick={() => setActiveChunkIndex(cIdx)}
-                        className={`px-2.5 py-1 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${
-                          activeChunkIndex === cIdx
-                            ? "bg-violet-600/15 text-violet-600 dark:text-violet-400 border border-violet-500/30"
-                            : "bg-zinc-100 dark:bg-zinc-800/80 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
-                        }`}
+              {/* Cast List */}
+              {castList.length > 0 && (
+                <section className="rounded-2xl bg-zinc-50 dark:bg-zinc-900/60 p-6 sm:p-8 border border-zinc-200/60 dark:border-zinc-800/60 space-y-4">
+                  <h3 className="text-lg font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+                    <User className="h-5 w-5 text-violet-500" />
+                    Diễn Viên
+                  </h3>
+                  <div className="flex flex-wrap gap-2.5">
+                    {castList.map((actor) => (
+                      <div
+                        key={actor}
+                        className="flex items-center gap-2 rounded-xl bg-white dark:bg-zinc-800 px-3.5 py-2 border border-zinc-200/60 dark:border-zinc-700/60 text-xs font-medium text-zinc-800 dark:text-zinc-200 shadow-sm"
                       >
-                        {chunk.label}
-                      </button>
+                        <div className="flex h-6 w-6 items-center justify-center rounded-full bg-violet-600/10 text-violet-600 text-[10px] font-bold">
+                          {actor.charAt(0)}
+                        </div>
+                        <span>{actor}</span>
+                      </div>
                     ))}
                   </div>
-                )}
-              </div>
+                </section>
+              )}
 
-              {/* Episode Grid */}
-              <div className="flex flex-wrap gap-2 max-h-72 overflow-y-auto pr-1">
-                {visibleEpisodes.map((ep) => {
-                  const isActive = ep.slug === activeEpisodeSlug;
-                  const watchedSeconds = episodeProgressStore.get(
-                    movie.slug,
-                    ep.slug,
-                    currentSeason
-                  );
+              {/* Comments Component */}
+              <MovieComments movieSlug={movie.slug} />
+            </div>
 
-                  return (
-                    <button
-                      key={ep.slug}
-                      onClick={() => handleSelectEpisode(ep, watchedSeconds || 0)}
-                      className={`
-                        relative min-w-[46px] rounded-xl px-3.5 py-2 text-xs font-bold transition-all
-                        ${
-                          isActive
-                            ? "bg-violet-600 text-white shadow-lg shadow-violet-600/30 scale-105"
-                            : "bg-white dark:bg-zinc-800/80 text-zinc-700 dark:text-zinc-300 hover:bg-violet-500/10 hover:text-violet-600 border border-zinc-200 dark:border-zinc-700/60"
-                        }
-                      `}
-                      title={
-                        watchedSeconds > 0
-                          ? `Đã xem đến ${formatTime(watchedSeconds)}`
-                          : `Tập ${ep.name}`
-                      }
-                    >
-                      {ep.name}
-                      {watchedSeconds > 15 && !isActive && (
-                        <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-zinc-900" />
-                      )}
-                    </button>
-                  );
-                })}
+            {/* Sidebar Area: Detailed Technical Metadata */}
+            <div className="space-y-6">
+              <div className="rounded-2xl bg-zinc-50 dark:bg-zinc-900/60 p-6 border border-zinc-200/60 dark:border-zinc-800/60 space-y-4">
+                <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-100 pb-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center gap-2">
+                  <Sparkles className="h-4 w-4 text-violet-500" />
+                  Thông Tin Chi Tiết
+                </h3>
+
+                <dl className="space-y-3 text-xs">
+                  {movie.director && (
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-zinc-500">Đạo diễn:</dt>
+                      <dd className="font-semibold text-zinc-800 dark:text-zinc-200 text-right">
+                        {movie.director}
+                      </dd>
+                    </div>
+                  )}
+
+                  {parsed.countries.length > 0 && (
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-zinc-500">Quốc gia:</dt>
+                      <dd className="font-semibold text-zinc-800 dark:text-zinc-200 text-right">
+                        {parsed.countries.join(", ")}
+                      </dd>
+                    </div>
+                  )}
+
+                  {parsed.year && (
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-zinc-500">Năm phát hành:</dt>
+                      <dd className="font-semibold text-zinc-800 dark:text-zinc-200">
+                        {parsed.year}
+                      </dd>
+                    </div>
+                  )}
+
+                  {movie.quality && (
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-zinc-500">Chất lượng:</dt>
+                      <dd className="font-semibold text-violet-600 dark:text-violet-400">
+                        {movie.quality}
+                      </dd>
+                    </div>
+                  )}
+
+                  {movie.language && (
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-zinc-500">Ngôn ngữ:</dt>
+                      <dd className="font-semibold text-zinc-800 dark:text-zinc-200">
+                        {movie.language}
+                      </dd>
+                    </div>
+                  )}
+
+                  {movie.time && (
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-zinc-500">Thời lượng:</dt>
+                      <dd className="font-semibold text-zinc-800 dark:text-zinc-200">
+                        {movie.time}
+                      </dd>
+                    </div>
+                  )}
+
+                  {movie.total_episodes ? (
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-zinc-500">Số tập:</dt>
+                      <dd className="font-semibold text-zinc-800 dark:text-zinc-200">
+                        {movie.total_episodes} tập
+                      </dd>
+                    </div>
+                  ) : null}
+
+                  {movie.current_episode && (
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-zinc-500">Tình trạng:</dt>
+                      <dd className="font-semibold text-amber-600 dark:text-amber-400">
+                        {movie.current_episode}
+                      </dd>
+                    </div>
+                  )}
+
+                  {movie.imdb_id && (
+                    <div className="flex justify-between gap-2 pt-2 border-t border-zinc-200/50 dark:border-zinc-800/50">
+                      <dt className="text-zinc-500">IMDb ID:</dt>
+                      <dd className="font-mono font-bold text-amber-500">
+                        {movie.imdb_id}
+                      </dd>
+                    </div>
+                  )}
+                </dl>
               </div>
             </div>
           </div>
-        </section>
 
-        {/* ── 3. Synopsis & Cast & Sidebar ── */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Main Area: Synopsis & Cast & Comments */}
-          <div className="lg:col-span-2 space-y-8">
-            {/* Synopsis */}
-            {movie.description && (
-              <section className="rounded-2xl bg-zinc-50 dark:bg-zinc-900/60 p-6 sm:p-8 border border-zinc-200/60 dark:border-zinc-800/60 space-y-3">
-                <h3 className="text-lg font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
-                  <Film className="h-5 w-5 text-violet-500" />
-                  Nội Dung Phim
-                </h3>
-                <div
-                  className="prose prose-sm dark:prose-invert max-w-none text-zinc-600 dark:text-zinc-300 leading-relaxed"
-                  dangerouslySetInnerHTML={{ __html: movie.description }}
+          {/* Similar Movies */}
+          <SimilarMovies
+            genreName={parsed.genres[0]}
+            currentSlug={movie.slug}
+          />
+        </div>
+      ) : (
+        /* ── STATE 2: Đã bấm xem (Player + Danh sách tập + Diễn viên + Bình luận) ── */
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-8 space-y-10">
+          <section ref={playerRef} className="space-y-4">
+            {/* Player Header Bar */}
+            {currentVideoUrl ? (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3 bg-zinc-100 dark:bg-zinc-900/90 p-3.5 rounded-2xl border border-zinc-200 dark:border-zinc-800">
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-600/10 text-violet-600 dark:text-violet-400">
+                      <Tv className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
+                        Đang phát:{" "}
+                        <span className="text-violet-600 dark:text-violet-400">
+                          {isMovie
+                            ? "Bản Full"
+                            : `Tập ${
+                                episodeItems.find((e) => e.slug === activeEpisodeSlug)?.name ||
+                                activeEpisodeSlug.replace("tap-", "")
+                              }`}
+                        </span>
+                      </h3>
+                      <span className="text-[11px] text-zinc-500">
+                        {currentServer?.server_name || "Server chính"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Next Episode Action Button */}
+                  {nextEpisode && (
+                    <button
+                      onClick={() => handleSelectEpisode(nextEpisode, 0)}
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-violet-600/10 hover:bg-violet-600 text-violet-600 hover:text-white dark:text-violet-300 dark:hover:text-white px-3.5 py-1.5 text-xs font-bold transition-all shadow-sm"
+                    >
+                      <span>Tập tiếp theo (Tập {nextEpisode.name})</span>
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Multi-Source Video Player */}
+                <VideoPlayer
+                  videoUrl={currentVideoUrl}
+                  movieSlug={movie.slug || slug}
+                  movieTitle={movie.name || movie.original_name}
+                  imdbId={movie.imdb_id || undefined}
+                  season={currentSeason}
+                  episode={
+                    parseInt(
+                      episodeItems.find((e) => e.slug === activeEpisodeSlug)?.name || ""
+                    ) ||
+                    parseInt(activeEpisodeSlug.replace(/\D/g, "")) ||
+                    1
+                  }
+                  serverName={currentServer?.server_name || "Vietsub"}
+                  episodeSlug={activeEpisodeSlug}
+                  type={isMovie ? "movie" : "series"}
+                  poster={movie.poster_url || movie.thumb_url}
+                  initialTime={resumeTime}
+                  onTimeUpdate={handleTimeUpdate}
+                  onEnded={handleVideoEnded}
                 />
-              </section>
+
+                {/* Auto Next Episode Countdown Notification Banner */}
+                {nextEpisodeCountdown !== null && nextEpisode && (
+                  <div className="flex items-center justify-between p-3.5 rounded-xl bg-violet-600/15 border border-violet-500/30 text-xs shadow-md">
+                    <div className="flex items-center gap-2 text-zinc-800 dark:text-zinc-200">
+                      <Clock className="h-4 w-4 text-violet-500 dark:text-violet-400 animate-pulse" />
+                      <span>
+                        Tập tiếp theo (<strong>Tập {nextEpisode.name}</strong>) sẽ tự động phát sau{" "}
+                        <strong className="text-violet-600 dark:text-violet-400 text-sm">
+                          {nextEpisodeCountdown}s
+                        </strong>
+                        ...
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          handleSelectEpisode(nextEpisode, 0);
+                          setNextEpisodeCountdown(null);
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-violet-600 text-white font-bold hover:bg-violet-500 transition-colors shadow"
+                      >
+                        Phát ngay
+                      </button>
+                      <button
+                        onClick={() => setNextEpisodeCountdown(null)}
+                        className="px-2.5 py-1.5 rounded-lg bg-zinc-200 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200 transition-colors"
+                      >
+                        Hủy
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="relative w-full aspect-video rounded-2xl bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 flex flex-col items-center justify-center gap-3 p-6 text-center shadow-lg">
+                <div className="flex h-14 w-14 items-center justify-center rounded-full bg-violet-600/10 text-violet-600 dark:text-violet-400">
+                  <Play className="h-7 w-7 fill-current translate-x-0.5" />
+                </div>
+                <p className="text-sm font-bold text-zinc-800 dark:text-zinc-200">
+                  Sẵn sàng phát video
+                </p>
+                <p className="text-xs text-zinc-500 max-w-sm">
+                  Bấm nút &ldquo;Xem ngay&rdquo; hoặc chọn một tập phim bên dưới để bắt đầu thưởng thức.
+                </p>
+                <button
+                  onClick={handleWatchNow}
+                  className="mt-2 inline-flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-2.5 text-xs font-bold text-white shadow-md hover:bg-violet-500 transition-colors"
+                >
+                  <Play className="h-3.5 w-3.5 fill-current" />
+                  {isMovie ? "Bắt đầu xem" : "Phát tập 1"}
+                </button>
+              </div>
             )}
 
+            {/* Episode & Season Controls Section */}
+            <div className="rounded-2xl bg-zinc-50 dark:bg-zinc-900/60 p-5 sm:p-6 border border-zinc-200/70 dark:border-zinc-800/70 space-y-5">
+              {/* 1. Franchise Season Selector (if multi-season franchise discovered) */}
+              {franchiseSeasons.length > 1 && (
+                <div className="flex flex-wrap items-center gap-2 pb-3 border-b border-zinc-200/60 dark:border-zinc-800/60">
+                  <span className="text-xs font-semibold text-zinc-500 flex items-center gap-1 mr-1">
+                    <Layers className="h-3.5 w-3.5 text-violet-500" />
+                    Mùa phim:
+                  </span>
+                  {franchiseSeasons.map((fs) => {
+                    const isCurrent = fs.slug === movie.slug;
+                    return (
+                      <Link
+                        key={fs.slug}
+                        href={`/phim/${fs.slug}`}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                          isCurrent
+                            ? "bg-violet-600 text-white shadow-md shadow-violet-600/30"
+                            : "bg-white dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-violet-500/10 hover:text-violet-600 border border-zinc-200 dark:border-zinc-700/80"
+                        }`}
+                      >
+                        {fs.name} {isCurrent && "✓"}
+                      </Link>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* 2. Audio Track / Server selector tabs (Vietsub, Thuyết minh, Lồng tiếng) */}
+              {servers.length > 1 && (
+                <div className="flex flex-wrap items-center gap-2 pb-2">
+                  <span className="text-xs font-semibold text-zinc-500 mr-1">
+                    Bản dịch / Nguồn:
+                  </span>
+                  {servers.map((server, sIdx) => (
+                    <button
+                      key={server.server_name}
+                      onClick={() => {
+                        setActiveServerIndex(sIdx);
+                        const targetServer = servers[sIdx];
+                        if (targetServer && targetServer.items && activeEpisode) {
+                          const curName = activeEpisode.name;
+                          const curSlug = activeEpisode.slug;
+                          const curNum = parseInt(curName.replace(/\D/g, ""), 10);
+                          const match = targetServer.items.find((e) => {
+                            if (e.slug === curSlug || e.name === curName) return true;
+                            if (e.slug.toLowerCase() === curSlug.toLowerCase()) return true;
+                            const eNum = parseInt(e.name.replace(/\D/g, ""), 10);
+                            return !isNaN(curNum) && !isNaN(eNum) && curNum === eNum;
+                          });
+                          if (match) {
+                            setSelectedEpisodeSlug(match.slug);
+                          }
+                        }
+                      }}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+                        activeServerIndex === sIdx
+                          ? "bg-violet-600 text-white shadow-md"
+                          : "bg-zinc-200/70 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-300 dark:hover:bg-zinc-700"
+                      }`}
+                    >
+                      {server.server_name}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* 3. Episode Grid Section */}
+              <div className="space-y-3 pt-2 border-t border-zinc-200/60 dark:border-zinc-800/60">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">
+                    <Film className="h-3.5 w-3.5 text-violet-500" />
+                    Danh sách tập ({episodeItems.length} tập)
+                  </h4>
+
+                  {/* Chunk selector tabs for series with > 30 episodes */}
+                  {episodeChunks.length > 1 && (
+                    <div className="flex items-center gap-1.5 overflow-x-auto max-w-full pb-1">
+                      {episodeChunks.map((chunk, cIdx) => (
+                        <button
+                          key={chunk.label}
+                          onClick={() => setActiveChunkIndex(cIdx)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${
+                            activeChunkIndex === cIdx
+                              ? "bg-violet-600/15 text-violet-600 dark:text-violet-400 border border-violet-500/30"
+                              : "bg-zinc-100 dark:bg-zinc-800/80 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
+                          }`}
+                        >
+                          {chunk.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Episode Grid */}
+                <div className="flex flex-wrap gap-2 max-h-72 overflow-y-auto pr-1">
+                  {visibleEpisodes.map((ep) => {
+                    const isActive = ep.slug === activeEpisodeSlug;
+                    const watchedSeconds = episodeProgressStore.get(
+                      movie.slug,
+                      ep.slug,
+                      currentSeason
+                    );
+
+                    return (
+                      <button
+                        key={ep.slug}
+                        onClick={() => handleSelectEpisode(ep, watchedSeconds || 0)}
+                        className={`
+                          relative min-w-[46px] rounded-xl px-3.5 py-2 text-xs font-bold transition-all
+                          ${
+                            isActive
+                              ? "bg-violet-600 text-white shadow-lg shadow-violet-600/30 scale-105"
+                              : "bg-white dark:bg-zinc-800/80 text-zinc-700 dark:text-zinc-300 hover:bg-violet-500/10 hover:text-violet-600 border border-zinc-200 dark:border-zinc-700/60"
+                          }
+                        `}
+                        title={
+                          watchedSeconds > 0
+                            ? `Đã xem đến ${formatTime(watchedSeconds)}`
+                            : `Tập ${ep.name}`
+                        }
+                      >
+                        {ep.name}
+                        {watchedSeconds > 15 && !isActive && (
+                          <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-zinc-900" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* In State 2: Actors, Comments and Similar Movies */}
+          <div className="space-y-8">
             {/* Cast List */}
             {castList.length > 0 && (
               <section className="rounded-2xl bg-zinc-50 dark:bg-zinc-900/60 p-6 sm:p-8 border border-zinc-200/60 dark:border-zinc-800/60 space-y-4">
@@ -873,108 +1025,15 @@ export default function MovieDetailPage() {
 
             {/* Comments Component */}
             <MovieComments movieSlug={movie.slug} />
-          </div>
 
-          {/* Sidebar Area: Detailed Technical Metadata */}
-          <div className="space-y-6">
-            <div className="rounded-2xl bg-zinc-50 dark:bg-zinc-900/60 p-6 border border-zinc-200/60 dark:border-zinc-800/60 space-y-4">
-              <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-100 pb-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center gap-2">
-                <Sparkles className="h-4 w-4 text-violet-500" />
-                Thông Tin Chi Tiết
-              </h3>
-
-              <dl className="space-y-3 text-xs">
-                {movie.director && (
-                  <div className="flex justify-between gap-2">
-                    <dt className="text-zinc-500">Đạo diễn:</dt>
-                    <dd className="font-semibold text-zinc-800 dark:text-zinc-200 text-right">
-                      {movie.director}
-                    </dd>
-                  </div>
-                )}
-
-                {parsed.countries.length > 0 && (
-                  <div className="flex justify-between gap-2">
-                    <dt className="text-zinc-500">Quốc gia:</dt>
-                    <dd className="font-semibold text-zinc-800 dark:text-zinc-200 text-right">
-                      {parsed.countries.join(", ")}
-                    </dd>
-                  </div>
-                )}
-
-                {parsed.year && (
-                  <div className="flex justify-between gap-2">
-                    <dt className="text-zinc-500">Năm phát hành:</dt>
-                    <dd className="font-semibold text-zinc-800 dark:text-zinc-200">
-                      {parsed.year}
-                    </dd>
-                  </div>
-                )}
-
-                {movie.quality && (
-                  <div className="flex justify-between gap-2">
-                    <dt className="text-zinc-500">Chất lượng:</dt>
-                    <dd className="font-semibold text-violet-600 dark:text-violet-400">
-                      {movie.quality}
-                    </dd>
-                  </div>
-                )}
-
-                {movie.language && (
-                  <div className="flex justify-between gap-2">
-                    <dt className="text-zinc-500">Ngôn ngữ:</dt>
-                    <dd className="font-semibold text-zinc-800 dark:text-zinc-200">
-                      {movie.language}
-                    </dd>
-                  </div>
-                )}
-
-                {movie.time && (
-                  <div className="flex justify-between gap-2">
-                    <dt className="text-zinc-500">Thời lượng:</dt>
-                    <dd className="font-semibold text-zinc-800 dark:text-zinc-200">
-                      {movie.time}
-                    </dd>
-                  </div>
-                )}
-
-                {movie.total_episodes ? (
-                  <div className="flex justify-between gap-2">
-                    <dt className="text-zinc-500">Số tập:</dt>
-                    <dd className="font-semibold text-zinc-800 dark:text-zinc-200">
-                      {movie.total_episodes} tập
-                    </dd>
-                  </div>
-                ) : null}
-
-                {movie.current_episode && (
-                  <div className="flex justify-between gap-2">
-                    <dt className="text-zinc-500">Tình trạng:</dt>
-                    <dd className="font-semibold text-amber-600 dark:text-amber-400">
-                      {movie.current_episode}
-                    </dd>
-                  </div>
-                )}
-
-                {movie.imdb_id && (
-                  <div className="flex justify-between gap-2 pt-2 border-t border-zinc-200/50 dark:border-zinc-800/50">
-                    <dt className="text-zinc-500">IMDb ID:</dt>
-                    <dd className="font-mono font-bold text-amber-500">
-                      {movie.imdb_id}
-                    </dd>
-                  </div>
-                )}
-              </dl>
-            </div>
+            {/* Similar Movies */}
+            <SimilarMovies
+              genreName={parsed.genres[0]}
+              currentSlug={movie.slug}
+            />
           </div>
         </div>
-
-        {/* ── 4. Similar Movies (Clean Taxonomy Mapping) ── */}
-        <SimilarMovies
-          genreName={parsed.genres[0]}
-          currentSlug={movie.slug}
-        />
-      </div>
+      )}
     </main>
   );
 }

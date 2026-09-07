@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useTheme } from "next-themes";
 import { useUserStore } from "@/hooks/useUserStore";
+import type { AppSettings } from "@/types/movie";
 import {
   Settings as SettingsIcon,
   Sun,
@@ -13,6 +14,8 @@ import {
   Tv,
   Cloud,
   LogIn,
+  Gauge,
+  Layers,
 } from "lucide-react";
 
 export default function SettingsPage() {
@@ -95,7 +98,7 @@ export default function SettingsPage() {
               Trải Nghiệm Phát Video
             </h2>
             <p className="text-xs text-zinc-500">
-              Thiết lập hành vi phát video tự động và chất lượng truyền phát mặc định.
+              Thiết lập hành vi phát video tự động, tốc độ phát và máy chủ phát mặc định.
             </p>
           </div>
 
@@ -128,6 +131,74 @@ export default function SettingsPage() {
                 <option value="auto">Tự động (Khuyên dùng)</option>
                 <option value="HD">HD (720p)</option>
                 <option value="FHD">Full HD (1080p)</option>
+              </select>
+            </div>
+
+            {/* Default Playback Speed */}
+            <div className="pt-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-600">
+                  <Gauge className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="text-xs sm:text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                    Tốc độ phát mặc định
+                  </h3>
+                  <p className="text-[11px] text-zinc-500">
+                    Tự động áp dụng tốc độ này mỗi khi bạn bắt đầu xem video.
+                  </p>
+                </div>
+              </div>
+
+              <select
+                value={settings.playbackSpeed || 1}
+                onChange={(e) =>
+                  updateSettings({
+                    playbackSpeed: parseFloat(e.target.value) || 1,
+                  })
+                }
+                className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-1.5 text-xs text-zinc-900 dark:text-zinc-100 font-medium outline-none cursor-pointer"
+              >
+                <option value="0.5">0.5x</option>
+                <option value="0.75">0.75x</option>
+                <option value="1">1x (Mặc định)</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="1.75">1.75x</option>
+                <option value="2">2x</option>
+              </select>
+            </div>
+
+            {/* Default Playback Source */}
+            <div className="pt-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-500/10 text-amber-600">
+                  <Layers className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="text-xs sm:text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                    Nguồn phát mặc định
+                  </h3>
+                  <p className="text-[11px] text-zinc-500">
+                    Ưu tiên thử nguồn này trước; nếu lỗi sẽ tự động fallback sang nguồn khác.
+                  </p>
+                </div>
+              </div>
+
+              <select
+                value={settings.preferredSource || "auto"}
+                onChange={(e) =>
+                  updateSettings({
+                    preferredSource: e.target.value as AppSettings["preferredSource"],
+                  })
+                }
+                className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-1.5 text-xs text-zinc-900 dark:text-zinc-100 font-medium outline-none cursor-pointer"
+              >
+                <option value="auto">Tự động (Khuyên dùng)</option>
+                <option value="k20">K20 Direct HLS</option>
+                <option value="vsmov">VSMOV Stream</option>
+                <option value="kkphim">KKPhim1 Direct</option>
+                <option value="nguonc">NguonC (StreamC)</option>
               </select>
             </div>
 

@@ -37,13 +37,15 @@ export default function UserMenu() {
   // Guest (Not logged in) state -> Show "Đăng nhập"
   if (!user) {
     return (
-      <div className="flex items-center gap-2">
+      <div className="flex items-center">
         <Link
           href="/dang-nhap"
-          className="flex items-center gap-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 px-3.5 py-1.5 text-xs font-bold text-white shadow-md shadow-violet-600/25 active:scale-95 transition-all"
+          aria-label="Đăng nhập tài khoản"
+          title="Đăng nhập"
+          className="flex h-9 w-9 sm:h-auto sm:w-auto items-center justify-center sm:justify-start gap-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 sm:px-3.5 sm:py-1.5 text-xs font-bold text-white shadow-md shadow-violet-600/25 active:scale-95 transition-all"
         >
-          <LogIn className="h-3.5 w-3.5" />
-          <span>Đăng nhập</span>
+          <LogIn className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
+          <span className="hidden sm:inline">Đăng nhập</span>
         </Link>
       </div>
     );

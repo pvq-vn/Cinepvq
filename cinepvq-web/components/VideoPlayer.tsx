@@ -7,6 +7,7 @@ import {
   type VideoSourceId,
 } from "@/services/videoSources";
 import CustomHlsPlayer from "@/components/CustomHlsPlayer";
+import { useUserStore } from "@/hooks/useUserStore";
 import {
   Sparkles,
   ShieldAlert,
@@ -49,6 +50,7 @@ export default function VideoPlayer({
   onTimeUpdate,
   onEnded,
 }: VideoPlayerProps) {
+  const { settings } = useUserStore();
   const [sources, setSources] = useState<ResolvedSource[]>([]);
   const [resolvedKey, setResolvedKey] = useState<string | null>(null);
   const [activeSourceId, setActiveSourceId] = useState<VideoSourceId | null>(null);
@@ -153,9 +155,19 @@ export default function VideoPlayer({
         setFailedSourceIds(new Set());
         setResolvedKey(episodeKey);
 
-        // Select the highest priority available source
+        // Select preferred source if specified and available, otherwise fallback to highest priority
         if (finalList.length > 0) {
-          setActiveSourceId(finalList[0].sourceId);
+          const pref = settings?.preferredSource;
+          const preferredMatch =
+            pref && pref !== "auto"
+              ? finalList.find((s) => s.sourceId === pref && s.isAvailable)
+              : null;
+
+          if (preferredMatch) {
+            setActiveSourceId(preferredMatch.sourceId);
+          } else {
+            setActiveSourceId(finalList[0].sourceId);
+          }
         }
       })
       .catch((err) => {
@@ -193,7 +205,20 @@ export default function VideoPlayer({
     return () => {
       isCancelled = true;
     };
-  }, [episodeKey, movieSlug, imdbId, tmdbId, movieTitle, season, episode, type, serverName, episodeSlug, videoUrl]);
+  }, [
+    episodeKey,
+    movieSlug,
+    imdbId,
+    tmdbId,
+    movieTitle,
+    season,
+    episode,
+    type,
+    serverName,
+    episodeSlug,
+    videoUrl,
+    settings?.preferredSource,
+  ]);
 
   // Find active source object
   const activeSource = sources.find((s) => s.sourceId === activeSourceId) || null;
@@ -370,6 +395,7 @@ export default function VideoPlayer({
           src={activeSource.url}
           poster={poster}
           initialTime={resumeTime}
+          initialPlaybackRate={settings?.playbackSpeed || 1}
           onTimeUpdate={handleTimeUpdate}
           onEnded={onEnded}
           onError={handleFatalError}

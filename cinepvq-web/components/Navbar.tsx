@@ -97,7 +97,6 @@ export default function Navbar() {
     setTheme(resolvedTheme === "dark" ? "light" : "dark");
 
   const navLinks = [
-    { label: "Trang chủ", href: "/" },
     { label: "Phim bộ", href: "/phim-bo" },
     { label: "Phim lẻ", href: "/phim-le" },
     { label: "Hoạt hình", href: "/hoat-hinh" },
@@ -117,17 +116,19 @@ export default function Navbar() {
           }
         `}
       >
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="flex h-16 items-center justify-between gap-2">
-            {/* ── Logo ── */}
+        <div className="mx-auto max-w-7xl px-3 sm:px-6 lg:px-8">
+          <div className="flex h-16 items-center justify-between gap-1.5 sm:gap-2">
+            {/* ── Logo (Trang chủ) ── */}
             <Link
               href="/"
-              className="group flex items-center gap-2.5 flex-shrink-0"
+              aria-label="Trang chủ Cinépvq"
+              title="Trang chủ Cinépvq"
+              className="group flex items-center gap-2 sm:gap-2.5 flex-shrink-0"
             >
               <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-violet-600 via-indigo-600 to-purple-700 shadow-md shadow-violet-500/25 transition-transform duration-300 group-hover:scale-105">
                 <Film className="h-5 w-5 text-white" />
               </div>
-              <span className="text-xl font-extrabold tracking-tight bg-gradient-to-r from-violet-500 via-indigo-400 to-purple-400 bg-clip-text text-transparent">
+              <span className="text-lg sm:text-xl font-extrabold tracking-tight bg-gradient-to-r from-violet-500 via-indigo-400 to-purple-400 bg-clip-text text-transparent">
                 Cinépvq
               </span>
             </Link>
@@ -278,13 +279,13 @@ export default function Navbar() {
             </nav>
 
             {/* ── Right action buttons ── */}
-            <div className="flex items-center gap-1.5 sm:gap-2">
+            <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
               {/* Search button trigger */}
               <button
                 onClick={() => setSearchModalOpen(true)}
                 aria-label="Tìm kiếm phim"
                 className={`
-                  flex items-center gap-2 rounded-xl px-3 py-1.5 text-xs font-medium transition-colors
+                  flex items-center gap-2 rounded-xl px-2.5 sm:px-3 py-1.5 text-xs font-medium transition-colors
                   ${
                     scrolled
                       ? "bg-zinc-100/80 dark:bg-zinc-900/80 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-800 ring-1 ring-zinc-200/50 dark:ring-zinc-800/50"
@@ -324,7 +325,7 @@ export default function Navbar() {
                 href="/cai-dat"
                 aria-label="Cài đặt hệ thống"
                 className={`
-                  flex h-9 w-9 items-center justify-center rounded-lg transition-colors
+                  hidden sm:flex h-9 w-9 items-center justify-center rounded-lg transition-colors
                   ${
                     scrolled
                       ? "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 hover:text-zinc-900 dark:hover:text-white"
@@ -367,7 +368,7 @@ export default function Navbar() {
                 onClick={() => setMobileOpen((prev) => !prev)}
                 aria-label={mobileOpen ? "Đóng menu" : "Mở menu"}
                 className={`
-                  flex xl:hidden h-9 w-9 items-center justify-center rounded-lg transition-colors
+                  flex xl:hidden h-9 w-9 items-center justify-center rounded-lg transition-colors shrink-0
                   ${
                     scrolled
                       ? "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 hover:text-zinc-900 dark:hover:text-white"

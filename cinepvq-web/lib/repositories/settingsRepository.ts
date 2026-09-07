@@ -13,6 +13,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoPlay: true,
   soundEnabled: true,
   preferredQuality: "auto",
+  playbackSpeed: 1,
+  preferredSource: "auto",
 };
 
 export const settingsRepository = {
@@ -50,30 +52,76 @@ export const settingsRepository = {
       merged.preferredQuality === "HD" || merged.preferredQuality === "FHD"
         ? merged.preferredQuality
         : "auto";
+    const cleanSpeed =
+      typeof merged.playbackSpeed === "number" && merged.playbackSpeed > 0
+        ? merged.playbackSpeed
+        : 1;
+    const cleanSource =
+      merged.preferredSource &&
+      ["auto", "k20", "vsmov", "kkphim", "nguonc"].includes(merged.preferredSource)
+        ? merged.preferredSource
+        : "auto";
 
-    const res = await query<UserSettingsRow>(
-      `INSERT INTO user_settings (user_id, theme, autoplay, sound_enabled, preferred_quality, updated_at)
-       VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
-       ON CONFLICT (user_id) DO UPDATE SET
-         theme = EXCLUDED.theme,
-         autoplay = EXCLUDED.autoplay,
-         sound_enabled = EXCLUDED.sound_enabled,
-         preferred_quality = EXCLUDED.preferred_quality,
-         updated_at = CURRENT_TIMESTAMP
-       RETURNING *;`,
-      [
-        realUserId,
-        cleanTheme,
-        Boolean(merged.autoPlay),
-        Boolean(merged.soundEnabled),
-        cleanQuality,
-      ]
-    );
+    try {
+      const res = await query<UserSettingsRow>(
+        `INSERT INTO user_settings (user_id, theme, autoplay, sound_enabled, preferred_quality, playback_speed, preferred_source, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
+         ON CONFLICT (user_id) DO UPDATE SET
+           theme = EXCLUDED.theme,
+           autoplay = EXCLUDED.autoplay,
+           sound_enabled = EXCLUDED.sound_enabled,
+           preferred_quality = EXCLUDED.preferred_quality,
+           playback_speed = EXCLUDED.playback_speed,
+           preferred_source = EXCLUDED.preferred_source,
+           updated_at = CURRENT_TIMESTAMP
+         RETURNING *;`,
+        [
+          realUserId,
+          cleanTheme,
+          Boolean(merged.autoPlay),
+          Boolean(merged.soundEnabled),
+          cleanQuality,
+          cleanSpeed,
+          cleanSource,
+        ]
+      );
 
-    if (!res || res.rows.length === 0) {
-      return merged;
+      if (res && res.rows.length > 0) {
+        return mapSettingsRowToAppSettings(res.rows[0]);
+      }
+    } catch (err) {
+      console.warn(
+        "[SettingsRepository] Upsert with playback_speed/preferred_source failed, trying legacy query",
+        err
+      );
+      const res = await query<UserSettingsRow>(
+        `INSERT INTO user_settings (user_id, theme, autoplay, sound_enabled, preferred_quality, updated_at)
+         VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+         ON CONFLICT (user_id) DO UPDATE SET
+           theme = EXCLUDED.theme,
+           autoplay = EXCLUDED.autoplay,
+           sound_enabled = EXCLUDED.sound_enabled,
+           preferred_quality = EXCLUDED.preferred_quality,
+           updated_at = CURRENT_TIMESTAMP
+         RETURNING *;`,
+        [
+          realUserId,
+          cleanTheme,
+          Boolean(merged.autoPlay),
+          Boolean(merged.soundEnabled),
+          cleanQuality,
+        ]
+      );
+
+      if (res && res.rows.length > 0) {
+        return {
+          ...mapSettingsRowToAppSettings(res.rows[0]),
+          playbackSpeed: cleanSpeed,
+          preferredSource: cleanSource,
+        };
+      }
     }
 
-    return mapSettingsRowToAppSettings(res.rows[0]);
+    return merged;
   },
 };

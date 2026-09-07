@@ -218,4 +218,6 @@ export interface AppSettings {
   autoPlay: boolean;
   soundEnabled: boolean;
   preferredQuality: "auto" | "HD" | "FHD";
+  playbackSpeed?: number;
+  preferredSource?: "auto" | "k20" | "vsmov" | "kkphim" | "nguonc";
 }

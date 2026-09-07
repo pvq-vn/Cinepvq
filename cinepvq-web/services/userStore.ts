@@ -29,6 +29,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoPlay: true,
   soundEnabled: true,
   preferredQuality: "auto",
+  playbackSpeed: 1,
+  preferredSource: "auto",
 };
 
 // Initial welcome notifications
@@ -701,6 +703,9 @@ if (typeof window !== "undefined") {
         migrateGuestDataToUser(user.id);
         migrateLegacyStorageIfNeeded(user.id, user.email);
         window.dispatchEvent(new Event("cinepvq_storage_update"));
+        if (isBrowser()) {
+          import("@/services/userSyncManager").then((m) => m.userSyncManager.sync()).catch(() => {});
+        }
       }
     }).catch((err) => {
       console.warn("[AuthStore] Failed to restore session", err);
@@ -730,6 +735,7 @@ if (typeof window !== "undefined") {
           migrateLegacyStorageIfNeeded(user.id, user.email);
           if (isBrowser()) {
             window.dispatchEvent(new Event("cinepvq_storage_update"));
+            import("@/services/userSyncManager").then((m) => m.userSyncManager.sync()).catch(() => {});
           }
         }
       }
