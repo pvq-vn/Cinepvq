@@ -386,14 +386,16 @@ export default function CustomHlsPlayer({
     triggerControls();
   };
 
-  // 9. Touch Gestures (Volume on Right Half, Brightness on Left Half)
+  // 9. Touch Gestures & Mobile Central Tap-to-Play/Pause
   const touchState = useRef<{
     startX: number;
     startY: number;
+    startTime: number;
     startVal: number;
     mode: "volume" | "brightness";
     active: boolean;
   } | null>(null);
+  const lastTouchEndTime = useRef<number>(0);
 
   const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
@@ -409,6 +411,7 @@ export default function CustomHlsPlayer({
     touchState.current = {
       startX: touch.clientX,
       startY: touch.clientY,
+      startTime: Date.now(),
       startVal: isRightSide ? volume : brightness,
       mode: isRightSide ? "volume" : "brightness",
       active: false,
@@ -451,8 +454,66 @@ export default function CustomHlsPlayer({
     }
   };
 
-  const handleTouchEnd = () => {
+  const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    lastTouchEndTime.current = Date.now();
+
+    if (!touchState.current) return;
+
+    // If swipe was active (volume/brightness adjustment), do not trigger tap
+    if (touchState.current.active) {
+      touchState.current = null;
+      return;
+    }
+
+    // Determine if gesture is a clean TAP
+    const changedTouch = e.changedTouches?.[0];
+    const endX = changedTouch ? changedTouch.clientX : touchState.current.startX;
+    const endY = changedTouch ? changedTouch.clientY : touchState.current.startY;
+    const deltaX = endX - touchState.current.startX;
+    const deltaY = endY - touchState.current.startY;
+    const dist = Math.hypot(deltaX, deltaY);
+    const elapsed = Date.now() - touchState.current.startTime;
+
+    const isTap = dist <= 15 && elapsed <= 500;
+    const startX = touchState.current.startX;
+    const startY = touchState.current.startY;
     touchState.current = null;
+
+    if (!isTap) return;
+
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    // Relative position in player container (0.0 to 1.0)
+    const relX = (startX - rect.left) / rect.width;
+    const relY = (startY - rect.top) / rect.height;
+
+    // Central Tap Zone: 50% width (0.25 to 0.75) and 48% height (0.26 to 0.74)
+    const isCentralZone = relX >= 0.25 && relX <= 0.75 && relY >= 0.26 && relY <= 0.74;
+
+    if (isCentralZone) {
+      // Tap in Central Zone: Toggle Play/Pause
+      togglePlay();
+      triggerControls();
+    } else {
+      // Tap outside Central Zone: Toggle controls visibility; DO NOT interrupt playback
+      if (showControls) {
+        setShowControls(false);
+        setShowSettings(false);
+        if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
+      } else {
+        triggerControls();
+      }
+    }
+  };
+
+  const handleVideoClick = () => {
+    // Suppress synthetic click event triggered by touch interactions on mobile
+    if (Date.now() - lastTouchEndTime.current < 600) {
+      return;
+    }
+    // Desktop mouse click: toggle play/pause
+    togglePlay();
   };
 
   // 10. Keyboard Shortcuts
@@ -542,7 +603,7 @@ export default function CustomHlsPlayer({
         ref={videoRef}
         poster={poster}
         playsInline
-        onClick={togglePlay}
+        onClick={handleVideoClick}
         onPlay={() => {
           setIsPlaying(true);
           setIsBuffering(false);
@@ -557,6 +618,13 @@ export default function CustomHlsPlayer({
           onEnded?.();
         }}
         className="w-full h-full object-contain cursor-pointer"
+      />
+
+      {/* Central Tap Zone Hitbox for Mobile (50% width, 48% height) */}
+      <div
+        data-testid="central-tap-zone"
+        className="absolute inset-0 m-auto w-1/2 h-[48%] pointer-events-none z-[8]"
+        aria-hidden="true"
       />
 
       {/* Brightness Filter Overlay (Hardware/Eye-comfort simulation) */}
