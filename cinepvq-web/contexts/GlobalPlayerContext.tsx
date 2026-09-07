@@ -44,11 +44,13 @@ interface GlobalPlayerContextType {
   session: GlobalPlayerSession | null;
   mode: GlobalPlayerMode;
   isPlaying: boolean;
+  isNativePip: boolean;
   currentTime: number;
   duration: number;
-  playerContainerRef: React.RefObject<HTMLDivElement | null>;
   videoRef: React.RefObject<HTMLVideoElement | null>;
   episodeHandlers: EpisodeHandlers;
+  /** Incremented each time restoreToDetail is called — page.tsx watches this to scroll to player */
+  expandScrollTrigger: number;
   startPlayback: (session: GlobalPlayerSession) => void;
   setMode: (mode: GlobalPlayerMode) => void;
   closeMiniPlayer: () => void;
@@ -72,11 +74,14 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   const [session, setSession] = useState<GlobalPlayerSession | null>(null);
   const [mode, setMode] = useState<GlobalPlayerMode>("hidden");
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isNativePip, setIsNativePip] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [episodeHandlers, setEpisodeHandlers] = useState<EpisodeHandlers>({});
+  // Incremented each time user expands mini player — page.tsx watches this to scroll to player
+  const [expandScrollTrigger, setExpandScrollTrigger] = useState(0);
 
-  const playerContainerRef = useRef<HTMLDivElement | null>(null);
+  const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const lastPathnameRef = useRef<string>(pathname);
   const lastSavedTimeRef = useRef<number>(0);
@@ -87,10 +92,53 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
 
   const registerVideoElement = useCallback((el: HTMLVideoElement | null) => {
     videoRef.current = el;
+    setVideoElement(el);
     if (el) {
       setIsPlaying(!el.paused && !el.ended);
+      setIsNativePip(Boolean(typeof document !== "undefined" && document.pictureInPictureElement === el));
+    } else {
+      setIsNativePip(false);
     }
   }, []);
+
+  // Synchronize native PiP lifecycle events
+  useEffect(() => {
+    const video = videoElement;
+    if (!video) return;
+
+    const onEnterPip = () => {
+      setIsNativePip(true);
+    };
+
+    const onLeavePip = () => {
+      setIsNativePip(false);
+      // When leaving native PiP:
+      // If currently on movie detail page: restore detail mode & trigger scroll
+      // If on other pages: restore mini mode if video is playing, or hidden if paused
+      if (typeof window !== "undefined") {
+        const curPath = window.location.pathname;
+        if (session) {
+          const movieDetailPath = `/phim/${session.movieSlug}`;
+          if (curPath === movieDetailPath) {
+            setMode("detail");
+            setExpandScrollTrigger((n) => n + 1);
+          } else if (!video.paused && !video.ended) {
+            setMode("mini");
+          } else {
+            setMode("hidden");
+          }
+        }
+      }
+    };
+
+    video.addEventListener("enterpictureinpicture", onEnterPip);
+    video.addEventListener("leavepictureinpicture", onLeavePip);
+
+    return () => {
+      video.removeEventListener("enterpictureinpicture", onEnterPip);
+      video.removeEventListener("leavepictureinpicture", onLeavePip);
+    };
+  }, [videoElement, session]);
 
   const registerEpisodeHandlers = useCallback((handlers: EpisodeHandlers) => {
     setEpisodeHandlers(handlers);
@@ -182,9 +230,11 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     if (!session) return;
     const epSlug = session.episodeSlug;
     const targetUrl = epSlug
-      ? `/phim/${session.movieSlug}?ep=${epSlug}`
-      : `/phim/${session.movieSlug}`;
+      ? `/phim/${session.movieSlug}?ep=${epSlug}&watch=true`
+      : `/phim/${session.movieSlug}?watch=true`;
     setMode("detail");
+    // Signal page.tsx to scroll to player once it renders in detail mode
+    setExpandScrollTrigger((n) => n + 1);
     router.push(targetUrl);
   }, [session, router]);
 
@@ -225,11 +275,12 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         session,
         mode,
         isPlaying,
+        isNativePip,
         currentTime,
         duration,
-        playerContainerRef,
         videoRef,
         episodeHandlers,
+        expandScrollTrigger,
         startPlayback,
         setMode,
         closeMiniPlayer,

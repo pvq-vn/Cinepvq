@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import Hls from "hls.js";
 import {
   Play,
@@ -42,6 +43,7 @@ export interface CustomHlsPlayerProps {
   onError?: (error: string) => void;
   onPlayingChange?: (playing: boolean) => void;
   onVideoRef?: (el: HTMLVideoElement | null) => void;
+  isMini?: boolean;
 }
 
 interface QualityLevel {
@@ -116,6 +118,7 @@ export default function CustomHlsPlayer({
   onError,
   onPlayingChange,
   onVideoRef,
+  isMini = false,
 }: CustomHlsPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -146,6 +149,54 @@ export default function CustomHlsPlayer({
   const [isBuffering, setIsBuffering] = useState(true);
   const [showControls, setShowControls] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  const settingsBtnRef = useRef<HTMLButtonElement>(null);
+  const settingsMenuRef = useRef<HTMLDivElement>(null);
+  const [settingsCoords, setSettingsCoords] = useState<{ bottom: number; right: number }>({
+    bottom: 60,
+    right: 16,
+  });
+
+  const updateSettingsCoords = useCallback(() => {
+    if (typeof window === "undefined" || !settingsBtnRef.current) return;
+    const rect = settingsBtnRef.current.getBoundingClientRect();
+    const bottom = Math.max(8, window.innerHeight - rect.top + 8);
+    const right = Math.max(8, window.innerWidth - rect.right);
+    setSettingsCoords({ bottom, right });
+  }, []);
+
+  // Sync coords and handle outside clicks for settings dropdown menu
+  useEffect(() => {
+    if (!showSettings) return;
+    updateSettingsCoords();
+
+    const onScrollOrResize = () => {
+      updateSettingsCoords();
+    };
+
+    const handleClickOutside = (e: MouseEvent | TouchEvent) => {
+      const target = e.target as HTMLElement;
+      if (
+        settingsBtnRef.current?.contains(target) ||
+        settingsMenuRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setShowSettings(false);
+    };
+
+    window.addEventListener("scroll", onScrollOrResize, { passive: true });
+    window.addEventListener("resize", onScrollOrResize, { passive: true });
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("touchstart", handleClickOutside, { passive: true });
+
+    return () => {
+      window.removeEventListener("scroll", onScrollOrResize);
+      window.removeEventListener("resize", onScrollOrResize);
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("touchstart", handleClickOutside);
+    };
+  }, [showSettings, updateSettingsCoords]);
+
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Player Lock state
@@ -206,13 +257,14 @@ export default function CustomHlsPlayer({
 
   // Reset controls timer on user activity
   const triggerControls = useCallback(() => {
+    if (isMini) return;
     setShowControls(true);
     if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
     hideControlsTimer.current = setTimeout(() => {
       setShowControls(false);
       setShowSettings(false);
     }, 3000);
-  }, []);
+  }, [isMini]);
 
   const onErrorRef = useRef(onError);
   useEffect(() => {
@@ -221,6 +273,30 @@ export default function CustomHlsPlayer({
 
   const initialTimeRef = useRef(initialTime);
   const initialTimeAppliedRef = useRef(false);
+
+  const playbackRateRef = useRef(playbackRate);
+  useEffect(() => {
+    playbackRateRef.current = playbackRate;
+    if (videoRef.current) {
+      videoRef.current.playbackRate = playbackRate;
+    }
+  }, [playbackRate]);
+
+  const preferredQualityRef = useRef(preferredQuality);
+  useEffect(() => {
+    preferredQualityRef.current = preferredQuality;
+    // Dynamic quality change: if HLS is active, switch level seamlessly without recreate
+    if (hlsRef.current && qualityLevels.length > 0) {
+      const targetQualityIdx = selectQualityLevel(qualityLevels, preferredQuality);
+      hlsRef.current.currentLevel = targetQualityIdx;
+      setCurrentQuality(targetQualityIdx);
+    }
+  }, [preferredQuality, qualityLevels]);
+
+  const autoPlayRef = useRef(autoPlay);
+  useEffect(() => {
+    autoPlayRef.current = autoPlay;
+  }, [autoPlay]);
 
   // 1. Initialize HLS.js or Native Video
   useEffect(() => {
@@ -252,10 +328,10 @@ export default function CustomHlsPlayer({
         setIsBuffering(false);
         // Apply default playback rate
         if (video) {
-          video.playbackRate = playbackRate;
+          video.playbackRate = playbackRateRef.current;
         }
 
-        // Extract quality levels & auto-select 1080p if available
+        // Extract quality levels & auto-select preferred quality if available
         if (data.levels && data.levels.length > 0) {
           const levels: QualityLevel[] = data.levels.map((lvl, index) => ({
             height: lvl.height,
@@ -265,7 +341,7 @@ export default function CustomHlsPlayer({
           }));
           setQualityLevels(levels);
 
-          const targetQualityIdx = selectQualityLevel(levels, preferredQuality);
+          const targetQualityIdx = selectQualityLevel(levels, preferredQualityRef.current);
           if (hlsInstance) {
             if (targetQualityIdx !== -1) {
               hlsInstance.currentLevel = targetQualityIdx;
@@ -283,7 +359,7 @@ export default function CustomHlsPlayer({
           initialTimeAppliedRef.current = true;
         }
 
-        if (autoPlay) {
+        if (autoPlayRef.current) {
           video.play().catch(() => {
             // Autoplay with sound might be blocked by browser policy
             video.muted = true;
@@ -315,17 +391,17 @@ export default function CustomHlsPlayer({
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
       // Native Safari/iOS support
       video.src = src;
-      video.playbackRate = playbackRate;
+      video.playbackRate = playbackRateRef.current;
       video.addEventListener("loadedmetadata", () => {
         setIsBuffering(false);
         if (video) {
-          video.playbackRate = playbackRate;
+          video.playbackRate = playbackRateRef.current;
         }
         if (!initialTimeAppliedRef.current && initialTimeRef.current > 5) {
           video.currentTime = initialTimeRef.current;
           initialTimeAppliedRef.current = true;
         }
-        if (autoPlay) {
+        if (autoPlayRef.current) {
           video.play().catch(() => {});
         }
       });
@@ -347,21 +423,35 @@ export default function CustomHlsPlayer({
         video.load();
       }
     };
-  }, [src, autoPlay, playbackRate, preferredQuality]);
+    // HLS lifecycle is strictly tied to stream source (src).
+    // playbackRate, preferredQuality, and autoPlay are decoupled via refs to prevent
+    // destroying and recreating the active Hls instance during playback speed or quality changes.
+  }, [src]);
+
+function getFullscreenElement(): Element | null {
+  if (typeof document === "undefined") return null;
+  return (
+    document.fullscreenElement ||
+    (document as unknown as { webkitFullscreenElement?: Element }).webkitFullscreenElement ||
+    (document as unknown as { mozFullScreenElement?: Element }).mozFullScreenElement ||
+    (document as unknown as { msFullscreenElement?: Element }).msFullscreenElement ||
+    null
+  );
+}
 
   // 2. Fullscreen Listener with Orientation Management
   useEffect(() => {
     const handleFsChange = () => {
-      const isFs = Boolean(document.fullscreenElement);
+      const isFs = Boolean(getFullscreenElement());
       setIsFullscreen(isFs);
       if (!isFs) {
         try {
           if (
             typeof window !== "undefined" &&
             window.screen?.orientation &&
-            typeof (window.screen.orientation as { unlock?: () => void }).unlock === "function"
+            typeof (window.screen.orientation as unknown as { unlock?: () => void }).unlock === "function"
           ) {
-            (window.screen.orientation as { unlock: () => void }).unlock();
+            (window.screen.orientation as unknown as { unlock: () => void }).unlock();
           }
         } catch {
           // Ignored
@@ -369,15 +459,21 @@ export default function CustomHlsPlayer({
       }
     };
     document.addEventListener("fullscreenchange", handleFsChange);
+    document.addEventListener("webkitfullscreenchange", handleFsChange);
+    document.addEventListener("mozfullscreenchange", handleFsChange);
+    document.addEventListener("MSFullscreenChange", handleFsChange);
     return () => {
       document.removeEventListener("fullscreenchange", handleFsChange);
+      document.removeEventListener("webkitfullscreenchange", handleFsChange);
+      document.removeEventListener("mozfullscreenchange", handleFsChange);
+      document.removeEventListener("MSFullscreenChange", handleFsChange);
       try {
         if (
           typeof window !== "undefined" &&
           window.screen?.orientation &&
-          typeof (window.screen.orientation as { unlock?: () => void }).unlock === "function"
+          typeof (window.screen.orientation as unknown as { unlock?: () => void }).unlock === "function"
         ) {
-          (window.screen.orientation as { unlock: () => void }).unlock();
+          (window.screen.orientation as unknown as { unlock: () => void }).unlock();
         }
       } catch {
         // Ignored
@@ -385,13 +481,50 @@ export default function CustomHlsPlayer({
     };
   }, []);
 
-  // 3. Picture-in-Picture event listeners
+  // 3. Picture-in-Picture event listeners with Android Chromium rendering recovery
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
     const onEnterPip = () => setIsPip(true);
-    const onLeavePip = () => setIsPip(false);
+    const onLeavePip = () => {
+      setIsPip(false);
+
+      // Diagnostic lifecycle logging
+      console.log("[PiP] leavepictureinpicture lifecycle check:", {
+        isConnected: video.isConnected,
+        paused: video.paused,
+        currentTime: video.currentTime,
+        readyState: video.readyState,
+        videoWidth: video.videoWidth,
+        videoHeight: video.videoHeight,
+        src: video.src || "hls-stream",
+        pipElement: document.pictureInPictureElement,
+        fullscreenElement: getFullscreenElement(),
+        parentElement: video.parentElement?.tagName,
+      });
+
+      // Recover video rendering surface on Android Chromium:
+      // Force layout recalculation and compositor quad re-attachment
+      void video.offsetHeight;
+      const prevVis = video.style.visibility;
+      video.style.visibility = "hidden";
+      void video.offsetHeight;
+      requestAnimationFrame(() => {
+        video.style.visibility = prevVis;
+        void video.offsetHeight;
+        if (typeof window !== "undefined") {
+          // Micro-scroll nudge to wake up Chromium compositor without shifting visual position
+          window.scrollBy(0, 1);
+          window.scrollBy(0, -1);
+        }
+      });
+
+      // Ensure playback pipeline continues if unpaused
+      if (!video.paused && video.readyState >= 2) {
+        video.play().catch(() => {});
+      }
+    };
 
     video.addEventListener("enterpictureinpicture", onEnterPip);
     video.addEventListener("leavepictureinpicture", onLeavePip);
@@ -402,28 +535,6 @@ export default function CustomHlsPlayer({
     };
   }, []);
 
-  // Auto PiP when video is playing and user backgrounds/navigates (best effort standard API)
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (
-        document.visibilityState === "hidden" &&
-        isPlaying &&
-        videoRef.current &&
-        typeof document !== "undefined" &&
-        document.pictureInPictureEnabled &&
-        !document.pictureInPictureElement
-      ) {
-        videoRef.current.requestPictureInPicture().catch(() => {
-          // Graceful fallback if browser requires user gesture
-        });
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [isPlaying]);
 
   // 4. Play / Pause
   const togglePlay = useCallback(() => {
@@ -489,21 +600,37 @@ export default function CustomHlsPlayer({
     }
   }, []);
 
-  // 8. Fullscreen toggle with Mobile Landscape Preference
+  // 8. Fullscreen toggle with Cross-Browser and Mobile Landscape Support
   const toggleFullscreen = useCallback(async () => {
     const container = containerRef.current;
+    const video = videoRef.current;
     if (!container) return;
+
+    const fsElement = getFullscreenElement();
     try {
-      if (!document.fullscreenElement) {
-        await container.requestFullscreen();
-        // Priority to Landscape on mobile devices if supported
+      if (!fsElement) {
+        // Request fullscreen on container with vendor fallbacks
+        const reqFn =
+          container.requestFullscreen ||
+          (container as unknown as { webkitRequestFullscreen?: () => Promise<void> }).webkitRequestFullscreen ||
+          (container as unknown as { mozRequestFullScreen?: () => Promise<void> }).mozRequestFullScreen ||
+          (container as unknown as { msRequestFullscreen?: () => Promise<void> }).msRequestFullscreen;
+
+        if (reqFn) {
+          await reqFn.call(container);
+        } else if (video && (video as unknown as { webkitEnterFullscreen?: () => void }).webkitEnterFullscreen) {
+          (video as unknown as { webkitEnterFullscreen: () => void }).webkitEnterFullscreen();
+          return;
+        }
+
+        // Priority to Landscape on mobile devices if supported (non-blocking)
         try {
           if (
             typeof window !== "undefined" &&
             window.screen?.orientation &&
             typeof (window.screen.orientation as unknown as { lock?: (o: string) => Promise<void> }).lock === "function"
           ) {
-            await (window.screen.orientation as unknown as { lock: (o: string) => Promise<void> })
+            (window.screen.orientation as unknown as { lock: (o: string) => Promise<void> })
               .lock("landscape")
               .catch(() => {});
           }
@@ -511,7 +638,16 @@ export default function CustomHlsPlayer({
           // Graceful fallback if device/browser disallows orientation lock
         }
       } else {
-        await document.exitFullscreen();
+        const exitFn =
+          document.exitFullscreen ||
+          (document as unknown as { webkitExitFullscreen?: () => Promise<void> }).webkitExitFullscreen ||
+          (document as unknown as { mozCancelFullScreen?: () => Promise<void> }).mozCancelFullScreen ||
+          (document as unknown as { msExitFullscreen?: () => Promise<void> }).msExitFullscreen;
+
+        if (exitFn) {
+          await exitFn.call(document);
+        }
+
         try {
           if (
             typeof window !== "undefined" &&
@@ -525,7 +661,7 @@ export default function CustomHlsPlayer({
         }
       }
     } catch (err) {
-      console.warn("Fullscreen toggle error", err);
+      console.warn("[Fullscreen] Toggle error:", err);
     }
   }, []);
 
@@ -563,6 +699,7 @@ export default function CustomHlsPlayer({
   const lastTapRef = useRef<{ time: number; side: "left" | "right" } | null>(null);
 
   const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (isMini) return;
     const target = e.target as HTMLElement;
     if (target.closest("button, input, select, a, [role='button']")) {
       return;
@@ -699,11 +836,12 @@ export default function CustomHlsPlayer({
       // Single tap on video:
       // - NEVER play/pause
       // - If controls are currently shown -> HIDE them
-      // - If controls are currently hidden -> SHOW them
+      // - If controls are currently hidden -> SHOW them and arm 3s inactivity auto-hide
       // Video continues playing without interruption!
       setShowControls((prev) => {
         if (prev) {
           setShowSettings(false);
+          if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
           return false;
         } else {
           triggerControls();
@@ -719,7 +857,7 @@ export default function CustomHlsPlayer({
       return;
     }
     // Ignore synthetic mouse click following mobile touch
-    if (Date.now() - lastTouchEndTime.current < 600) {
+    if (Date.now() - lastTouchEndTime.current < 1000) {
       return;
     }
     if (isLocked) return;
@@ -728,6 +866,7 @@ export default function CustomHlsPlayer({
     setShowControls((prev) => {
       if (prev) {
         setShowSettings(false);
+        if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
         return false;
       } else {
         triggerControls();
@@ -866,16 +1005,33 @@ export default function CustomHlsPlayer({
   return (
     <div
       ref={containerRef}
-      onClick={handleContainerClick}
-      onMouseMove={triggerControls}
+      onClick={isMini ? undefined : handleContainerClick}
+      onMouseMove={() => {
+        if (isMini) return;
+        // Ignore synthetic mousemove following touch
+        if (Date.now() - lastTouchEndTime.current < 1000) return;
+        triggerControls();
+      }}
       onMouseLeave={() => {
+        if (isMini) return;
+        // Ignore synthetic mouseleave triggered after touch events on mobile
+        if (Date.now() - lastTouchEndTime.current < 2500) return;
+        if (typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches) {
+          return;
+        }
         if (isPlaying) setShowControls(false);
         setShowSettings(false);
       }}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
-      className="group relative w-full aspect-video overflow-hidden rounded-2xl bg-black select-none shadow-2xl shadow-black/80 flex items-center justify-center font-sans touch-none"
+      onTouchStart={isMini ? undefined : handleTouchStart}
+      onTouchMove={isMini ? undefined : handleTouchMove}
+      onTouchEnd={isMini ? undefined : handleTouchEnd}
+      className={`group relative w-full ${
+        isFullscreen
+          ? "h-full rounded-none aspect-auto"
+          : isMini
+          ? "h-full rounded-none aspect-video"
+          : "aspect-video rounded-2xl shadow-2xl shadow-black/80"
+      } overflow-hidden bg-black select-none flex items-center justify-center font-sans touch-none`}
     >
       {/* Video Element */}
       <video
@@ -909,8 +1065,8 @@ export default function CustomHlsPlayer({
         aria-hidden="true"
       />
 
-      {/* Floating Unlock Button when LOCKED */}
-      {isLocked && (
+      {/* Floating Unlock Button when LOCKED (Only in detail mode) */}
+      {!isMini && isLocked && (
         <div className="absolute top-4 left-4 z-40 animate-in fade-in duration-200">
           <button
             onClick={(e) => {
@@ -928,8 +1084,8 @@ export default function CustomHlsPlayer({
         </div>
       )}
 
-      {/* Double Tap Seek Feedback Overlay */}
-      {doubleTapFeedback && (
+      {/* Double Tap Seek Feedback Overlay (Only in detail mode) */}
+      {!isMini && doubleTapFeedback && (
         <div
           className={`absolute inset-y-0 flex items-center justify-center pointer-events-none z-30 transition-all duration-200 animate-in fade-in zoom-in-95 ${
             doubleTapFeedback.side === "left"
@@ -957,8 +1113,8 @@ export default function CustomHlsPlayer({
         </div>
       )}
 
-      {/* Gesture Feedback HUD Overlay (Volume / Brightness) */}
-      {gestureHud && !isLocked && (
+      {/* Gesture Feedback HUD Overlay (Volume / Brightness) (Only in detail mode) */}
+      {!isMini && gestureHud && !isLocked && (
         <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-30 animate-in fade-in zoom-in-95 duration-150">
           <div className="flex flex-col items-center gap-2 rounded-2xl bg-black/80 backdrop-blur-md px-5 py-4 text-white shadow-2xl border border-white/10 min-w-[130px]">
             {gestureHud.type === "volume" ? (
@@ -1023,8 +1179,8 @@ export default function CustomHlsPlayer({
         </div>
       )}
 
-      {/* Central 3-Button Controls [ PREV EP ] [ PLAY/PAUSE ] [ NEXT EP ] */}
-      {showControls && !isLocked && !errorMsg && (
+      {/* Central 3-Button Controls [ PREV EP ] [ PLAY/PAUSE ] [ NEXT EP ] (Only in detail mode) */}
+      {!isMini && showControls && !isLocked && !errorMsg && (
         <div className="absolute inset-0 m-auto flex items-center justify-center gap-6 sm:gap-10 pointer-events-none z-20">
           {/* Previous Episode Button */}
           <button
@@ -1082,14 +1238,15 @@ export default function CustomHlsPlayer({
         </div>
       )}
 
-      {/* Video Controls HUD */}
-      <div
-        className={`absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-3 sm:p-4 transition-opacity duration-300 ${
-          showControls && !isLocked
-            ? "opacity-100 pointer-events-auto"
-            : "opacity-0 pointer-events-none"
-        }`}
-      >
+      {/* Video Controls HUD (Only in detail mode) */}
+      {!isMini && (
+        <div
+          className={`absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-3 sm:p-4 transition-opacity duration-300 ${
+            showControls && !isLocked
+              ? "opacity-100 pointer-events-auto"
+              : "opacity-0 pointer-events-none"
+          }`}
+        >
         {/* Progress / Seek Bar */}
         <div className="relative mb-3 flex items-center group/bar cursor-pointer">
           <input
@@ -1130,16 +1287,16 @@ export default function CustomHlsPlayer({
         </div>
 
         {/* Bottom Bar: Action Buttons & Metrics */}
-        <div className="flex items-center justify-between gap-2 text-white">
+        <div className="flex items-center justify-between gap-1 sm:gap-2 text-white min-w-0">
           {/* Left: Play/Pause, Prev Episode, Next Episode, Volume, Time */}
-          <div className="flex items-center gap-1 sm:gap-2">
+          <div className="flex items-center gap-0.5 sm:gap-1.5 shrink-0 min-w-0">
             {/* Play/Pause Button */}
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 togglePlay();
               }}
-              className="p-1.5 sm:p-2 min-h-[36px] min-w-[36px] rounded-lg hover:bg-white/10 transition-colors flex items-center justify-center cursor-pointer"
+              className="p-1 sm:p-1.5 min-h-[32px] min-w-[32px] sm:min-h-[36px] sm:min-w-[36px] rounded-lg hover:bg-white/10 transition-colors flex items-center justify-center cursor-pointer shrink-0"
               title={isPlaying ? "Tạm dừng (K / Space)" : "Phát (K / Space)"}
               aria-label={isPlaying ? "Tạm dừng" : "Phát"}
             >
@@ -1150,14 +1307,14 @@ export default function CustomHlsPlayer({
               )}
             </button>
 
-            {/* Previous Episode Button (Replaces Rewind 10s) */}
+            {/* Previous Episode Button */}
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 if (hasPrevEpisode && onPrevEpisode) onPrevEpisode();
               }}
               disabled={!hasPrevEpisode}
-              className={`p-1.5 sm:p-2 min-h-[36px] min-w-[36px] rounded-lg transition-colors flex items-center justify-center ${
+              className={`p-1 sm:p-1.5 min-h-[32px] min-w-[32px] sm:min-h-[36px] sm:min-w-[36px] rounded-lg transition-colors flex items-center justify-center shrink-0 ${
                 hasPrevEpisode
                   ? "hover:bg-white/10 text-white cursor-pointer"
                   : "opacity-40 cursor-not-allowed text-zinc-500"
@@ -1168,14 +1325,14 @@ export default function CustomHlsPlayer({
               <SkipBack className="h-4 w-4 sm:h-5 sm:w-5 fill-current" />
             </button>
 
-            {/* Next Episode Button (Replaces Fast-Forward 10s) */}
+            {/* Next Episode Button */}
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 if (hasNextEpisode && onNextEpisode) onNextEpisode();
               }}
               disabled={!hasNextEpisode}
-              className={`p-1.5 sm:p-2 min-h-[36px] min-w-[36px] rounded-lg transition-colors flex items-center justify-center ${
+              className={`p-1 sm:p-1.5 min-h-[32px] min-w-[32px] sm:min-h-[36px] sm:min-w-[36px] rounded-lg transition-colors flex items-center justify-center shrink-0 ${
                 hasNextEpisode
                   ? "hover:bg-white/10 text-white cursor-pointer"
                   : "opacity-40 cursor-not-allowed text-zinc-500"
@@ -1187,13 +1344,13 @@ export default function CustomHlsPlayer({
             </button>
 
             {/* Volume Control */}
-            <div className="flex items-center gap-1 group/vol">
+            <div className="flex items-center gap-0.5 sm:gap-1 group/vol shrink-0">
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   toggleMute();
                 }}
-                className="p-1.5 sm:p-2 min-h-[36px] min-w-[36px] rounded-lg hover:bg-white/10 transition-colors flex items-center justify-center cursor-pointer"
+                className="p-1 sm:p-1.5 min-h-[32px] min-w-[32px] sm:min-h-[36px] sm:min-w-[36px] rounded-lg hover:bg-white/10 transition-colors flex items-center justify-center cursor-pointer shrink-0"
                 title="Bật/Tắt tiếng (M)"
                 aria-label="Bật hoặc tắt âm thanh"
               >
@@ -1220,8 +1377,8 @@ export default function CustomHlsPlayer({
               />
             </div>
 
-            {/* Time Indicator */}
-            <div className="text-[10px] sm:text-xs font-medium text-zinc-300 tabular-nums">
+            {/* Time Indicator (Hidden on small mobile portrait < 420px to prevent control overflow) */}
+            <div className="hidden min-[420px]:block text-[10px] sm:text-xs font-medium text-zinc-300 tabular-nums shrink-0 whitespace-nowrap ml-0.5">
               <span>{formatTime(currentTime)}</span>
               <span className="mx-1 text-zinc-500">/</span>
               <span>{formatTime(duration)}</span>
@@ -1229,7 +1386,7 @@ export default function CustomHlsPlayer({
           </div>
 
           {/* Right: Lock, PiP, Settings, Fullscreen */}
-          <div className="flex items-center gap-1 sm:gap-1.5 relative">
+          <div className="flex items-center gap-0.5 sm:gap-1.5 shrink-0 relative">
             {/* Lock Player Button */}
             <button
               onClick={(e) => {
@@ -1238,7 +1395,7 @@ export default function CustomHlsPlayer({
                 setShowControls(false);
                 setShowSettings(false);
               }}
-              className="p-1.5 sm:p-2 min-h-[36px] min-w-[36px] rounded-lg hover:bg-white/10 text-zinc-300 hover:text-white transition-colors flex items-center justify-center cursor-pointer"
+              className="p-1 sm:p-1.5 min-h-[32px] min-w-[32px] sm:min-h-[36px] sm:min-w-[36px] rounded-lg hover:bg-white/10 text-zinc-300 hover:text-white transition-colors flex items-center justify-center cursor-pointer shrink-0"
               title="Khóa màn hình (Tránh chạm nhầm)"
               aria-label="Khóa màn hình"
             >
@@ -1252,7 +1409,7 @@ export default function CustomHlsPlayer({
                   e.stopPropagation();
                   togglePiP();
                 }}
-                className={`p-1.5 sm:p-2 min-h-[36px] min-w-[36px] rounded-lg transition-colors flex items-center justify-center cursor-pointer ${
+                className={`p-1 sm:p-1.5 min-h-[32px] min-w-[32px] sm:min-h-[36px] sm:min-w-[36px] rounded-lg transition-colors flex items-center justify-center cursor-pointer shrink-0 ${
                   isPip
                     ? "bg-violet-600 text-white"
                     : "hover:bg-white/10 text-zinc-300 hover:text-white"
@@ -1266,11 +1423,13 @@ export default function CustomHlsPlayer({
 
             {/* Settings Trigger */}
             <button
+              ref={settingsBtnRef}
               onClick={(e) => {
                 e.stopPropagation();
+                updateSettingsCoords();
                 setShowSettings(!showSettings);
               }}
-              className={`p-1.5 sm:p-2 min-h-[36px] min-w-[36px] rounded-lg transition-colors flex items-center justify-center cursor-pointer ${
+              className={`p-1 sm:p-1.5 min-h-[32px] min-w-[32px] sm:min-h-[36px] sm:min-w-[36px] rounded-lg transition-colors flex items-center justify-center cursor-pointer shrink-0 ${
                 showSettings ? "bg-white/20 text-violet-400" : "hover:bg-white/10 text-zinc-300"
               }`}
               title="Cài đặt phát video"
@@ -1279,100 +1438,13 @@ export default function CustomHlsPlayer({
               <Settings className="h-4 w-4 sm:h-5 sm:w-5" />
             </button>
 
-            {/* Settings Menu Popup */}
-            {showSettings && (
-              <div
-                onClick={(e) => e.stopPropagation()}
-                className="absolute right-0 bottom-12 w-56 max-w-[calc(100vw-2rem)] rounded-2xl bg-zinc-900/95 border border-zinc-700/60 shadow-2xl p-3 space-y-3 z-30 backdrop-blur-md text-xs animate-in fade-in zoom-in-95 duration-150"
-              >
-                {/* Auto Next Episode Toggle */}
-                <div className="flex items-center justify-between px-1">
-                  <span className="font-semibold text-zinc-300 text-[11px] sm:text-xs">
-                    Tự phát tập tiếp theo:
-                  </span>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={autoPlayNext}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onAutoPlayNextChange?.(!autoPlayNext);
-                    }}
-                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors cursor-pointer focus:outline-none ${
-                      autoPlayNext ? "bg-violet-600" : "bg-zinc-700"
-                    }`}
-                    aria-label="Tự phát tập tiếp theo"
-                    title="Tự phát tập tiếp theo"
-                  >
-                    <span
-                      className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-                        autoPlayNext ? "translate-x-4" : "translate-x-1"
-                      }`}
-                    />
-                  </button>
-                </div>
-
-                {/* Playback Speed */}
-                <div className="border-t border-zinc-800 pt-2">
-                  <div className="font-semibold text-zinc-400 mb-1.5 px-1">Tốc độ phát:</div>
-                  <div className="grid grid-cols-4 gap-1">
-                    {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((rate) => (
-                      <button
-                        key={rate}
-                        onClick={() => handlePlaybackRateChange(rate)}
-                        className={`px-1.5 py-1 rounded-md text-center text-[11px] transition-all cursor-pointer ${
-                          playbackRate === rate
-                            ? "bg-violet-600 text-white font-bold shadow"
-                            : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
-                        }`}
-                      >
-                        {rate}x
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Quality Options */}
-                {qualityLevels.length > 0 && (
-                  <div className="border-t border-zinc-800 pt-2">
-                    <div className="font-semibold text-zinc-400 mb-1.5 px-1">Độ phân giải:</div>
-                    <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
-                      <button
-                        onClick={() => handleQualityChange(-1)}
-                        className={`w-full text-left px-2 py-1 rounded-md transition-all cursor-pointer ${
-                          currentQuality === -1
-                            ? "bg-violet-600 text-white font-bold"
-                            : "hover:bg-zinc-800 text-zinc-300"
-                        }`}
-                      >
-                        Tự động (Auto)
-                      </button>
-                      {qualityLevels.map((lvl) => (
-                        <button
-                          key={lvl.index}
-                          onClick={() => handleQualityChange(lvl.index)}
-                          className={`w-full text-left px-2 py-1 rounded-md transition-all cursor-pointer ${
-                            currentQuality === lvl.index
-                              ? "bg-violet-600 text-white font-bold"
-                              : "hover:bg-zinc-800 text-zinc-300"
-                          }`}
-                        >
-                          {lvl.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Fullscreen Button */}
+            {/* Fullscreen Button — Highest Priority Control */}
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 toggleFullscreen();
               }}
-              className="p-1.5 sm:p-2 min-h-[36px] min-w-[36px] rounded-lg hover:bg-white/10 transition-colors flex items-center justify-center cursor-pointer"
+              className="p-1 sm:p-1.5 min-h-[32px] min-w-[32px] sm:min-h-[36px] sm:min-w-[36px] rounded-lg hover:bg-white/10 transition-colors flex items-center justify-center cursor-pointer shrink-0 text-white"
               title={isFullscreen ? "Thoát toàn màn hình (F)" : "Toàn màn hình (F)"}
               aria-label={isFullscreen ? "Thoát toàn màn hình" : "Toàn màn hình"}
             >
@@ -1382,9 +1454,196 @@ export default function CustomHlsPlayer({
                 <Maximize className="h-4 w-4 sm:h-5 sm:w-5" />
               )}
             </button>
+
+            {/* Settings Menu Popup — Portaled in normal mode so it overflows cleanly without clipping */}
+            {showSettings && (
+              isFullscreen
+                ? (
+                  <div
+                    ref={settingsMenuRef}
+                    onClick={(e) => e.stopPropagation()}
+                    className="absolute right-0 bottom-12 w-60 max-w-[calc(100vw-1.5rem)] max-h-[min(75vh,440px)] overflow-y-auto rounded-2xl bg-zinc-900/95 border border-zinc-700/80 shadow-2xl p-3 space-y-3 z-30 backdrop-blur-xl text-xs animate-in fade-in zoom-in-95 duration-150"
+                  >
+                    {/* Auto Next Episode Toggle */}
+                    <div className="flex items-center justify-between px-1">
+                      <span className="font-semibold text-zinc-300 text-[11px] sm:text-xs">
+                        Tự phát tập tiếp theo:
+                      </span>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={autoPlayNext}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onAutoPlayNextChange?.(!autoPlayNext);
+                        }}
+                        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors cursor-pointer focus:outline-none ${
+                          autoPlayNext ? "bg-violet-600" : "bg-zinc-700"
+                        }`}
+                        aria-label="Tự phát tập tiếp theo"
+                        title="Tự phát tập tiếp theo"
+                      >
+                        <span
+                          className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                            autoPlayNext ? "translate-x-4" : "translate-x-1"
+                          }`}
+                        />
+                      </button>
+                    </div>
+
+                    {/* Playback Speed */}
+                    <div className="border-t border-zinc-800 pt-2">
+                      <div className="font-semibold text-zinc-400 mb-1.5 px-1">Tốc độ phát:</div>
+                      <div className="grid grid-cols-4 gap-1">
+                        {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((rate) => (
+                          <button
+                            key={rate}
+                            onClick={() => handlePlaybackRateChange(rate)}
+                            className={`px-1.5 py-1 rounded-md text-center text-[11px] transition-all cursor-pointer ${
+                              playbackRate === rate
+                                ? "bg-violet-600 text-white font-bold shadow"
+                                : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+                            }`}
+                          >
+                            {rate}x
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Quality Options */}
+                    {qualityLevels.length > 0 && (
+                      <div className="border-t border-zinc-800 pt-2">
+                        <div className="font-semibold text-zinc-400 mb-1.5 px-1">Độ phân giải:</div>
+                        <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
+                          <button
+                            onClick={() => handleQualityChange(-1)}
+                            className={`w-full text-left px-2 py-1 rounded-md transition-all cursor-pointer ${
+                              currentQuality === -1
+                                ? "bg-violet-600 text-white font-bold"
+                                : "hover:bg-zinc-800 text-zinc-300"
+                            }`}
+                          >
+                            Tự động (Auto)
+                          </button>
+                          {qualityLevels.map((lvl) => (
+                            <button
+                              key={lvl.index}
+                              onClick={() => handleQualityChange(lvl.index)}
+                              className={`w-full text-left px-2 py-1 rounded-md transition-all cursor-pointer ${
+                                currentQuality === lvl.index
+                                  ? "bg-violet-600 text-white font-bold"
+                                  : "hover:bg-zinc-800 text-zinc-300"
+                              }`}
+                            >
+                              {lvl.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+                : typeof document !== "undefined"
+                ? createPortal(
+                  <div
+                    ref={settingsMenuRef}
+                    onClick={(e) => e.stopPropagation()}
+                    style={{
+                      position: "fixed",
+                      bottom: `${settingsCoords.bottom}px`,
+                      right: `${settingsCoords.right}px`,
+                      zIndex: 99999,
+                    }}
+                    className="w-60 max-w-[calc(100vw-1.5rem)] max-h-[min(75vh,440px)] overflow-y-auto rounded-2xl bg-zinc-900/95 border border-zinc-700/80 shadow-2xl p-3 space-y-3 backdrop-blur-xl text-xs animate-in fade-in zoom-in-95 duration-150"
+                  >
+                    {/* Auto Next Episode Toggle */}
+                    <div className="flex items-center justify-between px-1">
+                      <span className="font-semibold text-zinc-300 text-[11px] sm:text-xs">
+                        Tự phát tập tiếp theo:
+                      </span>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={autoPlayNext}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onAutoPlayNextChange?.(!autoPlayNext);
+                        }}
+                        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors cursor-pointer focus:outline-none ${
+                          autoPlayNext ? "bg-violet-600" : "bg-zinc-700"
+                        }`}
+                        aria-label="Tự phát tập tiếp theo"
+                        title="Tự phát tập tiếp theo"
+                      >
+                        <span
+                          className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                            autoPlayNext ? "translate-x-4" : "translate-x-1"
+                          }`}
+                        />
+                      </button>
+                    </div>
+
+                    {/* Playback Speed */}
+                    <div className="border-t border-zinc-800 pt-2">
+                      <div className="font-semibold text-zinc-400 mb-1.5 px-1">Tốc độ phát:</div>
+                      <div className="grid grid-cols-4 gap-1">
+                        {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((rate) => (
+                          <button
+                            key={rate}
+                            onClick={() => handlePlaybackRateChange(rate)}
+                            className={`px-1.5 py-1 rounded-md text-center text-[11px] transition-all cursor-pointer ${
+                              playbackRate === rate
+                                ? "bg-violet-600 text-white font-bold shadow"
+                                : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+                            }`}
+                          >
+                            {rate}x
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Quality Options */}
+                    {qualityLevels.length > 0 && (
+                      <div className="border-t border-zinc-800 pt-2">
+                        <div className="font-semibold text-zinc-400 mb-1.5 px-1">Độ phân giải:</div>
+                        <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
+                          <button
+                            onClick={() => handleQualityChange(-1)}
+                            className={`w-full text-left px-2 py-1 rounded-md transition-all cursor-pointer ${
+                              currentQuality === -1
+                                ? "bg-violet-600 text-white font-bold"
+                                : "hover:bg-zinc-800 text-zinc-300"
+                            }`}
+                          >
+                            Tự động (Auto)
+                          </button>
+                          {qualityLevels.map((lvl) => (
+                            <button
+                              key={lvl.index}
+                              onClick={() => handleQualityChange(lvl.index)}
+                              className={`w-full text-left px-2 py-1 rounded-md transition-all cursor-pointer ${
+                                currentQuality === lvl.index
+                                  ? "bg-violet-600 text-white font-bold"
+                                  : "hover:bg-zinc-800 text-zinc-300"
+                              }`}
+                            >
+                              {lvl.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>,
+                  document.body
+                )
+                : null
+            )}
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }

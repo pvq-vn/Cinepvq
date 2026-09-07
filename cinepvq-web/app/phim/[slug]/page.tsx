@@ -99,8 +99,8 @@ export default function MovieDetailPage() {
     mode,
     startPlayback,
     setMode,
-    playerContainerRef,
     registerEpisodeHandlers,
+    expandScrollTrigger,
   } = useGlobalPlayer();
 
   // User-selected Episode & Server states
@@ -123,6 +123,13 @@ export default function MovieDetailPage() {
   });
 
   const isWatching = isWatchingManual || Boolean(session && session.movieSlug === slug);
+
+  // Auto-scroll to top instantly when watching to ensure player is in view
+  useEffect(() => {
+    if (isWatching) {
+      window.scrollTo({ top: 0, behavior: "instant" });
+    }
+  }, [isWatching]);
 
   const playerRef = useRef<HTMLDivElement>(null);
   const lastSavedTimeRef = useRef<number>(0);
@@ -212,6 +219,12 @@ export default function MovieDetailPage() {
       if (found) return found;
     }
 
+    // 1.5 Active global player session for this movie (keeps running episode intact)
+    if (session && session.movieSlug === (movie?.slug || slug) && session.episodeSlug) {
+      const found = episodeItems.find((e) => e.slug === session.episodeSlug);
+      if (found) return found;
+    }
+
     // 2. URL parameter ?ep=tap-X
     const urlEpSlug = searchParams.get("ep") || searchParams.get("episode");
     if (urlEpSlug) {
@@ -229,7 +242,7 @@ export default function MovieDetailPage() {
 
     // 4. Default: First episode
     return episodeItems[0] || null;
-  }, [episodeItems, selectedEpisodeSlug, searchParams, savedHistory]);
+  }, [episodeItems, selectedEpisodeSlug, session, movie?.slug, slug, searchParams, savedHistory]);
 
   const currentVideoUrl = activeEpisode?.embed || "";
   const activeEpisodeSlug = activeEpisode?.slug || "";
@@ -264,6 +277,23 @@ export default function MovieDetailPage() {
     return episodeChunks[activeChunkIndex]?.items || episodeItems;
   }, [episodeChunks, activeChunkIndex, episodeItems]);
 
+  // ─── Scroll to Player Helper (Respects fixed navbar and current visibility) ─
+  const scrollToPlayer = useCallback(() => {
+    const slot = document.getElementById("cinepvq-player-slot") || playerRef.current;
+    if (!slot) {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    const rect = slot.getBoundingClientRect();
+    const navbarHeight = 70; // 64px fixed Navbar + padding
+    // If player is already nicely visible in viewport, do not cause sudden jump
+    const isVisible = rect.top >= navbarHeight - 30 && rect.top <= window.innerHeight * 0.45;
+    if (!isVisible) {
+      const targetY = window.scrollY + rect.top - navbarHeight;
+      window.scrollTo({ top: Math.max(0, targetY), behavior: "smooth" });
+    }
+  }, []);
+
   // ─── Select Episode Handler ──────────────────────────────────────────────
   const handleSelectEpisode = useCallback(
     (ep: EpisodeItem, initialSeek = 0) => {
@@ -294,10 +324,10 @@ export default function MovieDetailPage() {
       }
 
       setTimeout(() => {
-        playerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+        scrollToPlayer();
       }, 150);
     },
-    [movie, episodeItems, episodeChunks, addHistory]
+    [movie, episodeItems, episodeChunks, addHistory, scrollToPlayer]
   );
 
   // ─── Video Time Update ───────────────────────────────────────────────────
@@ -355,9 +385,9 @@ export default function MovieDetailPage() {
       handleSelectEpisode(episodeItems[0], 0);
     }
     setTimeout(() => {
-      playerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      scrollToPlayer();
     }, 150);
-  }, [episodeItems, handleSelectEpisode]);
+  }, [episodeItems, handleSelectEpisode, scrollToPlayer]);
 
   const handleResumeWatching = useCallback(() => {
     setIsWatchingManual(true);
@@ -370,13 +400,13 @@ export default function MovieDetailPage() {
           0;
         handleSelectEpisode(ep, savedTime);
         setTimeout(() => {
-          playerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+          scrollToPlayer();
         }, 150);
         return;
       }
     }
     handleWatchNow();
-  }, [savedHistory, episodeItems, movie?.slug, currentSeason, handleSelectEpisode, handleWatchNow]);
+  }, [savedHistory, episodeItems, movie?.slug, currentSeason, handleSelectEpisode, handleWatchNow, scrollToPlayer]);
 
   const handleShare = useCallback(() => {
     if (typeof window !== "undefined") {
@@ -390,15 +420,15 @@ export default function MovieDetailPage() {
   useEffect(() => {
     if (!isWatching || !movie || !activeEpisode || !currentVideoUrl) return;
 
-    if (
-      session?.movieSlug === (movie.slug || slug) &&
-      session?.episodeSlug === activeEpisodeSlug &&
-      session?.videoUrl === currentVideoUrl
-    ) {
-      if (mode !== "detail") {
-        setMode("detail");
+    // If global player session is already active for this movie:
+    if (session?.movieSlug === (movie.slug || slug)) {
+      // If user hasn't explicitly chosen a different episode, or current session episode matches active episode:
+      if (!selectedEpisodeSlug || session?.episodeSlug === activeEpisodeSlug) {
+        if (mode !== "detail") {
+          setMode("detail");
+        }
+        return;
       }
-      return;
     }
 
     startPlayback({
@@ -431,6 +461,7 @@ export default function MovieDetailPage() {
     slug,
     activeEpisode,
     activeEpisodeSlug,
+    selectedEpisodeSlug,
     currentVideoUrl,
     currentSeason,
     episodeItems,
@@ -468,21 +499,14 @@ export default function MovieDetailPage() {
     registerEpisodeHandlers,
   ]);
 
-  // Dock player into movie detail slot and rescue to layout home on unmount
+  // Scroll to player when expanding from mini player or restoring from native PiP
   useEffect(() => {
-    if (!isWatching) return;
-    const slot = document.getElementById("cinepvq-player-slot");
-    const el = playerContainerRef.current;
-    if (slot && el && el.parentElement !== slot) {
-      slot.appendChild(el);
-    }
-    return () => {
-      const home = document.getElementById("cinepvq-global-player-home");
-      if (home && el && el.parentElement === slot) {
-        home.appendChild(el);
-      }
-    };
-  }, [isWatching, playerContainerRef, mode]);
+    if (!expandScrollTrigger) return;
+    const timer = setTimeout(() => {
+      scrollToPlayer();
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [expandScrollTrigger, scrollToPlayer]);
 
   // ─── Error State ─────────────────────────────────────────────────────────
   if (isError) {
@@ -531,8 +555,10 @@ export default function MovieDetailPage() {
 
   return (
     <main className="flex-1 pb-20">
-      {/* ── 1. Hero Cinematic Banner ── */}
-      <section className="relative w-full min-h-[50vh] overflow-hidden bg-zinc-950">
+      {!isWatching ? (
+        <>
+          {/* ── 1. Hero Cinematic Banner ── */}
+          <section className="relative w-full min-h-[50vh] overflow-hidden bg-zinc-950">
         {/* Multi-layer Backdrop Image */}
         <div className="absolute inset-0">
           <img
@@ -708,10 +734,8 @@ export default function MovieDetailPage() {
         </div>
       </section>
 
-      {/* ── 2. Movie Detail Content (STATE 1 vs STATE 2) ── */}
-      {!isWatching ? (
-        /* ── STATE 1: Chưa bấm xem (Thông tin phim trước, KHÔNG mount Player, KHÔNG mount danh sách tập) ── */
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-8 space-y-10">
+      {/* ── STATE 1 Content: Chưa bấm xem (Thông tin phim trước, KHÔNG mount Player, KHÔNG mount danh sách tập) ── */}
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-8 space-y-10">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             {/* Main Area: Synopsis & Cast & Comments */}
             <div className="lg:col-span-2 space-y-8">
@@ -856,10 +880,11 @@ export default function MovieDetailPage() {
             currentSlug={movie.slug}
           />
         </div>
+        </>
       ) : (
-        /* ── STATE 2: Đã bấm xem (Player + Danh sách tập + Diễn viên + Bình luận) ── */
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-8 space-y-10">
-          <section ref={playerRef} className="space-y-4">
+        /* ── STATE 2: Đang xem phim (Player nằm ngay trên cùng, KHÔNG có banner che khuất) ── */
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-20 sm:pt-24 space-y-8">
+          <section ref={playerRef} className="space-y-4 scroll-mt-20 sm:scroll-mt-24">
             {/* Player Header Bar */}
             {currentVideoUrl ? (
               <div className="space-y-3">
@@ -886,23 +911,62 @@ export default function MovieDetailPage() {
                     </div>
                   </div>
 
-                  {/* Next Episode Action Button */}
-                  {nextEpisode && (
+                  <div className="flex items-center gap-2">
+                    {/* Back to Movie Info toggle button */}
                     <button
-                      onClick={() => handleSelectEpisode(nextEpisode, 0)}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-violet-600/10 hover:bg-violet-600 text-violet-600 hover:text-white dark:text-violet-300 dark:hover:text-white px-3.5 py-1.5 text-xs font-bold transition-all shadow-sm"
+                      type="button"
+                      onClick={() => {
+                        setIsWatchingManual(false);
+                        window.scrollTo({ top: 0, behavior: "smooth" });
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 px-3 py-1.5 text-xs font-semibold transition-colors cursor-pointer"
+                      title="Xem thông tin chi tiết phim"
                     >
-                      <span>Tập tiếp theo (Tập {nextEpisode.name})</span>
-                      <ChevronRight className="h-3.5 w-3.5" />
+                      <Film className="h-3.5 w-3.5 text-violet-500" />
+                      <span>Thông tin phim</span>
                     </button>
-                  )}
+
+                    {/* Next Episode Action Button */}
+                    {nextEpisode && (
+                      <button
+                        onClick={() => handleSelectEpisode(nextEpisode, 0)}
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-violet-600/10 hover:bg-violet-600 text-violet-600 hover:text-white dark:text-violet-300 dark:hover:text-white px-3.5 py-1.5 text-xs font-bold transition-all shadow-sm cursor-pointer"
+                      >
+                        <span>Tập tiếp theo (Tập {nextEpisode.name})</span>
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
-                {/* Multi-Source Video Player Host Slot */}
+                {/* Multi-Source Video Player Host Slot — represents entire player area: [Source toolbar] + [Video 16:9] */}
                 <div
                   id="cinepvq-player-slot"
-                  className="relative w-full aspect-video rounded-2xl overflow-hidden bg-black shadow-2xl shadow-black/80"
-                />
+                  className="relative w-full space-y-2 overflow-visible"
+                >
+                  {/* Source Toolbar spacer: reserves exact height for active source badge & switcher */}
+                  <div
+                    className="flex items-center justify-between gap-2 px-1 text-xs min-h-[32px] sm:min-h-[36px] min-w-0 invisible pointer-events-none select-none"
+                    aria-hidden="true"
+                  >
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 sm:px-3 py-1 font-semibold border truncate max-w-[190px] sm:max-w-xs">
+                        Nguồn phát: Đang tải...
+                      </span>
+                    </div>
+                    <div className="shrink-0">
+                      <span className="inline-flex items-center gap-1.5 rounded-lg px-2.5 sm:px-3 py-1.5 font-medium border whitespace-nowrap">
+                        Đổi nguồn
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Video 16:9 viewport placeholder */}
+                  <div
+                    className="relative w-full rounded-2xl bg-black shadow-2xl shadow-black/80 aspect-video border border-zinc-800/80"
+                    style={{ minHeight: "180px" }}
+                  />
+                </div>
 
                 {/* Auto Next Episode Countdown Notification Banner */}
                 {nextEpisodeCountdown !== null && nextEpisode && (

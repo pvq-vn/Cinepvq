@@ -38,6 +38,7 @@ export interface VideoPlayerProps {
   onNextEpisode?: () => void;
   onPlayingChange?: (playing: boolean) => void;
   onVideoRef?: (el: HTMLVideoElement | null) => void;
+  isMini?: boolean;
 }
 
 export default function VideoPlayer({
@@ -61,6 +62,7 @@ export default function VideoPlayer({
   onNextEpisode,
   onPlayingChange,
   onVideoRef,
+  isMini = false,
 }: VideoPlayerProps) {
   const { settings, updateSettings } = useUserStore();
   const [sources, setSources] = useState<ResolvedSource[]>([]);
@@ -284,109 +286,112 @@ export default function VideoPlayer({
   }
 
   return (
-    <div className="space-y-2">
-      {/* Stream Source Selector Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs">
-        {/* Active Source Badge */}
-        <div className="flex items-center gap-2">
-          {isResolving ? (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-500/10 text-violet-400 px-3 py-1 font-semibold border border-violet-500/20 animate-pulse">
-              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-              Đang tối ưu nguồn phát...
-            </span>
-          ) : activeSource ? (
-            <span
-              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-semibold border transition-all ${
-                activeSource.type === "hls"
-                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30 shadow-sm shadow-emerald-500/10"
-                  : "bg-amber-500/10 text-amber-400 border-amber-500/30"
-              }`}
-            >
-              {activeSource.type === "hls" ? (
-                <Sparkles className="h-3.5 w-3.5" />
-              ) : (
-                <ShieldAlert className="h-3.5 w-3.5" />
-              )}
-              Nguồn phát: {activeSource.name}
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-zinc-800 text-zinc-400 px-3 py-1 font-semibold border border-zinc-700">
-              <ShieldAlert className="h-3.5 w-3.5" />
-              Nguồn phát: Server Dự Phòng
-            </span>
-          )}
-        </div>
-
-        {/* Multi-Source Switcher Menu */}
-        {sources.length > 0 && (
-          <div className="relative" ref={menuRef}>
-            <button
-              onClick={() => setIsMenuOpen((prev) => !prev)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-800/80 hover:bg-zinc-700/80 text-zinc-200 px-3 py-1.5 font-medium border border-zinc-700/80 shadow-sm transition-all active:scale-95"
-              title="Mở danh sách nguồn phát khả dụng"
-            >
-              <Tv className="h-3.5 w-3.5 text-violet-400" />
-              <span>Đổi nguồn ({sources.length})</span>
-              <ChevronDown
-                className={`h-3 w-3 text-zinc-400 transition-transform ${
-                  isMenuOpen ? "rotate-180" : ""
+    <div className={isMini ? "w-full h-full" : "space-y-2"}>
+      {/* Stream Source Selector Toolbar (Hidden in mini mode) */}
+      {!isMini && (
+        <div className="flex items-center justify-between gap-2 px-1 text-xs min-w-0">
+          {/* Active Source Badge */}
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            {isResolving ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-500/10 text-violet-400 px-3 py-1 font-semibold border border-violet-500/20 animate-pulse truncate">
+                <RefreshCw className="h-3.5 w-3.5 animate-spin shrink-0" />
+                <span className="truncate">Đang tối ưu nguồn phát...</span>
+              </span>
+            ) : activeSource ? (
+              <span
+                className={`inline-flex items-center gap-1.5 rounded-full px-2.5 sm:px-3 py-1 font-semibold border transition-all truncate max-w-[190px] sm:max-w-xs md:max-w-sm ${
+                  activeSource.type === "hls"
+                    ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30 shadow-sm shadow-emerald-500/10"
+                    : "bg-amber-500/10 text-amber-400 border-amber-500/30"
                 }`}
-              />
-            </button>
-
-            {/* Dropdown Menu */}
-            {isMenuOpen && (
-              <div className="absolute right-0 top-full mt-1.5 w-64 rounded-xl bg-zinc-900/95 border border-zinc-700/80 shadow-2xl backdrop-blur-xl p-1.5 z-50 animate-in fade-in zoom-in-95 duration-150">
-                <div className="px-2.5 py-1.5 text-[11px] font-bold text-zinc-400 uppercase tracking-wider border-b border-zinc-800 mb-1">
-                  Chọn Nguồn Phát
-                </div>
-                <div className="space-y-1">
-                  {sources.map((src) => {
-                    const isActive = src.sourceId === activeSourceId;
-                    const isFailed = failedSourceIds.has(src.sourceId);
-
-                    return (
-                      <button
-                        key={src.sourceId}
-                        onClick={() => handleSelectSource(src.sourceId)}
-                        disabled={isActive}
-                        className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-left transition-all ${
-                          isActive
-                            ? "bg-violet-600/20 text-white font-semibold border border-violet-500/40"
-                            : "hover:bg-zinc-800/80 text-zinc-300 hover:text-white"
-                        } ${isFailed ? "opacity-50" : ""}`}
-                      >
-                        <div className="flex items-center gap-2 truncate">
-                          {/* Dot indicator */}
-                          <span
-                            className={`h-2 w-2 rounded-full shrink-0 ${
-                              isFailed
-                                ? "bg-red-500"
-                                : src.type === "hls"
-                                ? "bg-emerald-400 shadow-sm shadow-emerald-500/50"
-                                : "bg-amber-400 shadow-sm shadow-amber-500/50"
-                            }`}
-                          />
-                          <div className="truncate">
-                            <p className="truncate text-xs">{src.displayName}</p>
-                            <p className="text-[10px] text-zinc-400 font-normal">
-                              {src.type === "hls" ? "Direct HLS • Không quảng cáo" : "Iframe Embed"}
-                            </p>
-                          </div>
-                        </div>
-
-                        {isActive && (
-                          <Check className="h-4 w-4 text-violet-400 shrink-0" />
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
+                title={`Nguồn phát: ${activeSource.name}`}
+              >
+                {activeSource.type === "hls" ? (
+                  <Sparkles className="h-3.5 w-3.5 shrink-0" />
+                ) : (
+                  <ShieldAlert className="h-3.5 w-3.5 shrink-0" />
+                )}
+                <span className="truncate">Nguồn phát: {activeSource.name}</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-zinc-800 text-zinc-400 px-2.5 sm:px-3 py-1 font-semibold border border-zinc-700 truncate max-w-[190px] sm:max-w-xs md:max-w-sm">
+                <ShieldAlert className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">Nguồn phát: Server Dự Phòng</span>
+              </span>
             )}
           </div>
-        )}
-      </div>
+
+          {/* Multi-Source Switcher Menu */}
+          {sources.length > 0 && (
+            <div className="relative shrink-0" ref={menuRef}>
+              <button
+                onClick={() => setIsMenuOpen((prev) => !prev)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-800/80 hover:bg-zinc-700/80 text-zinc-200 px-2.5 sm:px-3 py-1.5 font-medium border border-zinc-700/80 shadow-sm transition-all active:scale-95 shrink-0 whitespace-nowrap"
+                title="Mở danh sách nguồn phát khả dụng"
+              >
+                <Tv className="h-3.5 w-3.5 text-violet-400 shrink-0" />
+                <span className="whitespace-nowrap">Đổi nguồn ({sources.length})</span>
+                <ChevronDown
+                  className={`h-3 w-3 text-zinc-400 shrink-0 transition-transform ${
+                    isMenuOpen ? "rotate-180" : ""
+                  }`}
+                />
+              </button>
+
+              {/* Dropdown Menu */}
+              {isMenuOpen && (
+                <div className="absolute right-0 top-full mt-1.5 w-64 rounded-xl bg-zinc-900/95 border border-zinc-700/80 shadow-2xl backdrop-blur-xl p-1.5 z-50 animate-in fade-in zoom-in-95 duration-150">
+                  <div className="px-2.5 py-1.5 text-[11px] font-bold text-zinc-400 uppercase tracking-wider border-b border-zinc-800 mb-1">
+                    Chọn Nguồn Phát
+                  </div>
+                  <div className="space-y-1">
+                    {sources.map((src) => {
+                      const isActive = src.sourceId === activeSourceId;
+                      const isFailed = failedSourceIds.has(src.sourceId);
+
+                      return (
+                        <button
+                          key={src.sourceId}
+                          onClick={() => handleSelectSource(src.sourceId)}
+                          disabled={isActive}
+                          className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-left transition-all ${
+                            isActive
+                              ? "bg-violet-600/20 text-white font-semibold border border-violet-500/40"
+                              : "hover:bg-zinc-800/80 text-zinc-300 hover:text-white"
+                          } ${isFailed ? "opacity-50" : ""}`}
+                        >
+                          <div className="flex items-center gap-2 truncate">
+                            {/* Dot indicator */}
+                            <span
+                              className={`h-2 w-2 rounded-full shrink-0 ${
+                                isFailed
+                                  ? "bg-red-500"
+                                  : src.type === "hls"
+                                  ? "bg-emerald-400 shadow-sm shadow-emerald-500/50"
+                                  : "bg-amber-400 shadow-sm shadow-amber-500/50"
+                              }`}
+                            />
+                            <div className="truncate">
+                              <p className="truncate text-xs">{src.displayName}</p>
+                              <p className="text-[10px] text-zinc-400 font-normal">
+                                {src.type === "hls" ? "Direct HLS • Không quảng cáo" : "Iframe Embed"}
+                              </p>
+                            </div>
+                          </div>
+
+                          {isActive && (
+                            <Check className="h-4 w-4 text-violet-400 shrink-0" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Main Video Viewport */}
       {isResolving ? (
@@ -421,6 +426,7 @@ export default function VideoPlayer({
           onError={handleFatalError}
           onPlayingChange={onPlayingChange}
           onVideoRef={onVideoRef}
+          isMini={isMini}
         />
       ) : activeSource && activeSource.type === "iframe" ? (
         <div className="relative w-full overflow-hidden rounded-2xl bg-black shadow-2xl shadow-black/60 aspect-video border border-zinc-800/80">
