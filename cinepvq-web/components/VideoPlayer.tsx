@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import {
   resolveAllSources,
   type ResolvedSource,
@@ -15,6 +15,7 @@ import {
   Tv,
   Check,
   ChevronDown,
+  Info,
 } from "lucide-react";
 
 export interface VideoPlayerProps {
@@ -39,6 +40,31 @@ export interface VideoPlayerProps {
   onPlayingChange?: (playing: boolean) => void;
   onVideoRef?: (el: HTMLVideoElement | null) => void;
   isMini?: boolean;
+  sourceSwitchWarning?: boolean;
+  onTriggerSourceWarning?: () => void;
+  autoPlay?: boolean;
+}
+
+type AudioSemanticType = "SUBTITLE" | "DUBBED" | "UNKNOWN";
+
+function getAudioSemanticType(name?: string): AudioSemanticType {
+  if (!name) return "UNKNOWN";
+  const norm = name.toLowerCase();
+  if (
+    /thuy[eế]t\s*minh|\btm\b/i.test(norm) ||
+    /l[oồ]ng\s*ti[eế]ng|\blt\b/i.test(norm) ||
+    /dubbed/i.test(norm)
+  ) {
+    return "DUBBED";
+  }
+  if (
+    /vietsub|\bsub\b/i.test(norm) ||
+    /ph[uụ]\s*[đd][eề]/i.test(norm) ||
+    /subtitles?/i.test(norm)
+  ) {
+    return "SUBTITLE";
+  }
+  return "UNKNOWN";
 }
 
 export default function VideoPlayer({
@@ -63,6 +89,9 @@ export default function VideoPlayer({
   onPlayingChange,
   onVideoRef,
   isMini = false,
+  sourceSwitchWarning = false,
+  onTriggerSourceWarning,
+  autoPlay = true,
 }: VideoPlayerProps) {
   const { settings, updateSettings } = useUserStore();
   const [sources, setSources] = useState<ResolvedSource[]>([]);
@@ -71,18 +100,36 @@ export default function VideoPlayer({
   const [failedSourceIds, setFailedSourceIds] = useState<Set<VideoSourceId>>(new Set());
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
   const [resumeTime, setResumeTime] = useState<number>(initialTime);
+  const [currentAutoPlay, setCurrentAutoPlay] = useState<boolean>(autoPlay);
+
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const isPlayingLocallyRef = useRef<boolean>(autoPlay);
+  const pendingAudioWarningRef = useRef<boolean>(false);
+  const [localAudioWarning, setLocalAudioWarning] = useState<boolean>(false);
+  const warningTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const resolveRequestIdRef = useRef<number>(0);
 
   const menuRef = useRef<HTMLDivElement>(null);
 
   const episodeKey = `${imdbId || ""}_${movieSlug || ""}_${season || 1}_${episode || 1}_${type || "series"}_${serverName || ""}_${episodeSlug || ""}_${videoUrl || ""}`;
   const isResolving = resolvedKey !== episodeKey;
+  const displaySources = useMemo(
+    () => (resolvedKey === episodeKey ? sources : []),
+    [resolvedKey, episodeKey, sources]
+  );
 
-  // Reset resumeTime whenever a new episode or movie is selected
+  // Reset resumeTime & warning whenever a new episode or movie is selected (EPISODE SWITCH)
   const [prevEpisodeKey, setPrevEpisodeKey] = useState(episodeKey);
   if (episodeKey !== prevEpisodeKey) {
     setPrevEpisodeKey(episodeKey);
     setResumeTime(initialTime);
+    setCurrentAutoPlay(autoPlay);
+    setLocalAudioWarning(false);
   }
+
+  useEffect(() => {
+    pendingAudioWarningRef.current = false;
+  }, [episodeKey]);
 
   // Close menu on outside click
   useEffect(() => {
@@ -104,8 +151,41 @@ export default function VideoPlayer({
     [onTimeUpdate]
   );
 
+  const handleRegisterVideoRef = useCallback(
+    (el: HTMLVideoElement | null) => {
+      localVideoRef.current = el;
+      onVideoRef?.(el);
+    },
+    [onVideoRef]
+  );
+
+  const triggerLocalWarningToast = useCallback(() => {
+    if (warningTimerRef.current) clearTimeout(warningTimerRef.current);
+    setLocalAudioWarning(true);
+    warningTimerRef.current = setTimeout(() => {
+      setLocalAudioWarning(false);
+      warningTimerRef.current = null;
+    }, 1800);
+  }, []);
+
+  const handlePlayingChangeInternal = useCallback(
+    (playing: boolean) => {
+      isPlayingLocallyRef.current = playing;
+      onPlayingChange?.(playing);
+
+      // Warning displays ONLY after the new source actually begins playback!
+      if (playing && pendingAudioWarningRef.current) {
+        pendingAudioWarningRef.current = false;
+        triggerLocalWarningToast();
+        onTriggerSourceWarning?.();
+      }
+    },
+    [onPlayingChange, onTriggerSourceWarning, triggerLocalWarningToast]
+  );
+
   // 1. Resolve all available sources on episode / movie change
   useEffect(() => {
+    const requestId = ++resolveRequestIdRef.current;
     let isCancelled = false;
 
     console.log("[MULTI-SOURCE] Resolving available sources for:", {
@@ -131,7 +211,7 @@ export default function VideoPlayer({
       episodeSlug,
     })
       .then((resolvedList) => {
-        if (isCancelled) return;
+        if (isCancelled || requestId !== resolveRequestIdRef.current) return;
         console.log("[MULTI-SOURCE] Resolved sources:", resolvedList);
 
         // Fallback default: Ensure NguonC is present if provided
@@ -185,7 +265,7 @@ export default function VideoPlayer({
         }
       })
       .catch((err) => {
-        if (isCancelled) return;
+        if (isCancelled || requestId !== resolveRequestIdRef.current) return;
         console.error("[MULTI-SOURCE] Resolution failed:", err);
         // Fallback to NguonC
         if (videoUrl) {
@@ -235,7 +315,7 @@ export default function VideoPlayer({
   ]);
 
   // Find active source object
-  const activeSource = sources.find((s) => s.sourceId === activeSourceId) || null;
+  const activeSource = displaySources.find((s) => s.sourceId === activeSourceId) || null;
 
   // 2. Automatic Fallback Handler on Fatal Error
   const handleFatalError = useCallback(
@@ -250,7 +330,7 @@ export default function VideoPlayer({
         next.add(activeSourceId);
 
         // Find next eligible source in priority order
-        const eligible = sources.filter(
+        const eligible = displaySources.filter(
           (s) => !next.has(s.sourceId) && s.url
         );
 
@@ -267,17 +347,50 @@ export default function VideoPlayer({
         return next;
       });
     },
-    [activeSourceId, sources, videoUrl]
+    [activeSourceId, displaySources, videoUrl]
   );
 
   // Manual source switch handler
   const handleSelectSource = (sourceId: VideoSourceId) => {
     console.log(`[MULTI-SOURCE] User manually switched to: ${sourceId}`);
+    const oldSrc = activeSource;
+    const newSrc = displaySources.find((s) => s.sourceId === sourceId);
+
+    // 1. Capture exact current timestamp and playback state from active video before switching
+    const vEl = localVideoRef.current;
+    let currentPos = resumeTime;
+    let wasPlaying = isPlayingLocallyRef.current;
+
+    if (vEl) {
+      if (vEl.currentTime > 0) {
+        currentPos = vEl.currentTime;
+      }
+      wasPlaying = !vEl.paused && !vEl.ended;
+    }
+
+    setResumeTime(currentPos);
+    setCurrentAutoPlay(wasPlaying);
+
+    // 2. Check if audio semantic type switched between SUBTITLE <-> DUBBED
+    if (oldSrc && newSrc) {
+      const oldKind = getAudioSemanticType(oldSrc.displayName || oldSrc.name || oldSrc.serverName);
+      const newKind = getAudioSemanticType(newSrc.displayName || newSrc.name || newSrc.serverName);
+      if (
+        (oldKind === "SUBTITLE" && newKind === "DUBBED") ||
+        (oldKind === "DUBBED" && newKind === "SUBTITLE")
+      ) {
+        // Flag pending warning: only show AFTER new source actually starts playing
+        pendingAudioWarningRef.current = true;
+      } else {
+        pendingAudioWarningRef.current = false;
+      }
+    }
+
     setActiveSourceId(sourceId);
     setIsMenuOpen(false);
   };
 
-  if (!videoUrl && sources.length === 0 && !isResolving) {
+  if (!videoUrl && displaySources.length === 0 && !isResolving) {
     return (
       <div className="relative w-full overflow-hidden rounded-2xl bg-zinc-900 aspect-video flex items-center justify-center border border-zinc-800">
         <p className="text-zinc-500 text-sm">Chọn một tập phim để xem</p>
@@ -322,7 +435,7 @@ export default function VideoPlayer({
           </div>
 
           {/* Multi-Source Switcher Menu */}
-          {sources.length > 0 && (
+          {displaySources.length > 0 && (
             <div className="relative shrink-0" ref={menuRef}>
               <button
                 onClick={() => setIsMenuOpen((prev) => !prev)}
@@ -330,7 +443,7 @@ export default function VideoPlayer({
                 title="Mở danh sách nguồn phát khả dụng"
               >
                 <Tv className="h-3.5 w-3.5 text-violet-400 shrink-0" />
-                <span className="whitespace-nowrap">Đổi nguồn ({sources.length})</span>
+                <span className="whitespace-nowrap">Đổi nguồn ({displaySources.length})</span>
                 <ChevronDown
                   className={`h-3 w-3 text-zinc-400 shrink-0 transition-transform ${
                     isMenuOpen ? "rotate-180" : ""
@@ -345,7 +458,7 @@ export default function VideoPlayer({
                     Chọn Nguồn Phát
                   </div>
                   <div className="space-y-1">
-                    {sources.map((src) => {
+                    {displaySources.map((src) => {
                       const isActive = src.sourceId === activeSourceId;
                       const isFailed = failedSourceIds.has(src.sourceId);
 
@@ -394,7 +507,7 @@ export default function VideoPlayer({
       )}
 
       {/* Main Video Viewport */}
-      {isResolving ? (
+      {isResolving && !activeSource ? (
         <div className="relative w-full overflow-hidden rounded-2xl bg-zinc-950 shadow-2xl shadow-black/60 aspect-video border border-zinc-800 flex flex-col items-center justify-center gap-3">
           <div className="flex h-12 w-12 items-center justify-center rounded-full bg-violet-600/20 text-violet-400 animate-spin">
             <RefreshCw className="h-6 w-6" />
@@ -408,10 +521,11 @@ export default function VideoPlayer({
         </div>
       ) : activeSource && activeSource.type === "hls" ? (
         <CustomHlsPlayer
-          key={`${activeSource.sourceId}_${serverName || ""}_${episodeSlug || ""}_${activeSource.url}`}
+          key="cinepvq-active-hls"
           src={activeSource.url}
           poster={poster}
           initialTime={resumeTime}
+          autoPlay={currentAutoPlay}
           initialPlaybackRate={settings?.playbackSpeed || 1}
           skipSeconds={settings?.skipSeconds || 10}
           preferredQuality={settings?.preferredQuality || "auto"}
@@ -424,12 +538,21 @@ export default function VideoPlayer({
           onTimeUpdate={handleTimeUpdate}
           onEnded={onEnded}
           onError={handleFatalError}
-          onPlayingChange={onPlayingChange}
-          onVideoRef={onVideoRef}
+          onPlayingChange={handlePlayingChangeInternal}
+          onVideoRef={handleRegisterVideoRef}
           isMini={isMini}
+          sourceSwitchWarning={localAudioWarning || sourceSwitchWarning}
         />
       ) : activeSource && activeSource.type === "iframe" ? (
         <div className="relative w-full overflow-hidden rounded-2xl bg-black shadow-2xl shadow-black/60 aspect-video border border-zinc-800/80">
+          {(localAudioWarning || sourceSwitchWarning) && (
+            <div className="absolute top-4 inset-x-0 mx-auto w-fit max-w-[90%] pointer-events-none z-40 animate-in fade-in slide-in-from-top-2 duration-200">
+              <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-zinc-950/90 backdrop-blur-md text-amber-300 text-xs font-medium border border-amber-500/30 shadow-xl">
+                <Info className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                <span>Thời gian giữa Vietsub và bản lồng tiếng có thể không đồng bộ. Vui lòng tự điều chỉnh nếu cần.</span>
+              </div>
+            </div>
+          )}
           <iframe
             key={`${activeSource.sourceId}_${serverName || ""}_${episodeSlug || ""}_${activeSource.url}`}
             src={activeSource.url}
@@ -441,6 +564,14 @@ export default function VideoPlayer({
         </div>
       ) : (
         <div className="relative w-full overflow-hidden rounded-2xl bg-black shadow-2xl shadow-black/60 aspect-video border border-zinc-800/80">
+          {(localAudioWarning || sourceSwitchWarning) && (
+            <div className="absolute top-4 inset-x-0 mx-auto w-fit max-w-[90%] pointer-events-none z-40 animate-in fade-in slide-in-from-top-2 duration-200">
+              <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-zinc-950/90 backdrop-blur-md text-amber-300 text-xs font-medium border border-amber-500/30 shadow-xl">
+                <Info className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                <span>Thời gian giữa Vietsub và bản lồng tiếng có thể không đồng bộ. Vui lòng tự điều chỉnh nếu cần.</span>
+              </div>
+            </div>
+          )}
           <iframe
             key={`fallback_${serverName || ""}_${episodeSlug || ""}_${videoUrl}`}
             src={videoUrl}

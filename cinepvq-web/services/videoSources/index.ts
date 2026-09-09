@@ -70,7 +70,9 @@ export async function resolveAllSources(
       if (options.serverName) params.set("serverName", options.serverName);
       if (options.episodeSlug) params.set("episodeSlug", options.episodeSlug);
 
-      const res = await fetch(`/api/video-sources/resolve?${params.toString()}`);
+      const res = await fetch(`/api/video-sources/resolve?${params.toString()}`, {
+        cache: "no-store",
+      });
       if (!res.ok) {
         console.warn("[Multi-Source Client] API returned error status:", res.status);
         // Fallback to NguonC embed if API route failed

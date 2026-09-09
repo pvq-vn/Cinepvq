@@ -31,6 +31,8 @@ export type CategoryDict = Record<string, CategoryGroup>;
 // ─── Movie (list item) ────────────────────────────────────────────────────
 
 export interface Movie {
+  id?: string;
+  _id?: string;
   name: string;
   slug: string;
   original_name: string;

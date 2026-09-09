@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useMemo } from "react";
 import Link from "next/link";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { Movie } from "@/types/movie";
@@ -23,6 +23,22 @@ export default function MovieRow({
 }: MovieRowProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  const uniqueMovies = useMemo(() => {
+    if (!movies || movies.length === 0) return [];
+    const seen = new Set<string>();
+    const result: Movie[] = [];
+    for (const m of movies) {
+      const id = m.id || m.slug;
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        result.push(m);
+      } else if (!id) {
+        result.push(m);
+      }
+    }
+    return result;
+  }, [movies]);
+
   const handleScroll = (direction: "left" | "right") => {
     if (!scrollRef.current) return;
     const { scrollLeft, clientWidth } = scrollRef.current;
@@ -33,7 +49,7 @@ export default function MovieRow({
     });
   };
 
-  if (!movies || movies.length === 0) return null;
+  if (!uniqueMovies || uniqueMovies.length === 0) return null;
 
   return (
     <section className="relative space-y-3.5 my-8">
@@ -87,7 +103,7 @@ export default function MovieRow({
         className="flex gap-4 sm:gap-5 overflow-x-auto scrollbar-none px-4 sm:px-6 lg:px-8 pb-3 pt-1 scroll-smooth"
         style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
       >
-        {movies.map((movie, index) => (
+        {uniqueMovies.map((movie, index) => (
           <div
             key={movie.slug}
             className="w-[150px] sm:w-[190px] md:w-[210px] flex-shrink-0"

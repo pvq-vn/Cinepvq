@@ -13,6 +13,7 @@ export interface K20ResolveOptions {
   type?: "movie" | "series";
   slug?: string;
   serverName?: string;
+  episodeSlug?: string;
 }
 
 export interface ResolvedStream {
@@ -265,6 +266,9 @@ export async function resolveK20StreamServer(
             `${K20_BASE_URL}/stream/series/kkphim:${cleanSlug}.json`,
           ]
         : [
+            ...(options.episodeSlug
+              ? [`${K20_BASE_URL}/stream/series/kkphim:${cleanSlug}:${options.episodeSlug.trim().toLowerCase()}.json`]
+              : []),
             `${K20_BASE_URL}/stream/series/kkphim:${cleanSlug}:tap-${ep2Digit}.json`,
             `${K20_BASE_URL}/stream/series/kkphim:${cleanSlug}:tap-${episode}.json`,
             ...(episode === 1

@@ -10,17 +10,6 @@ const emptySubscribe = () => () => {};
 const getClientSnapshot = () => true;
 const getServerSnapshot = () => false;
 
-function getFullscreenElement(): Element | null {
-  if (typeof document === "undefined") return null;
-  return (
-    document.fullscreenElement ||
-    (document as unknown as { webkitFullscreenElement?: Element }).webkitFullscreenElement ||
-    (document as unknown as { mozFullScreenElement?: Element }).mozFullScreenElement ||
-    (document as unknown as { msFullscreenElement?: Element }).msFullscreenElement ||
-    null
-  );
-}
-
 /**
  * GlobalPlayerHost — Single video player orchestrator.
  *
@@ -55,14 +44,19 @@ export default function GlobalPlayerHost() {
     goToNextEpisode,
     goToPrevEpisode,
     registerVideoElement,
+    sourceSwitchWarning,
+    triggerSourceWarning,
   } = useGlobalPlayer();
 
   const isClient = useSyncExternalStore(emptySubscribe, getClientSnapshot, getServerSnapshot);
 
-  // Slot rect tracking for detail-mode overlay positioning
-  const [slotRect, setSlotRect] = useState<DOMRect | null>(null);
+  // Slot absolute coordinate tracking for detail-mode overlay
+  const [slotPosition, setSlotPosition] = useState<{
+    top: number;
+    left: number;
+    width: number;
+  } | null>(null);
   const slotObserverRef = useRef<ResizeObserver | null>(null);
-  const scrollListenerRef = useRef<(() => void) | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
 
   const supportsPip =
@@ -95,18 +89,23 @@ export default function GlobalPlayerHost() {
     }
   };
 
-  // Track slot position for detail-mode overlay
-  const updateSlotRect = useCallback(() => {
+  // Track slot absolute position in document coordinates (immune to scroll lag)
+  const updateSlotPosition = useCallback(() => {
     const slot = document.getElementById("cinepvq-player-slot");
     if (slot) {
-      // Ensure no stale inline minHeight locks slot to fullscreen or landscape dimensions
       slot.style.minHeight = "";
       const rect = slot.getBoundingClientRect();
       if (rect.width > 0) {
-        setSlotRect(rect);
+        const scrollY = typeof window !== "undefined" ? window.scrollY || window.pageYOffset || 0 : 0;
+        const scrollX = typeof window !== "undefined" ? window.scrollX || window.pageXOffset || 0 : 0;
+        setSlotPosition({
+          top: rect.top + scrollY,
+          left: rect.left + scrollX,
+          width: rect.width,
+        });
       }
     } else {
-      setSlotRect(null);
+      setSlotPosition(null);
     }
   }, []);
 
@@ -118,94 +117,76 @@ export default function GlobalPlayerHost() {
     const onLeavePip = () => {
       const slot = document.getElementById("cinepvq-player-slot");
       if (slot) slot.style.minHeight = "";
-      updateSlotRect();
-      requestAnimationFrame(() => updateSlotRect());
-      setTimeout(() => updateSlotRect(), 100);
-      setTimeout(() => updateSlotRect(), 300);
+      updateSlotPosition();
+      requestAnimationFrame(() => updateSlotPosition());
+      setTimeout(() => updateSlotPosition(), 100);
+      setTimeout(() => updateSlotPosition(), 300);
     };
 
     video.addEventListener("leavepictureinpicture", onLeavePip);
     return () => {
       video.removeEventListener("leavepictureinpicture", onLeavePip);
     };
-  }, [videoRef, updateSlotRect]);
+  }, [videoRef, updateSlotPosition]);
 
   useEffect(() => {
     if (!isClient || !session) return;
 
     if (mode === "detail") {
-      // RAF measurement to sync after reflow (avoids setState in effect)
+      // RAF measurement to sync after reflow
       const rafId = requestAnimationFrame(() => {
-        updateSlotRect();
+        updateSlotPosition();
       });
 
-      // Watch for slot size changes and wrapper size changes
+      // Watch for slot size changes and layout changes
       const slot = document.getElementById("cinepvq-player-slot");
       if (slot) {
         const ro = new ResizeObserver(() => {
-          updateSlotRect();
+          updateSlotPosition();
         });
         ro.observe(slot);
-        if (wrapperRef.current) {
-          ro.observe(wrapperRef.current);
+        if (typeof document !== "undefined" && document.body) {
+          ro.observe(document.body);
         }
         slotObserverRef.current = ro;
       }
 
-      // Watch for scroll, resize, orientation changes, fullscreen transitions
-      const onViewportChange = () => {
+      // Re-measure on resize, orientation changes, or fullscreen exit
+      const onLayoutChange = () => {
         const s = document.getElementById("cinepvq-player-slot");
         if (s) {
           s.style.minHeight = "";
         }
-        updateSlotRect();
+        updateSlotPosition();
       };
 
-      window.addEventListener("scroll", onViewportChange, { passive: true });
-      window.addEventListener("resize", onViewportChange, { passive: true });
-      window.addEventListener("orientationchange", onViewportChange, { passive: true });
-      window.visualViewport?.addEventListener("resize", onViewportChange);
-      document.addEventListener("fullscreenchange", onViewportChange);
-      document.addEventListener("webkitfullscreenchange", onViewportChange);
-      screen.orientation?.addEventListener?.("change", onViewportChange);
-      scrollListenerRef.current = onViewportChange;
+      window.addEventListener("resize", onLayoutChange, { passive: true });
+      window.addEventListener("orientationchange", onLayoutChange, { passive: true });
+      window.visualViewport?.addEventListener("resize", onLayoutChange);
+      document.addEventListener("fullscreenchange", onLayoutChange);
+      document.addEventListener("webkitfullscreenchange", onLayoutChange);
+      screen.orientation?.addEventListener?.("change", onLayoutChange);
 
       return () => {
         cancelAnimationFrame(rafId);
         slotObserverRef.current?.disconnect();
         slotObserverRef.current = null;
-        if (scrollListenerRef.current) {
-          window.removeEventListener("scroll", scrollListenerRef.current);
-          window.removeEventListener("resize", scrollListenerRef.current);
-          window.removeEventListener("orientationchange", scrollListenerRef.current);
-          window.visualViewport?.removeEventListener("resize", scrollListenerRef.current);
-          document.removeEventListener("fullscreenchange", scrollListenerRef.current);
-          document.removeEventListener("webkitfullscreenchange", scrollListenerRef.current);
-          screen.orientation?.removeEventListener?.("change", scrollListenerRef.current);
-          scrollListenerRef.current = null;
-        }
-        // RAF to avoid synchronous setState in cleanup
-        requestAnimationFrame(() => setSlotRect(null));
+        window.removeEventListener("resize", onLayoutChange);
+        window.removeEventListener("orientationchange", onLayoutChange);
+        window.visualViewport?.removeEventListener("resize", onLayoutChange);
+        document.removeEventListener("fullscreenchange", onLayoutChange);
+        document.removeEventListener("webkitfullscreenchange", onLayoutChange);
+        screen.orientation?.removeEventListener?.("change", onLayoutChange);
+        requestAnimationFrame(() => setSlotPosition(null));
       };
     } else {
       // Cleanup observers when not in detail mode
       slotObserverRef.current?.disconnect();
       slotObserverRef.current = null;
-      if (scrollListenerRef.current) {
-        window.removeEventListener("scroll", scrollListenerRef.current);
-        window.removeEventListener("resize", scrollListenerRef.current);
-        window.removeEventListener("orientationchange", scrollListenerRef.current);
-        window.visualViewport?.removeEventListener("resize", scrollListenerRef.current);
-        document.removeEventListener("fullscreenchange", scrollListenerRef.current);
-        document.removeEventListener("webkitfullscreenchange", scrollListenerRef.current);
-        screen.orientation?.removeEventListener?.("change", scrollListenerRef.current);
-        scrollListenerRef.current = null;
-      }
-      // RAF to avoid synchronous setState in effect
-      const clearRafId = requestAnimationFrame(() => setSlotRect(null));
+      const clearRafId = requestAnimationFrame(() => setSlotPosition(null));
       return () => cancelAnimationFrame(clearRafId);
     }
-  }, [mode, session, isClient, updateSlotRect]);
+  }, [mode, session, isClient, updateSlotPosition]);
 
   if (!isClient || !session) {
     return null;
@@ -215,28 +196,27 @@ export default function GlobalPlayerHost() {
   const isMini = mode === "mini";
   const isDetail = mode === "detail";
 
-  // Detail mode: fixed overlay matching slot position and width.
-  // Height is natural content height (toolbar + 16:9 video viewport) to prevent circular feedback loops.
-  // zIndex 30 ensures player is below Navbar (z-40) when scrolling.
-  // overflow visible ensures controls and dropdown menus are never cropped.
-  const detailStyle: React.CSSProperties = slotRect
+  // Detail mode: absolute positioning matching slot position in document.
+  // Scrolls 100% naturally with document layout without JS scroll lagging, inertia, or spring.
+  const detailStyle: React.CSSProperties = slotPosition
     ? {
-        position: "fixed",
-        top: slotRect.top,
-        left: slotRect.left,
-        width: slotRect.width,
+        position: "absolute",
+        top: slotPosition.top,
+        left: slotPosition.left,
+        width: slotPosition.width,
         zIndex: 30,
         overflow: "visible",
+        transition: "none",
       }
     : {
-        // Slot not measured yet — hide until measured
-        position: "fixed",
+        position: "absolute",
         opacity: 0,
         pointerEvents: "none",
         top: 0,
         left: 0,
-        width: "100vw",
+        width: "100%",
         zIndex: 30,
+        transition: "none",
       };
 
   const isPipActive =
@@ -289,7 +269,7 @@ export default function GlobalPlayerHost() {
         aria-hidden={isHidden || isMini || isPipActive ? true : undefined}
       >
         <VideoPlayer
-          key={`${session.movieSlug}_${session.serverName || ""}_${session.episodeSlug || ""}_${session.videoUrl}`}
+          key={session.movieSlug}
           videoUrl={session.videoUrl}
           movieSlug={session.movieSlug}
           movieTitle={session.movieTitle}
@@ -332,6 +312,9 @@ export default function GlobalPlayerHost() {
           onNextEpisode={episodeHandlers.onNextEpisode || goToNextEpisode}
           onPlayingChange={handlePlayingChange}
           onVideoRef={registerVideoElement}
+          sourceSwitchWarning={sourceSwitchWarning}
+          onTriggerSourceWarning={triggerSourceWarning}
+          autoPlay={session.autoPlay ?? true}
         />
       </div>
 

@@ -32,13 +32,10 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import type { EpisodeItem } from "@/types/movie";
+import { normalizeEpisodeLabel } from "@/lib/format";
 
 // ─── Helper Functions ────────────────────────────────────────────────────────
 
-/**
- * Normalizes season number from title, slug, or server name.
- * Handles "Season 2", "Phần 2", "Mùa 2", "SS2", etc.
- */
 function parseSeasonNumber(title?: string, slug?: string): number {
   if (!title && !slug) return 1;
   const str = `${title || ""} ${slug || ""}`.toLowerCase();
@@ -50,6 +47,13 @@ function parseSeasonNumber(title?: string, slug?: string): number {
     return isNaN(num) || num <= 0 ? 1 : num;
   }
   return 1;
+}
+
+function getAudioKind(name?: string): "vietsub" | "thuyetminh" | "other" {
+  if (!name) return "other";
+  if (/thuy[eế]t\s*minh|\btm\b/i.test(name)) return "thuyetminh";
+  if (/vietsub|\bsub\b/i.test(name)) return "vietsub";
+  return "other";
 }
 
 /**
@@ -101,6 +105,10 @@ export default function MovieDetailPage() {
     setMode,
     registerEpisodeHandlers,
     expandScrollTrigger,
+    videoRef,
+    currentTime,
+    isPlaying,
+    triggerSourceWarning,
   } = useGlobalPlayer();
 
   // User-selected Episode & Server states
@@ -202,6 +210,20 @@ export default function MovieDetailPage() {
     return history.find((h) => h.slug === movie.slug) || null;
   }, [mounted, movie, history]);
 
+  const hasResumeProgress = useMemo(() => {
+    if (!savedHistory || !savedHistory.episodeSlug) return false;
+    const epIndex = episodeItems.findIndex((e) => e.slug === savedHistory.episodeSlug);
+    if (episodeItems.length > 0 && epIndex === -1) return false;
+
+    const savedTime =
+      episodeProgressStore.get(movie?.slug || "", savedHistory.episodeSlug, currentSeason) ||
+      savedHistory.currentTime ||
+      0;
+
+    if (epIndex > 0) return true;
+    return typeof savedTime === "number" && savedTime > 0;
+  }, [savedHistory, episodeItems, movie?.slug, currentSeason]);
+
   // ─── Purely Derived Active Episode (No setState in effect) ────────────────
   const activeEpisode = useMemo(() => {
     if (episodeItems.length === 0) return null;
@@ -296,12 +318,24 @@ export default function MovieDetailPage() {
 
   // ─── Select Episode Handler ──────────────────────────────────────────────
   const handleSelectEpisode = useCallback(
-    (ep: EpisodeItem, initialSeek = 0) => {
+    (ep: EpisodeItem, initialSeek?: number) => {
       setIsWatchingManual(true);
       setNextEpisodeCountdown(null);
       setSelectedEpisodeSlug(ep.slug);
-      setCustomResumeTime(initialSeek);
-      lastSavedTimeRef.current = initialSeek;
+
+      // Resolve resume progress for target episode
+      let targetTime = 0;
+      if (typeof initialSeek === "number") {
+        targetTime = initialSeek;
+      } else {
+        const mSlug = movie?.slug || slug;
+        if (mSlug && ep.slug) {
+          targetTime = episodeProgressStore.get(mSlug, ep.slug, currentSeason) || 0;
+        }
+      }
+
+      setCustomResumeTime(targetTime);
+      lastSavedTimeRef.current = targetTime;
 
       // Keep active chunk in sync
       if (episodeChunks.length > 0) {
@@ -313,7 +347,7 @@ export default function MovieDetailPage() {
       }
 
       if (movie) {
-        addHistory(movie, { slug: ep.slug, name: ep.name }, initialSeek);
+        addHistory(movie, { slug: ep.slug, name: ep.name }, targetTime);
       }
 
       // Shallow URL sync (?ep=tap-X) without full navigation
@@ -327,7 +361,7 @@ export default function MovieDetailPage() {
         scrollToPlayer();
       }, 150);
     },
-    [movie, episodeItems, episodeChunks, addHistory, scrollToPlayer]
+    [movie, slug, currentSeason, episodeItems, episodeChunks, addHistory, scrollToPlayer]
   );
 
   // ─── Video Time Update ───────────────────────────────────────────────────
@@ -368,7 +402,7 @@ export default function MovieDetailPage() {
       if (nextEpisodeCountdown <= 1) {
         setNextEpisodeCountdown(null);
         if (nextEpisode) {
-          handleSelectEpisode(nextEpisode, 0);
+          handleSelectEpisode(nextEpisode);
         }
       } else {
         setNextEpisodeCountdown(nextEpisodeCountdown - 1);
@@ -420,16 +454,25 @@ export default function MovieDetailPage() {
   useEffect(() => {
     if (!isWatching || !movie || !activeEpisode || !currentVideoUrl) return;
 
-    // If global player session is already active for this movie:
-    if (session?.movieSlug === (movie.slug || slug)) {
-      // If user hasn't explicitly chosen a different episode, or current session episode matches active episode:
-      if (!selectedEpisodeSlug || session?.episodeSlug === activeEpisodeSlug) {
-        if (mode !== "detail") {
-          setMode("detail");
-        }
-        return;
+    // If global player session is already active for this movie with the exact same episode, videoUrl, and server:
+    if (
+      session?.movieSlug === (movie.slug || slug) &&
+      session?.episodeSlug === activeEpisodeSlug &&
+      session?.videoUrl === currentVideoUrl &&
+      session?.serverName === (currentServer?.server_name || "Vietsub")
+    ) {
+      if (mode !== "detail") {
+        setMode("detail");
       }
+      return;
     }
+
+    const isEpisodeChange = session?.episodeSlug !== activeEpisodeSlug;
+    const shouldAutoPlay = isEpisodeChange
+      ? true
+      : videoRef.current
+      ? !videoRef.current.paused
+      : isPlaying;
 
     startPlayback({
       videoUrl: currentVideoUrl,
@@ -448,6 +491,7 @@ export default function MovieDetailPage() {
       type: isMovie ? "movie" : "series",
       poster: movie.poster_url || movie.thumb_url,
       initialTime: resumeTime,
+      autoPlay: shouldAutoPlay,
       episodes: episodeItems.map((e) => ({
         name: e.name,
         slug: e.slug,
@@ -471,9 +515,12 @@ export default function MovieDetailPage() {
     session?.movieSlug,
     session?.episodeSlug,
     session?.videoUrl,
+    session?.serverName,
     mode,
     startPlayback,
     setMode,
+    videoRef,
+    isPlaying,
   ]);
 
   // Register episode navigation handlers with GlobalPlayer
@@ -482,10 +529,10 @@ export default function MovieDetailPage() {
       hasPrevEpisode: Boolean(prevEpisode),
       hasNextEpisode: Boolean(nextEpisode),
       onPrevEpisode: () => {
-        if (prevEpisode) handleSelectEpisode(prevEpisode, 0);
+        if (prevEpisode) handleSelectEpisode(prevEpisode);
       },
       onNextEpisode: () => {
-        if (nextEpisode) handleSelectEpisode(nextEpisode, 0);
+        if (nextEpisode) handleSelectEpisode(nextEpisode);
       },
       onTimeUpdate: handleTimeUpdate,
       onEnded: handleVideoEnded,
@@ -649,23 +696,14 @@ export default function MovieDetailPage() {
             {/* Primary Action Buttons */}
             <div className="pt-3 flex flex-wrap items-center justify-center md:justify-start gap-2.5 sm:gap-3">
               {/* Resume vs Watch Now button */}
-              {savedHistory && savedHistory.episodeSlug ? (
+              {hasResumeProgress ? (
                 <>
                   <button
                     onClick={handleResumeWatching}
                     className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-5 sm:px-6 py-2.5 sm:py-3 text-xs sm:text-sm font-bold text-white shadow-lg shadow-violet-600/40 hover:bg-violet-500 active:scale-95 transition-all"
                   >
                     <Play className="h-4 w-4 fill-current" />
-                    <span>
-                      Tiếp tục xem: Tập{" "}
-                      {savedHistory.episodeName ||
-                        savedHistory.episodeSlug.replace("tap-", "")}
-                    </span>
-                    {savedHistory.currentTime && savedHistory.currentTime > 15 ? (
-                      <span className="text-xs text-violet-200 font-normal">
-                        ({formatTime(savedHistory.currentTime)})
-                      </span>
-                    ) : null}
+                    <span>Tiếp tục xem</span>
                   </button>
 
                   <button
@@ -682,7 +720,7 @@ export default function MovieDetailPage() {
                   className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-5 sm:px-6 py-2.5 sm:py-3 text-xs sm:text-sm font-bold text-white shadow-lg shadow-violet-600/40 hover:bg-violet-500 active:scale-95 transition-all"
                 >
                   <Play className="h-4 w-4 fill-current" />
-                  <span>{isMovie ? "Xem phim" : "Xem ngay (Tập 1)"}</span>
+                  <span>Xem ngay</span>
                 </button>
               )}
 
@@ -899,10 +937,10 @@ export default function MovieDetailPage() {
                         <span className="text-violet-600 dark:text-violet-400">
                           {isMovie
                             ? "Bản Full"
-                            : `Tập ${
+                            : normalizeEpisodeLabel(
                                 episodeItems.find((e) => e.slug === activeEpisodeSlug)?.name ||
                                 activeEpisodeSlug.replace("tap-", "")
-                              }`}
+                              )}
                         </span>
                       </h3>
                       <span className="text-[11px] text-zinc-500">
@@ -929,10 +967,10 @@ export default function MovieDetailPage() {
                     {/* Next Episode Action Button */}
                     {nextEpisode && (
                       <button
-                        onClick={() => handleSelectEpisode(nextEpisode, 0)}
+                        onClick={() => handleSelectEpisode(nextEpisode)}
                         className="inline-flex items-center gap-1.5 rounded-xl bg-violet-600/10 hover:bg-violet-600 text-violet-600 hover:text-white dark:text-violet-300 dark:hover:text-white px-3.5 py-1.5 text-xs font-bold transition-all shadow-sm cursor-pointer"
                       >
-                        <span>Tập tiếp theo (Tập {nextEpisode.name})</span>
+                        <span>Tập tiếp theo ({normalizeEpisodeLabel(nextEpisode.name)})</span>
                         <ChevronRight className="h-3.5 w-3.5" />
                       </button>
                     )}
@@ -961,10 +999,10 @@ export default function MovieDetailPage() {
                     </div>
                   </div>
 
-                  {/* Video 16:9 viewport placeholder */}
+                  {/* Video 16:9 viewport layout spacer (invisible to avoid ghost frame & black bar) */}
                   <div
-                    className="relative w-full rounded-2xl bg-black shadow-2xl shadow-black/80 aspect-video border border-zinc-800/80"
-                    style={{ minHeight: "180px" }}
+                    className="relative w-full aspect-video pointer-events-none invisible select-none"
+                    aria-hidden="true"
                   />
                 </div>
 
@@ -974,7 +1012,7 @@ export default function MovieDetailPage() {
                     <div className="flex items-center gap-2 text-zinc-800 dark:text-zinc-200">
                       <Clock className="h-4 w-4 text-violet-500 dark:text-violet-400 animate-pulse" />
                       <span>
-                        Tập tiếp theo (<strong>Tập {nextEpisode.name}</strong>) sẽ tự động phát sau{" "}
+                        Tập tiếp theo (<strong>{normalizeEpisodeLabel(nextEpisode.name)}</strong>) sẽ tự động phát sau{" "}
                         <strong className="text-violet-600 dark:text-violet-400 text-sm">
                           {nextEpisodeCountdown}s
                         </strong>
@@ -984,7 +1022,7 @@ export default function MovieDetailPage() {
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => {
-                          handleSelectEpisode(nextEpisode, 0);
+                          handleSelectEpisode(nextEpisode);
                           setNextEpisodeCountdown(null);
                         }}
                         className="px-3 py-1.5 rounded-lg bg-violet-600 text-white font-bold hover:bg-violet-500 transition-colors shadow"
@@ -1060,8 +1098,21 @@ export default function MovieDetailPage() {
                     <button
                       key={server.server_name}
                       onClick={() => {
-                        setActiveServerIndex(sIdx);
+                        const oldServer = servers[activeServerIndex];
                         const targetServer = servers[sIdx];
+                        if (sIdx !== activeServerIndex && oldServer && targetServer) {
+                          // Capture current video timestamp & playing state
+                          const curTime = videoRef.current ? videoRef.current.currentTime : (currentTime || 0);
+                          setCustomResumeTime(curTime);
+
+                          const oldKind = getAudioKind(oldServer.server_name);
+                          const newKind = getAudioKind(targetServer.server_name);
+                          if ((oldKind === "vietsub" && newKind === "thuyetminh") || (oldKind === "thuyetminh" && newKind === "vietsub")) {
+                            triggerSourceWarning();
+                          }
+                        }
+
+                        setActiveServerIndex(sIdx);
                         if (targetServer && targetServer.items && activeEpisode) {
                           const curName = activeEpisode.name;
                           const curSlug = activeEpisode.slug;
@@ -1126,6 +1177,7 @@ export default function MovieDetailPage() {
                       ep.slug,
                       currentSeason
                     );
+                    const isWatched = (watchedSeconds || 0) > 0;
 
                     return (
                       <button
@@ -1135,20 +1187,19 @@ export default function MovieDetailPage() {
                           relative min-w-[46px] rounded-xl px-3.5 py-2 text-xs font-bold transition-all
                           ${
                             isActive
-                              ? "bg-violet-600 text-white shadow-lg shadow-violet-600/30 scale-105"
+                              ? "bg-violet-600 text-white shadow-lg shadow-violet-600/30 scale-105 opacity-100 grayscale-0 z-10"
+                              : isWatched
+                              ? "opacity-70 grayscale-[25%] bg-zinc-100/80 dark:bg-zinc-900/60 text-zinc-500 dark:text-zinc-400 hover:opacity-100 hover:grayscale-0 hover:text-violet-600 border border-zinc-200/60 dark:border-zinc-800/60"
                               : "bg-white dark:bg-zinc-800/80 text-zinc-700 dark:text-zinc-300 hover:bg-violet-500/10 hover:text-violet-600 border border-zinc-200 dark:border-zinc-700/60"
                           }
                         `}
                         title={
-                          watchedSeconds > 0
+                          isWatched
                             ? `Đã xem đến ${formatTime(watchedSeconds)}`
-                            : `Tập ${ep.name}`
+                            : normalizeEpisodeLabel(ep.name)
                         }
                       >
                         {ep.name}
-                        {watchedSeconds > 15 && !isActive && (
-                          <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-zinc-900" />
-                        )}
                       </button>
                     );
                   })}

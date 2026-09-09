@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -153,6 +153,22 @@ export default function Home() {
     gcTime: 30 * 60 * 1000,
   });
 
+  const latestMovies = useMemo(() => {
+    const raw = latestData?.items ?? [];
+    const seen = new Set<string>();
+    const result: typeof raw = [];
+    for (const m of raw) {
+      const id = m.id || m.slug;
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        result.push(m);
+      } else if (!id) {
+        result.push(m);
+      }
+    }
+    return result;
+  }, [latestData?.items]);
+
   // Handle Full Page Error if first query fails
   if (latestError) {
     return (
@@ -176,8 +192,6 @@ export default function Home() {
       </main>
     );
   }
-
-  const latestMovies = latestData?.items ?? [];
 
   return (
     <main className="flex-1 pb-16">

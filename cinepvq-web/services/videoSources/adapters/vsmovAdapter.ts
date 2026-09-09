@@ -6,7 +6,7 @@
 import type { VideoSourceAdapter, ResolveSourceOptions, ResolvedSource } from "../types";
 
 const VSMOV_BASE = "https://vsmov.com/api";
-const TIMEOUT_MS = 4000;
+const TIMEOUT_MS = 8000;
 
 interface VsmovEpisodeItem {
   name: string;
@@ -167,6 +167,9 @@ function matchTitle(candidateName: string, targetTitle: string, season = 1): boo
     for (const group of sortedGroups) {
       const epItems = group.server_data || [];
       const ep = epItems.find((item) => {
+        if (options.episodeSlug && item.slug.toLowerCase() === options.episodeSlug.toLowerCase()) {
+          return true;
+        }
         const isFull =
           item.name.toLowerCase().includes("full") ||
           item.slug.toLowerCase().includes("full");

@@ -9,7 +9,7 @@ import React, {
   useEffect,
 } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { historyStore } from "@/services/userStore";
+import { historyStore, episodeProgressStore } from "@/services/userStore";
 import { userSyncManager } from "@/services/userSyncManager";
 
 export interface GlobalPlayerSession {
@@ -25,6 +25,7 @@ export interface GlobalPlayerSession {
   episodeSlug?: string;
   videoUrl: string;
   initialTime?: number;
+  autoPlay?: boolean;
   episodes?: { name: string; slug: string; embed?: string }[];
   currentEpisodeIndex?: number;
 }
@@ -51,6 +52,8 @@ interface GlobalPlayerContextType {
   episodeHandlers: EpisodeHandlers;
   /** Incremented each time restoreToDetail is called — page.tsx watches this to scroll to player */
   expandScrollTrigger: number;
+  sourceSwitchWarning: boolean;
+  triggerSourceWarning: () => void;
   startPlayback: (session: GlobalPlayerSession) => void;
   setMode: (mode: GlobalPlayerMode) => void;
   closeMiniPlayer: () => void;
@@ -80,6 +83,19 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   const [episodeHandlers, setEpisodeHandlers] = useState<EpisodeHandlers>({});
   // Incremented each time user expands mini player — page.tsx watches this to scroll to player
   const [expandScrollTrigger, setExpandScrollTrigger] = useState(0);
+
+  // Source switch warning toast (shown for 2s only on manual Vietsub <-> Thuyet minh switch)
+  const [sourceSwitchWarning, setSourceSwitchWarning] = useState(false);
+  const warningTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const triggerSourceWarning = useCallback(() => {
+    if (warningTimerRef.current) clearTimeout(warningTimerRef.current);
+    setSourceSwitchWarning(true);
+    warningTimerRef.current = setTimeout(() => {
+      setSourceSwitchWarning(false);
+      warningTimerRef.current = null;
+    }, 2000);
+  }, []);
 
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -180,13 +196,21 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     if (curIdx >= 0 && curIdx < session.episodes.length - 1) {
       const nextEp = session.episodes[curIdx + 1];
       if (nextEp && nextEp.embed) {
+        const targetResumeTime =
+          episodeProgressStore.get(
+            session.movieSlug,
+            nextEp.slug,
+            session.season || 1
+          ) || 0;
+
         startPlayback({
           ...session,
           episodeSlug: nextEp.slug,
           episode: parseInt(nextEp.name.replace(/\D/g, ""), 10) || curIdx + 2,
           currentEpisodeIndex: curIdx + 1,
           videoUrl: nextEp.embed,
-          initialTime: 0,
+          initialTime: targetResumeTime,
+          autoPlay: true,
         });
       }
     }
@@ -200,13 +224,21 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     if (curIdx > 0) {
       const prevEp = session.episodes[curIdx - 1];
       if (prevEp && prevEp.embed) {
+        const targetResumeTime =
+          episodeProgressStore.get(
+            session.movieSlug,
+            prevEp.slug,
+            session.season || 1
+          ) || 0;
+
         startPlayback({
           ...session,
           episodeSlug: prevEp.slug,
           episode: parseInt(prevEp.name.replace(/\D/g, ""), 10) || curIdx,
           currentEpisodeIndex: curIdx - 1,
           videoUrl: prevEp.embed,
-          initialTime: 0,
+          initialTime: targetResumeTime,
+          autoPlay: true,
         });
       }
     }
@@ -281,6 +313,8 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         videoRef,
         episodeHandlers,
         expandScrollTrigger,
+        sourceSwitchWarning,
+        triggerSourceWarning,
         startPlayback,
         setMode,
         closeMiniPlayer,

@@ -75,9 +75,22 @@ export default function SimilarMovies({
     staleTime: 5 * 60 * 1000,
   });
 
-  const similarList = (data?.items || [])
-    .filter((m) => m.slug !== currentSlug)
-    .slice(0, 5);
+  const similarList = useMemo(() => {
+    const raw = data?.items || [];
+    const seen = new Set<string>();
+    const unique: typeof raw = [];
+    for (const m of raw) {
+      if (m.slug === currentSlug) continue;
+      const id = m.id || m.slug;
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        unique.push(m);
+      } else if (!id) {
+        unique.push(m);
+      }
+    }
+    return unique.slice(0, 5);
+  }, [data?.items, currentSlug]);
 
   if (isLoading) {
     return (

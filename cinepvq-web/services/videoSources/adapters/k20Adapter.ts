@@ -12,7 +12,7 @@ export class K20Adapter implements VideoSourceAdapter {
   readonly priority = 1;
 
   async resolveStream(options: ResolveSourceOptions): Promise<ResolvedSource | null> {
-    const { imdbId, season = 1, episode = 1, type = "series", slug, serverName } = options;
+    const { imdbId, season = 1, episode = 1, type = "series", slug, serverName, episodeSlug } = options;
 
     if (!imdbId && !slug) {
       return null;
@@ -26,6 +26,7 @@ export class K20Adapter implements VideoSourceAdapter {
         type,
         slug,
         serverName,
+        episodeSlug,
       });
 
       if (!stream || !stream.url || !stream.url.includes(".m3u8")) {

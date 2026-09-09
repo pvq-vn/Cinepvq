@@ -22,6 +22,7 @@ import {
   SkipBack,
   SkipForward,
   PictureInPicture,
+  Info,
 } from "lucide-react";
 
 export interface CustomHlsPlayerProps {
@@ -44,6 +45,7 @@ export interface CustomHlsPlayerProps {
   onPlayingChange?: (playing: boolean) => void;
   onVideoRef?: (el: HTMLVideoElement | null) => void;
   isMini?: boolean;
+  sourceSwitchWarning?: boolean;
 }
 
 interface QualityLevel {
@@ -119,11 +121,13 @@ export default function CustomHlsPlayer({
   onPlayingChange,
   onVideoRef,
   isMini = false,
+  sourceSwitchWarning = false,
 }: CustomHlsPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const hideControlsTimer = useRef<NodeJS.Timeout | null>(null);
+  const loadSessionIdRef = useRef<number>(0);
 
   useEffect(() => {
     if (videoRef.current) {
@@ -137,8 +141,54 @@ export default function CustomHlsPlayer({
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [buffered, setBuffered] = useState(0);
-  const [volume, setVolume] = useState(1);
-  const [isMuted, setIsMuted] = useState(false);
+  const [volume, setVolume] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const v = localStorage.getItem("cinepvq_player_volume");
+        if (v !== null) {
+          const parsed = parseFloat(v);
+          if (!isNaN(parsed) && parsed >= 0 && parsed <= 1) return parsed;
+        }
+      } catch {}
+    }
+    return 1;
+  });
+
+  const [isMuted, setIsMuted] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const m = localStorage.getItem("cinepvq_player_muted");
+        if (m !== null) return m === "true";
+      } catch {}
+    }
+    return false;
+  });
+
+  const volumeRef = useRef(volume);
+  const isMutedRef = useRef(isMuted);
+
+  useEffect(() => {
+    volumeRef.current = volume;
+    try {
+      if (typeof window !== "undefined") {
+        localStorage.setItem("cinepvq_player_volume", String(volume));
+      }
+    } catch {}
+  }, [volume]);
+
+  useEffect(() => {
+    isMutedRef.current = isMuted;
+    try {
+      if (typeof window !== "undefined") {
+        localStorage.setItem("cinepvq_player_muted", String(isMuted));
+      }
+    } catch {}
+  }, [isMuted]);
+
+  const syncMediaAudio = useCallback((video: HTMLVideoElement) => {
+    video.volume = volumeRef.current;
+    video.muted = isMutedRef.current;
+  }, []);
   const [playbackRate, setPlaybackRate] = useState(initialPlaybackRate || 1);
   const [prevInitialPlaybackRate, setPrevInitialPlaybackRate] = useState(initialPlaybackRate);
   if (initialPlaybackRate !== prevInitialPlaybackRate) {
@@ -273,6 +323,9 @@ export default function CustomHlsPlayer({
 
   const initialTimeRef = useRef(initialTime);
   const initialTimeAppliedRef = useRef(false);
+  useEffect(() => {
+    initialTimeRef.current = initialTime;
+  }, [initialTime]);
 
   const playbackRateRef = useRef(playbackRate);
   useEffect(() => {
@@ -298,19 +351,35 @@ export default function CustomHlsPlayer({
     autoPlayRef.current = autoPlay;
   }, [autoPlay]);
 
+  useEffect(() => {
+    initialTimeRef.current = initialTime;
+  }, [initialTime]);
+
   // 1. Initialize HLS.js or Native Video
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !src) return;
 
+    const sessionId = ++loadSessionIdRef.current;
+    const wasFullscreen = Boolean(getFullscreenElement());
+
     setErrorMsg(null);
     setIsBuffering(true);
-    setCurrentTime(0);
+    setCurrentTime(Math.max(0, initialTime || 0));
     setDuration(0);
     setBuffered(0);
     setQualityLevels([]);
     setCurrentQuality(-1);
+    initialTimeRef.current = initialTime;
     initialTimeAppliedRef.current = false;
+    syncMediaAudio(video);
+
+    // Pre-emptively reset video currentTime to target initial time to prevent any browser
+    // retention of previous episode timestamp on the shared video element
+    try {
+      video.currentTime = Math.max(0, initialTime || 0);
+    } catch {}
+
     let hlsInstance: Hls | null = null;
 
     if (Hls.isSupported()) {
@@ -330,6 +399,25 @@ export default function CustomHlsPlayer({
         if (video) {
           video.playbackRate = playbackRateRef.current;
         }
+
+        // Restore fullscreen state if player was in fullscreen before episode switch
+        if (wasFullscreen && !getFullscreenElement() && containerRef.current) {
+          try {
+            const reqFn =
+              containerRef.current.requestFullscreen ||
+              (containerRef.current as unknown as { webkitRequestFullscreen?: () => Promise<void> }).webkitRequestFullscreen ||
+              (containerRef.current as unknown as { mozRequestFullScreen?: () => Promise<void> }).mozRequestFullScreen ||
+              (containerRef.current as unknown as { msRequestFullscreen?: () => Promise<void> }).msRequestFullscreen;
+            if (reqFn) {
+              reqFn.call(containerRef.current).catch(() => {});
+            }
+          } catch {
+            // Browser might require direct user gesture
+          }
+        }
+
+        // Re-enforce audio state on manifest parsed
+        syncMediaAudio(video);
 
         // Extract quality levels & auto-select preferred quality if available
         if (data.levels && data.levels.length > 0) {
@@ -353,23 +441,34 @@ export default function CustomHlsPlayer({
           }
         }
 
-        // Apply initial resume position if provided
-        if (!initialTimeAppliedRef.current && initialTimeRef.current > 5) {
-          video.currentTime = initialTimeRef.current;
+        // Apply initial resume position for target episode/source
+        if (!initialTimeAppliedRef.current) {
+          const seekTarget = Math.max(0, initialTimeRef.current || 0);
+          try {
+            video.currentTime = seekTarget;
+          } catch {}
           initialTimeAppliedRef.current = true;
         }
 
         if (autoPlayRef.current) {
-          video.play().catch(() => {
-            // Autoplay with sound might be blocked by browser policy
-            video.muted = true;
-            setIsMuted(true);
-            video.play().catch(() => {});
-          });
+          const playPromise = video.play();
+          if (playPromise !== undefined) {
+            playPromise
+              .then(() => {
+                setIsPlaying(true);
+              })
+              .catch((err) => {
+                // Autoplay blocked: strictly preserve mute state, do NOT force video.muted = true
+                console.warn("[CustomHlsPlayer] Autoplay was blocked by browser policy:", err);
+                setIsPlaying(false);
+                setShowControls(true);
+              });
+          }
         }
       });
 
       hlsInstance.on(Hls.Events.ERROR, (_, data) => {
+        if (sessionId !== loadSessionIdRef.current) return;
         if (data.fatal) {
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
@@ -392,17 +491,44 @@ export default function CustomHlsPlayer({
       // Native Safari/iOS support
       video.src = src;
       video.playbackRate = playbackRateRef.current;
+      syncMediaAudio(video);
       video.addEventListener("loadedmetadata", () => {
+        if (sessionId !== loadSessionIdRef.current) return;
         setIsBuffering(false);
         if (video) {
           video.playbackRate = playbackRateRef.current;
+          syncMediaAudio(video);
         }
-        if (!initialTimeAppliedRef.current && initialTimeRef.current > 5) {
-          video.currentTime = initialTimeRef.current;
+        if (wasFullscreen && !getFullscreenElement() && containerRef.current) {
+          try {
+            const reqFn =
+              containerRef.current.requestFullscreen ||
+              (containerRef.current as unknown as { webkitRequestFullscreen?: () => Promise<void> }).webkitRequestFullscreen;
+            if (reqFn) {
+              reqFn.call(containerRef.current).catch(() => {});
+            }
+          } catch {}
+        }
+        if (!initialTimeAppliedRef.current) {
+          const seekTarget = Math.max(0, initialTimeRef.current || 0);
+          try {
+            video.currentTime = seekTarget;
+          } catch {}
           initialTimeAppliedRef.current = true;
         }
         if (autoPlayRef.current) {
-          video.play().catch(() => {});
+          const playPromise = video.play();
+          if (playPromise !== undefined) {
+            playPromise
+              .then(() => {
+                setIsPlaying(true);
+              })
+              .catch((err) => {
+                console.warn("[CustomHlsPlayer] Native autoplay was blocked by browser policy:", err);
+                setIsPlaying(false);
+                setShowControls(true);
+              });
+          }
         }
       });
     } else {
@@ -426,6 +552,7 @@ export default function CustomHlsPlayer({
     // HLS lifecycle is strictly tied to stream source (src).
     // playbackRate, preferredQuality, and autoPlay are decoupled via refs to prevent
     // destroying and recreating the active Hls instance during playback speed or quality changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src]);
 
 function getFullscreenElement(): Element | null {
@@ -572,12 +699,11 @@ function getFullscreenElement(): Element | null {
     const video = videoRef.current;
     if (!video) return;
     if (isMuted) {
+      const restoredVol = volume === 0 ? 0.5 : volume;
       video.muted = false;
+      video.volume = restoredVol;
       setIsMuted(false);
-      if (volume === 0) {
-        setVolume(0.5);
-        video.volume = 0.5;
-      }
+      setVolume(restoredVol);
     } else {
       video.muted = true;
       setIsMuted(true);
@@ -1081,6 +1207,16 @@ function getFullscreenElement(): Element | null {
             <Unlock className="h-4 w-4" />
             <span>Màn hình đã khóa • Bấm để mở</span>
           </button>
+        </div>
+      )}
+
+      {/* Source Switch Warning Toast */}
+      {sourceSwitchWarning && (
+        <div className="absolute top-4 inset-x-0 mx-auto w-fit max-w-[90%] pointer-events-none z-40 animate-in fade-in slide-in-from-top-2 duration-200">
+          <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-zinc-950/90 backdrop-blur-md text-amber-300 text-xs font-medium border border-amber-500/30 shadow-xl">
+            <Info className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+            <span>Thời gian giữa Vietsub và bản lồng tiếng có thể không đồng bộ. Vui lòng tự điều chỉnh nếu cần.</span>
+          </div>
         </div>
       )}
 
