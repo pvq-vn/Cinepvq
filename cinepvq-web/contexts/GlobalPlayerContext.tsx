@@ -267,6 +267,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   }, []);
 
   const handleTimeUpdate = useCallback((current: number, dur: number) => {
+    if (episodeTransition.isTransitioning) return;
     setCurrentTime(current);
     setDuration(dur);
 
@@ -283,7 +284,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       historyStore.add(movieData, epData, current, dur);
       userSyncManager.syncHistoryAdd(movieData, epData, current, dur);
     }
-  }, [session]);
+  }, [session, episodeTransition.isTransitioning]);
 
   const handlePlayingChange = useCallback((playing: boolean) => {
     setIsPlaying(playing);
@@ -314,7 +315,11 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       historyStore.add(movieData, epData, cur, dur, session.season || 1);
       userSyncManager.syncHistoryAdd(movieData, epData, cur, dur);
     }
-  }, [session, currentTime, duration]);
+    // Pause video immediately so it stops playing the old stream and ceases firing timeupdate events
+    if (v && !v.paused) {
+      v.pause();
+    }
+  }, [session, currentTime, duration, videoRef]);
 
   const goToNextEpisode = useCallback(() => {
     if (episodeHandlers.onNextEpisode) {

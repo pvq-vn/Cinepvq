@@ -119,6 +119,7 @@ export default function MovieDetailPage() {
     flushCurrentEpisodeProgress,
     registerServerHandlers,
     setPendingAudioWarning,
+    episodeTransition,
   } = useGlobalPlayer();
 
   // User-selected Episode & Server states
@@ -339,29 +340,29 @@ export default function MovieDetailPage() {
 
       // Flush current playing episode progress to disk/store before switching
       flushCurrentEpisodeProgress();
+      if (videoRef.current && !videoRef.current.paused) {
+        videoRef.current.pause();
+      }
 
       setIsWatchingManual(true);
       setNextEpisodeCountdown(null);
       setSelectedEpisodeSlug(ep.slug);
 
       // Resolve resume progress for target episode:
-      // If explicit initialSeek is passed, record override for target ep.
-      // Otherwise, target ep will read directly from its own store key.
-      if (typeof initialSeek === "number") {
-        setPendingResumeOverride({
-          episodeSlug: ep.slug,
-          time: initialSeek,
-        });
-        lastSavedTimeRef.current = initialSeek;
-      } else {
-        setPendingResumeOverride(null);
-        const mSlug = movie?.slug || slug;
-        const targetSaved =
-          mSlug && ep.slug
-            ? episodeProgressStore.get(mSlug, ep.slug, currentSeason) || 0
-            : 0;
-        lastSavedTimeRef.current = targetSaved;
-      }
+      // Always compute target episode's saved time from store if initialSeek is omitted
+      const mSlug = movie?.slug || slug;
+      const targetSaved =
+        typeof initialSeek === "number"
+          ? initialSeek
+          : mSlug && ep.slug
+          ? episodeProgressStore.get(mSlug, ep.slug, currentSeason) || 0
+          : 0;
+
+      setPendingResumeOverride({
+        episodeSlug: ep.slug,
+        time: targetSaved,
+      });
+      lastSavedTimeRef.current = targetSaved;
 
       // Keep active chunk in sync
       if (episodeChunks.length > 0) {
@@ -399,6 +400,7 @@ export default function MovieDetailPage() {
     [
       startEpisodeTransition,
       flushCurrentEpisodeProgress,
+      videoRef,
       movie,
       slug,
       currentSeason,
@@ -496,6 +498,8 @@ export default function MovieDetailPage() {
   // ─── Video Time Update ───────────────────────────────────────────────────
   const handleTimeUpdate = useCallback(
     (cur: number, dur: number) => {
+      // Transition lock guard: do not record progress while transitioning between episodes!
+      if (episodeTransition.isTransitioning) return;
       // Only record progress when playback actually advances (> 0s) and moved at least 5s
       if (cur > 0 && Math.abs(cur - lastSavedTimeRef.current) >= 5) {
         lastSavedTimeRef.current = cur;
@@ -505,7 +509,7 @@ export default function MovieDetailPage() {
         }
       }
     },
-    [episodeItems, activeEpisodeSlug, movie, addHistory]
+    [episodeTransition.isTransitioning, episodeItems, activeEpisodeSlug, movie, addHistory]
   );
 
   // ─── Video Ended: Next Episode Countdown ─────────────────────────────────

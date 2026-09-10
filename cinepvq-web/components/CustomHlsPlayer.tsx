@@ -28,6 +28,7 @@ import {
   Check,
 } from "lucide-react";
 import type { AudioServerInfo } from "@/contexts/GlobalPlayerContext";
+import { episodeProgressStore } from "@/services/userStore";
 
 export interface CustomHlsPlayerProps {
   src: string;
@@ -55,6 +56,9 @@ export interface CustomHlsPlayerProps {
   availableServers?: AudioServerInfo[];
   activeServerIndex?: number;
   onSwitchServer?: (index: number) => void;
+  movieSlug?: string;
+  episodeSlug?: string;
+  season?: number;
 }
 
 interface QualityLevel {
@@ -136,12 +140,17 @@ export default function CustomHlsPlayer({
   availableServers = [],
   activeServerIndex = 0,
   onSwitchServer,
+  movieSlug,
+  episodeSlug,
+  season,
 }: CustomHlsPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const hideControlsTimer = useRef<NodeJS.Timeout | null>(null);
   const loadSessionIdRef = useRef<number>(0);
+  const prevEpisodeSlugRef = useRef<string | undefined>(episodeSlug);
+  const isEpisodeSwitchRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (videoRef.current) {
@@ -337,12 +346,13 @@ export default function CustomHlsPlayer({
   };
 
   const showGestureHud = useCallback((type: "volume" | "brightness", val: number) => {
+    if (!isFullscreen) return;
     setGestureHud({ type, value: val });
     if (gestureHudTimer.current) clearTimeout(gestureHudTimer.current);
     gestureHudTimer.current = setTimeout(() => {
       setGestureHud(null);
     }, 1200);
-  }, []);
+  }, [isFullscreen]);
 
   const showDoubleTapFeedback = useCallback((side: "left" | "right", seconds: number) => {
     setDoubleTapFeedback({ side, seconds });
@@ -406,9 +416,25 @@ export default function CustomHlsPlayer({
     autoPlayRef.current = autoPlay;
   }, [autoPlay]);
 
+  // Proactively track episode changes and reset video.currentTime to target episode's saved time immediately
   useEffect(() => {
-    initialTimeRef.current = initialTime;
-  }, [initialTime]);
+    if (!episodeSlug) return;
+    if (prevEpisodeSlugRef.current && episodeSlug !== prevEpisodeSlugRef.current) {
+      isEpisodeSwitchRef.current = true;
+      const targetSaved =
+        movieSlug && episodeSlug
+          ? episodeProgressStore.get(movieSlug, episodeSlug, season || 1) || 0
+          : typeof initialTime === "number"
+          ? initialTime
+          : 0;
+      setCurrentTime(targetSaved);
+      if (videoRef.current) {
+        try {
+          videoRef.current.currentTime = targetSaved;
+        } catch {}
+      }
+    }
+  }, [episodeSlug, movieSlug, season, initialTime]);
 
   // 1. Initialize HLS.js or Native Video
   useEffect(() => {
@@ -418,21 +444,33 @@ export default function CustomHlsPlayer({
     const sessionId = ++loadSessionIdRef.current;
     const wasFullscreen = Boolean(getFullscreenElement());
 
+    const wasEpisodeSwitch =
+      isEpisodeSwitchRef.current ||
+      Boolean(episodeSlug && prevEpisodeSlugRef.current && episodeSlug !== prevEpisodeSlugRef.current);
+
+    const targetEpisodeSavedTime = wasEpisodeSwitch
+      ? (movieSlug && episodeSlug
+          ? episodeProgressStore.get(movieSlug, episodeSlug, season || 1) || 0
+          : typeof initialTimeRef.current === "number"
+          ? initialTimeRef.current
+          : 0)
+      : Math.max(0, initialTimeRef.current || 0);
+
     setErrorMsg(null);
     setIsBuffering(true);
-    setCurrentTime(Math.max(0, initialTime || 0));
+    setCurrentTime(targetEpisodeSavedTime);
     setDuration(0);
     setBuffered(0);
     setQualityLevels([]);
     setCurrentQuality(-1);
-    initialTimeRef.current = initialTime;
+    initialTimeRef.current = targetEpisodeSavedTime;
     initialTimeAppliedRef.current = false;
     syncMediaAudio(video);
 
-    // Pre-emptively reset video currentTime to target initial time to prevent any browser
+    // Pre-emptively overwrite video currentTime to target initial time to prevent any browser
     // retention of previous episode timestamp on the shared video element
     try {
-      video.currentTime = Math.max(0, initialTime || 0);
+      video.currentTime = targetEpisodeSavedTime;
     } catch {}
 
     let hlsInstance: Hls | null = null;
@@ -496,14 +534,28 @@ export default function CustomHlsPlayer({
           }
         }
 
-        // Apply initial resume position for target episode/source
-        if (!initialTimeAppliedRef.current) {
-          const seekTarget = Math.max(0, initialTimeRef.current || 0);
-          try {
-            video.currentTime = seekTarget;
-          } catch {}
-          initialTimeAppliedRef.current = true;
-        }
+        // Apply initial resume position for target episode/source:
+        // Forcefully apply target episode progress if transitioning/switching episodes
+        const wasEpisodeSwitch =
+          isEpisodeSwitchRef.current ||
+          Boolean(episodeSlug && prevEpisodeSlugRef.current && episodeSlug !== prevEpisodeSlugRef.current);
+
+        const targetEpisodeSavedTime = wasEpisodeSwitch
+          ? (movieSlug && episodeSlug
+              ? episodeProgressStore.get(movieSlug, episodeSlug, season || 1) || 0
+              : typeof initialTimeRef.current === "number"
+              ? initialTimeRef.current
+              : 0)
+          : Math.max(0, initialTimeRef.current || 0);
+
+        const seekTarget = Math.max(0, targetEpisodeSavedTime || 0);
+        try {
+          video.currentTime = seekTarget;
+        } catch {}
+        setCurrentTime(seekTarget);
+        initialTimeAppliedRef.current = true;
+        isEpisodeSwitchRef.current = false;
+        prevEpisodeSlugRef.current = episodeSlug;
 
         if (autoPlayRef.current) {
           const playPromise = video.play();
@@ -564,13 +616,27 @@ export default function CustomHlsPlayer({
             }
           } catch {}
         }
-        if (!initialTimeAppliedRef.current) {
-          const seekTarget = Math.max(0, initialTimeRef.current || 0);
-          try {
-            video.currentTime = seekTarget;
-          } catch {}
-          initialTimeAppliedRef.current = true;
-        }
+        const wasNativeEpisodeSwitch =
+          isEpisodeSwitchRef.current ||
+          Boolean(episodeSlug && prevEpisodeSlugRef.current && episodeSlug !== prevEpisodeSlugRef.current);
+
+        const nativeTargetEpisodeSavedTime = wasNativeEpisodeSwitch
+          ? (movieSlug && episodeSlug
+              ? episodeProgressStore.get(movieSlug, episodeSlug, season || 1) || 0
+              : typeof initialTimeRef.current === "number"
+              ? initialTimeRef.current
+              : 0)
+          : Math.max(0, initialTimeRef.current || 0);
+
+        const nativeSeekTarget = Math.max(0, nativeTargetEpisodeSavedTime || 0);
+        try {
+          video.currentTime = nativeSeekTarget;
+        } catch {}
+        setCurrentTime(nativeSeekTarget);
+        initialTimeAppliedRef.current = true;
+        isEpisodeSwitchRef.current = false;
+        prevEpisodeSlugRef.current = episodeSlug;
+        
         if (autoPlayRef.current) {
           const playPromise = video.play();
           if (playPromise !== undefined) {
@@ -923,7 +989,8 @@ function getFullscreenElement(): Element | null {
   };
 
   const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (isLocked || !touchState.current || e.touches.length !== 1) return;
+    // Gestures (swipe to adjust volume, brightness, seek) are ONLY permitted in Fullscreen mode.
+    if (!isFullscreen || isLocked || !touchState.current || e.touches.length !== 1) return;
     const touch = e.touches[0];
     const deltaX = touch.clientX - touchState.current.startX;
     const deltaY = touchState.current.startY - touch.clientY; // Upward is positive
@@ -989,7 +1056,7 @@ function getFullscreenElement(): Element | null {
 
     // If swipe was active (volume/brightness/seek), apply final change if seek, and do not trigger tap/double tap
     if (touchState.current.active) {
-      if (touchState.current.mode === "seek") {
+      if (isFullscreen && touchState.current.mode === "seek") {
         const finalSeekTime = touchState.current.targetSeekTime;
         const video = videoRef.current;
         if (video) {
@@ -1004,6 +1071,9 @@ function getFullscreenElement(): Element | null {
     }
 
     setSeekHud(null);
+    if (!isFullscreen) {
+      setGestureHud(null);
+    }
 
     // Determine if gesture is a clean TAP
     const changedTouch = e.changedTouches?.[0];
@@ -1209,6 +1279,8 @@ function getFullscreenElement(): Element | null {
 
   // Video Time Update & Buffer Progress
   const handleTimeUpdate = () => {
+    // Guard against emitting stale currentTime during episode transitions
+    if (isEpisodeTransitioning || isEpisodeSwitchRef.current) return;
     const video = videoRef.current;
     if (!video) return;
     const cur = video.currentTime;
@@ -1370,8 +1442,8 @@ function getFullscreenElement(): Element | null {
         </div>
       )}
 
-      {/* Gesture Feedback HUD Overlay (Volume / Brightness) (Only in detail mode) */}
-      {!isMini && gestureHud && !isLocked && (
+      {/* Gesture Feedback HUD Overlay (Volume / Brightness) (Only in Fullscreen mode) */}
+      {isFullscreen && !isMini && gestureHud && !isLocked && (
         <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-30 animate-in fade-in zoom-in-95 duration-150">
           <div className="flex flex-col items-center gap-2 rounded-2xl bg-black/80 backdrop-blur-md px-5 py-4 text-white shadow-2xl border border-white/10 min-w-[130px]">
             {gestureHud.type === "volume" ? (
@@ -1409,8 +1481,8 @@ function getFullscreenElement(): Element | null {
         </div>
       )}
 
-      {/* Horizontal Seek Gesture HUD Overlay */}
-      {!isMini && seekHud && !isLocked && (
+      {/* Horizontal Seek Gesture HUD Overlay (Only in Fullscreen mode) */}
+      {isFullscreen && !isMini && seekHud && !isLocked && (
         <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-30 animate-in fade-in zoom-in-95 duration-150">
           <div className="flex flex-col items-center gap-2 rounded-2xl bg-black/85 backdrop-blur-md px-6 py-4 text-white shadow-2xl border border-white/10 min-w-[150px]">
             {seekHud.delta >= 0 ? (

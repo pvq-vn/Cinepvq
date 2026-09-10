@@ -8,6 +8,7 @@ import {
 } from "@/services/videoSources";
 import CustomHlsPlayer from "@/components/CustomHlsPlayer";
 import { useUserStore } from "@/hooks/useUserStore";
+import { episodeProgressStore } from "@/services/userStore";
 import {
   type AudioServerInfo,
   type EpisodeTransitionState,
@@ -122,7 +123,13 @@ export default function VideoPlayer({
   const [prevEpisodeKey, setPrevEpisodeKey] = useState(episodeKey);
   if (episodeKey !== prevEpisodeKey) {
     setPrevEpisodeKey(episodeKey);
-    setResumeTime(initialTime);
+    const targetEpisodeSavedTime = (movieSlug && episodeSlug)
+      ? episodeProgressStore.get(movieSlug, episodeSlug, season || 1) || 0
+      : (initialTime || 0);
+    const resolvedTime = typeof initialTime === "number" && initialTime > 0
+      ? initialTime
+      : targetEpisodeSavedTime;
+    setResumeTime(resolvedTime);
     setCurrentAutoPlay(autoPlay);
     setLocalAudioWarning(false);
   }
@@ -152,10 +159,12 @@ export default function VideoPlayer({
   // Update tracked time when video plays
   const handleTimeUpdate = useCallback(
     (current: number, dur: number) => {
+      // Discard stale timeupdate events while resolving sources or transitioning between episodes
+      if (isResolving || episodeTransition?.isTransitioning) return;
       setResumeTime(current);
       onTimeUpdate?.(current, dur);
     },
-    [onTimeUpdate]
+    [onTimeUpdate, isResolving, episodeTransition?.isTransitioning]
   );
 
   const handleRegisterVideoRef = useCallback(
@@ -578,6 +587,9 @@ export default function VideoPlayer({
           availableServers={availableServers}
           activeServerIndex={activeServerIndex}
           onSwitchServer={onSwitchServer}
+          movieSlug={movieSlug}
+          episodeSlug={episodeSlug}
+          season={season}
         />
       ) : activeSource && activeSource.type === "iframe" ? (
         <div className="relative w-full overflow-hidden rounded-2xl bg-black shadow-2xl shadow-black/60 aspect-video border border-zinc-800/80">
