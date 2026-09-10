@@ -12,6 +12,46 @@ import { usePathname, useRouter } from "next/navigation";
 import { historyStore, episodeProgressStore } from "@/services/userStore";
 import { userSyncManager } from "@/services/userSyncManager";
 
+export type AudioTrackKind = "vietsub" | "thuyet-minh" | "long-tieng" | "other";
+
+export function normalizeAudioTrackKind(name?: string): AudioTrackKind {
+  if (!name) return "other";
+  const lower = name.toLowerCase();
+  const normalized = lower
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+
+  if (/\b(long\s*tieng|lt|dub|dubbed|longtieng)\b/i.test(normalized)) {
+    return "long-tieng";
+  }
+  if (/\b(thuyet\s*minh|tm|voice|voiceover|thuyetminh)\b/i.test(normalized)) {
+    return "thuyet-minh";
+  }
+  if (/\b(vietsub|sub|phu\s*de|subtitles?)\b/i.test(normalized)) {
+    return "vietsub";
+  }
+  return "other";
+}
+
+export interface AudioServerInfo {
+  index: number;
+  serverName: string;
+  name?: string;
+  kind: AudioTrackKind;
+}
+
+export interface EpisodeTransitionState {
+  isTransitioning: boolean;
+  token: number;
+  targetEpisodeSlug?: string;
+}
+
+export interface ServerHandlers {
+  servers: AudioServerInfo[];
+  activeIndex: number;
+  onSwitchServer: (index: number) => void;
+}
+
 export interface GlobalPlayerSession {
   movieSlug: string;
   movieTitle: string;
@@ -54,6 +94,17 @@ interface GlobalPlayerContextType {
   expandScrollTrigger: number;
   sourceSwitchWarning: boolean;
   triggerSourceWarning: () => void;
+  dismissSourceWarning: () => void;
+  pendingAudioWarning: boolean;
+  setPendingAudioWarning: (pending: boolean) => void;
+  episodeTransition: EpisodeTransitionState;
+  startEpisodeTransition: (targetSlug: string) => boolean;
+  finishEpisodeTransition: (success: boolean) => void;
+  flushCurrentEpisodeProgress: () => void;
+  availableServers: AudioServerInfo[];
+  activeServerIndex: number;
+  registerServerHandlers: (handlers: ServerHandlers) => void;
+  switchServer: (index: number) => void;
   startPlayback: (session: GlobalPlayerSession) => void;
   setMode: (mode: GlobalPlayerMode) => void;
   closeMiniPlayer: () => void;
@@ -84,8 +135,9 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   // Incremented each time user expands mini player — page.tsx watches this to scroll to player
   const [expandScrollTrigger, setExpandScrollTrigger] = useState(0);
 
-  // Source switch warning toast (shown for 2s only on manual Vietsub <-> Thuyet minh switch)
+  // Source switch warning toast
   const [sourceSwitchWarning, setSourceSwitchWarning] = useState(false);
+  const [pendingAudioWarning, setPendingAudioWarning] = useState(false);
   const warningTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const triggerSourceWarning = useCallback(() => {
@@ -94,7 +146,61 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     warningTimerRef.current = setTimeout(() => {
       setSourceSwitchWarning(false);
       warningTimerRef.current = null;
-    }, 2000);
+    }, 2800);
+  }, []);
+
+  const dismissSourceWarning = useCallback(() => {
+    if (warningTimerRef.current) {
+      clearTimeout(warningTimerRef.current);
+      warningTimerRef.current = null;
+    }
+    setSourceSwitchWarning(false);
+  }, []);
+
+  // Server / translation handler state
+  const [serverHandlers, setServerHandlers] = useState<ServerHandlers>({
+    servers: [],
+    activeIndex: 0,
+    onSwitchServer: () => {},
+  });
+
+  const registerServerHandlers = useCallback((handlers: ServerHandlers) => {
+    setServerHandlers(handlers);
+  }, []);
+
+  const switchServer = useCallback((index: number) => {
+    serverHandlers.onSwitchServer(index);
+  }, [serverHandlers]);
+
+  // Episode transition state (idempotent, single active transition token)
+  const [episodeTransition, setEpisodeTransition] = useState<EpisodeTransitionState>({
+    isTransitioning: false,
+    token: 0,
+  });
+
+  const startEpisodeTransition = useCallback((targetSlug: string) => {
+    let started = false;
+    setEpisodeTransition((prev) => {
+      if (prev.isTransitioning) {
+        started = false;
+        return prev;
+      }
+      started = true;
+      return {
+        isTransitioning: true,
+        token: Date.now(),
+        targetEpisodeSlug: targetSlug,
+      };
+    });
+    return started;
+  }, []);
+
+  const finishEpisodeTransition = useCallback((_success: boolean) => {
+    void _success;
+    setEpisodeTransition({
+      isTransitioning: false,
+      token: 0,
+    });
   }, []);
 
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
@@ -188,7 +294,33 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     setMode("detail");
   }, []);
 
+  const flushCurrentEpisodeProgress = useCallback(() => {
+    if (!session || !session.movieSlug || !session.episodeSlug) return;
+    const v = videoRef.current;
+    const cur = v ? v.currentTime : currentTime;
+    const dur = v ? v.duration : duration;
+    if (cur > 0) {
+      episodeProgressStore.save(session.movieSlug, session.episodeSlug, session.season || 1, cur, dur);
+      const movieData = {
+        slug: session.movieSlug,
+        name: session.movieTitle,
+        thumb_url: session.poster || "",
+      };
+      const epData = {
+        slug: session.episodeSlug,
+        name: `Tập ${session.episode || 1}`,
+        season: session.season || 1,
+      };
+      historyStore.add(movieData, epData, cur, dur, session.season || 1);
+      userSyncManager.syncHistoryAdd(movieData, epData, cur, dur);
+    }
+  }, [session, currentTime, duration]);
+
   const goToNextEpisode = useCallback(() => {
+    if (episodeHandlers.onNextEpisode) {
+      episodeHandlers.onNextEpisode();
+      return;
+    }
     if (!session || !session.episodes) return;
     const curIdx =
       session.currentEpisodeIndex ??
@@ -196,6 +328,8 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     if (curIdx >= 0 && curIdx < session.episodes.length - 1) {
       const nextEp = session.episodes[curIdx + 1];
       if (nextEp && nextEp.embed) {
+        if (!startEpisodeTransition(nextEp.slug)) return;
+        flushCurrentEpisodeProgress();
         const targetResumeTime =
           episodeProgressStore.get(
             session.movieSlug,
@@ -214,9 +348,13 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         });
       }
     }
-  }, [session, startPlayback]);
+  }, [session, episodeHandlers, startEpisodeTransition, flushCurrentEpisodeProgress, startPlayback]);
 
   const goToPrevEpisode = useCallback(() => {
+    if (episodeHandlers.onPrevEpisode) {
+      episodeHandlers.onPrevEpisode();
+      return;
+    }
     if (!session || !session.episodes) return;
     const curIdx =
       session.currentEpisodeIndex ??
@@ -224,6 +362,8 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     if (curIdx > 0) {
       const prevEp = session.episodes[curIdx - 1];
       if (prevEp && prevEp.embed) {
+        if (!startEpisodeTransition(prevEp.slug)) return;
+        flushCurrentEpisodeProgress();
         const targetResumeTime =
           episodeProgressStore.get(
             session.movieSlug,
@@ -242,7 +382,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         });
       }
     }
-  }, [session, startPlayback]);
+  }, [session, episodeHandlers, startEpisodeTransition, flushCurrentEpisodeProgress, startPlayback]);
 
   const handleVideoEnded = useCallback(() => {
     setIsPlaying(false);
@@ -315,6 +455,17 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         expandScrollTrigger,
         sourceSwitchWarning,
         triggerSourceWarning,
+        dismissSourceWarning,
+        pendingAudioWarning,
+        setPendingAudioWarning,
+        episodeTransition,
+        startEpisodeTransition,
+        finishEpisodeTransition,
+        flushCurrentEpisodeProgress,
+        availableServers: serverHandlers.servers,
+        activeServerIndex: serverHandlers.activeIndex,
+        registerServerHandlers,
+        switchServer,
         startPlayback,
         setMode,
         closeMiniPlayer,

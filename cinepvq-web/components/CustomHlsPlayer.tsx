@@ -23,7 +23,11 @@ import {
   SkipForward,
   PictureInPicture,
   Info,
+  Languages,
+  X,
+  Check,
 } from "lucide-react";
+import type { AudioServerInfo } from "@/contexts/GlobalPlayerContext";
 
 export interface CustomHlsPlayerProps {
   src: string;
@@ -46,6 +50,11 @@ export interface CustomHlsPlayerProps {
   onVideoRef?: (el: HTMLVideoElement | null) => void;
   isMini?: boolean;
   sourceSwitchWarning?: boolean;
+  onDismissSourceWarning?: () => void;
+  isEpisodeTransitioning?: boolean;
+  availableServers?: AudioServerInfo[];
+  activeServerIndex?: number;
+  onSwitchServer?: (index: number) => void;
 }
 
 interface QualityLevel {
@@ -122,6 +131,11 @@ export default function CustomHlsPlayer({
   onVideoRef,
   isMini = false,
   sourceSwitchWarning = false,
+  onDismissSourceWarning,
+  isEpisodeTransitioning = false,
+  availableServers = [],
+  activeServerIndex = 0,
+  onSwitchServer,
 }: CustomHlsPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -201,6 +215,12 @@ export default function CustomHlsPlayer({
   const [showSettings, setShowSettings] = useState(false);
   const settingsBtnRef = useRef<HTMLButtonElement>(null);
   const settingsMenuRef = useRef<HTMLDivElement>(null);
+
+  // Audio track menu state in fullscreen
+  const [showAudioMenu, setShowAudioMenu] = useState(false);
+  const audioBtnRef = useRef<HTMLButtonElement>(null);
+  const audioMenuRef = useRef<HTMLDivElement>(null);
+
   const [settingsCoords, setSettingsCoords] = useState<{ bottom: number; right: number }>({
     bottom: 60,
     right: 16,
@@ -214,24 +234,27 @@ export default function CustomHlsPlayer({
     setSettingsCoords({ bottom, right });
   }, []);
 
-  // Sync coords and handle outside clicks for settings dropdown menu
+  // Sync coords and handle outside clicks for dropdown menus
   useEffect(() => {
-    if (!showSettings) return;
-    updateSettingsCoords();
+    if (!showSettings && !showAudioMenu) return;
+    if (showSettings) updateSettingsCoords();
 
     const onScrollOrResize = () => {
-      updateSettingsCoords();
+      if (showSettings) updateSettingsCoords();
     };
 
     const handleClickOutside = (e: MouseEvent | TouchEvent) => {
       const target = e.target as HTMLElement;
       if (
         settingsBtnRef.current?.contains(target) ||
-        settingsMenuRef.current?.contains(target)
+        settingsMenuRef.current?.contains(target) ||
+        audioBtnRef.current?.contains(target) ||
+        audioMenuRef.current?.contains(target)
       ) {
         return;
       }
       setShowSettings(false);
+      setShowAudioMenu(false);
     };
 
     window.addEventListener("scroll", onScrollOrResize, { passive: true });
@@ -245,12 +268,22 @@ export default function CustomHlsPlayer({
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("touchstart", handleClickOutside);
     };
-  }, [showSettings, updateSettingsCoords]);
+  }, [showSettings, showAudioMenu, updateSettingsCoords]);
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Player Lock state
   const [isLocked, setIsLocked] = useState(false);
+  const [showLockHint, setShowLockHint] = useState(false);
+  const lockHintTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const showLockHintToast = useCallback(() => {
+    setShowLockHint(true);
+    if (lockHintTimerRef.current) clearTimeout(lockHintTimerRef.current);
+    lockHintTimerRef.current = setTimeout(() => {
+      setShowLockHint(false);
+    }, 1500);
+  }, []);
 
   // Picture-in-Picture state
   const [isPip, setIsPip] = useState(false);
@@ -274,13 +307,34 @@ export default function CustomHlsPlayer({
   const [qualityLevels, setQualityLevels] = useState<QualityLevel[]>([]);
   const [currentQuality, setCurrentQuality] = useState<number>(-1); // -1 = Auto
 
-  // Brightness simulation overlay (0.3 to 1.0)
+  // Brightness simulation overlay (0.2 to 1.0)
   const [brightness, setBrightness] = useState<number>(1);
   const [gestureHud, setGestureHud] = useState<{
     type: "volume" | "brightness";
     value: number;
   } | null>(null);
   const gestureHudTimer = useRef<NodeJS.Timeout | null>(null);
+
+  // Horizontal seek gesture HUD state
+  const [seekHud, setSeekHud] = useState<{
+    targetTime: number;
+    delta: number;
+  } | null>(null);
+
+  // Swipe-to-dismiss for source switch warning
+  const warningTouchStartY = useRef<number | null>(null);
+  const handleWarningTouchStart = (e: React.TouchEvent) => {
+    warningTouchStartY.current = e.touches[0]?.clientY ?? null;
+  };
+  const handleWarningTouchEnd = (e: React.TouchEvent) => {
+    if (warningTouchStartY.current !== null) {
+      const endY = e.changedTouches[0]?.clientY ?? warningTouchStartY.current;
+      if (warningTouchStartY.current - endY > 15) {
+        onDismissSourceWarning?.();
+      }
+    }
+    warningTouchStartY.current = null;
+  };
 
   const showGestureHud = useCallback((type: "volume" | "brightness", val: number) => {
     setGestureHud({ type, value: val });
@@ -307,14 +361,15 @@ export default function CustomHlsPlayer({
 
   // Reset controls timer on user activity
   const triggerControls = useCallback(() => {
-    if (isMini) return;
+    if (isMini || isLocked) return;
     setShowControls(true);
     if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
     hideControlsTimer.current = setTimeout(() => {
       setShowControls(false);
       setShowSettings(false);
+      setShowAudioMenu(false);
     }, 3000);
-  }, [isMini]);
+  }, [isMini, isLocked]);
 
   const onErrorRef = useRef(onError);
   useEffect(() => {
@@ -572,6 +627,13 @@ function getFullscreenElement(): Element | null {
       const isFs = Boolean(getFullscreenElement());
       setIsFullscreen(isFs);
       if (!isFs) {
+        setIsLocked(false);
+        setShowLockHint(false);
+        setShowAudioMenu(false);
+        if (lockHintTimerRef.current) {
+          clearTimeout(lockHintTimerRef.current);
+          lockHintTimerRef.current = null;
+        }
         try {
           if (
             typeof window !== "undefined" &&
@@ -817,8 +879,11 @@ function getFullscreenElement(): Element | null {
     startY: number;
     startTime: number;
     startVal: number;
-    mode: "volume" | "brightness";
+    startCurrentTime: number;
+    mode: "volume" | "brightness" | "seek" | "undecided";
     active: boolean;
+    seekDelta: number;
+    targetSeekTime: number;
   } | null>(null);
   const lastTouchEndTime = useRef<number>(0);
   const tapTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -832,7 +897,8 @@ function getFullscreenElement(): Element | null {
     }
 
     if (isLocked) {
-      // When locked, touches do not initiate swipe gestures
+      // When locked, touching reveals the unlock button / hint
+      showLockHintToast();
       return;
     }
 
@@ -842,13 +908,17 @@ function getFullscreenElement(): Element | null {
     if (!rect) return;
 
     const isRightSide = touch.clientX - rect.left >= rect.width / 2;
+    const currentVideoTime = videoRef.current ? videoRef.current.currentTime : currentTime;
     touchState.current = {
       startX: touch.clientX,
       startY: touch.clientY,
       startTime: Date.now(),
       startVal: isRightSide ? volume : brightness,
-      mode: isRightSide ? "volume" : "brightness",
+      startCurrentTime: currentVideoTime,
+      mode: "undecided",
       active: false,
+      seekDelta: 0,
+      targetSeekTime: currentVideoTime,
     };
   };
 
@@ -857,21 +927,29 @@ function getFullscreenElement(): Element | null {
     const touch = e.touches[0];
     const deltaX = touch.clientX - touchState.current.startX;
     const deltaY = touchState.current.startY - touch.clientY; // Upward is positive
-
-    if (!touchState.current.active) {
-      if (Math.abs(deltaY) > 12 && Math.abs(deltaY) > Math.abs(deltaX) * 1.3) {
-        touchState.current.active = true;
-      } else {
-        return;
-      }
-    }
+    const absX = Math.abs(deltaX);
+    const absY = Math.abs(deltaY);
 
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const sensitivity = rect.height * 0.75;
-    const step = deltaY / sensitivity;
+
+    if (!touchState.current.active) {
+      // Require clear dominance and minimum threshold of 24px
+      if (absY >= 24 && absY >= absX * 1.75) {
+        const isRightSide = touchState.current.startX - rect.left >= rect.width / 2;
+        touchState.current.mode = isRightSide ? "volume" : "brightness";
+        touchState.current.active = true;
+      } else if (absX >= 24 && absX >= absY * 1.75) {
+        touchState.current.mode = "seek";
+        touchState.current.active = true;
+      } else {
+        return; // Ambiguous or below threshold
+      }
+    }
 
     if (touchState.current.mode === "volume") {
+      const sensitivity = Math.max(300, rect.height * 1.8);
+      const step = deltaY / sensitivity;
       const nextVol = Math.max(0, Math.min(1, touchState.current.startVal + step));
       const video = videoRef.current;
       if (video) {
@@ -882,9 +960,20 @@ function getFullscreenElement(): Element | null {
       setIsMuted(nextVol === 0);
       showGestureHud("volume", nextVol);
     } else if (touchState.current.mode === "brightness") {
-      const nextBri = Math.max(0.3, Math.min(1, touchState.current.startVal + step));
+      const sensitivity = Math.max(300, rect.height * 1.8);
+      const step = deltaY / sensitivity;
+      const nextBri = Math.max(0.2, Math.min(1, touchState.current.startVal + step));
       setBrightness(nextBri);
       showGestureHud("brightness", nextBri);
+    } else if (touchState.current.mode === "seek") {
+      const maxDelta = 90; // max +/- 90 seconds seek
+      const stepSec = (deltaX / Math.max(260, rect.width)) * maxDelta;
+      const clampedDelta = Math.max(-maxDelta, Math.min(maxDelta, stepSec));
+      const dur = duration || (videoRef.current?.duration ?? 0);
+      const targetTime = Math.max(0, Math.min(dur || 10000, touchState.current.startCurrentTime + clampedDelta));
+      touchState.current.seekDelta = clampedDelta;
+      touchState.current.targetSeekTime = targetTime;
+      setSeekHud({ targetTime, delta: clampedDelta });
     }
   };
 
@@ -892,18 +981,29 @@ function getFullscreenElement(): Element | null {
     lastTouchEndTime.current = Date.now();
 
     if (isLocked) {
-      // Tapping while locked reveals the unlock button briefly
-      setShowControls((prev) => !prev);
+      showLockHintToast();
       return;
     }
 
     if (!touchState.current) return;
 
-    // If swipe was active (volume/brightness adjustment), do not trigger tap or seek
+    // If swipe was active (volume/brightness/seek), apply final change if seek, and do not trigger tap/double tap
     if (touchState.current.active) {
+      if (touchState.current.mode === "seek") {
+        const finalSeekTime = touchState.current.targetSeekTime;
+        const video = videoRef.current;
+        if (video) {
+          video.currentTime = finalSeekTime;
+        }
+        setCurrentTime(finalSeekTime);
+        setSeekHud(null);
+        triggerControls();
+      }
       touchState.current = null;
       return;
     }
+
+    setSeekHud(null);
 
     // Determine if gesture is a clean TAP
     const changedTouch = e.changedTouches?.[0];
@@ -959,14 +1059,10 @@ function getFullscreenElement(): Element | null {
       // Confirmed SINGLE TAP!
       lastTapRef.current = null;
 
-      // Single tap on video:
-      // - NEVER play/pause
-      // - If controls are currently shown -> HIDE them
-      // - If controls are currently hidden -> SHOW them and arm 3s inactivity auto-hide
-      // Video continues playing without interruption!
       setShowControls((prev) => {
         if (prev) {
           setShowSettings(false);
+          setShowAudioMenu(false);
           if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
           return false;
         } else {
@@ -986,12 +1082,16 @@ function getFullscreenElement(): Element | null {
     if (Date.now() - lastTouchEndTime.current < 1000) {
       return;
     }
-    if (isLocked) return;
+    if (isLocked) {
+      showLockHintToast();
+      return;
+    }
 
     // Desktop click on video background toggles controls visibility; does NOT pause video
     setShowControls((prev) => {
       if (prev) {
         setShowSettings(false);
+        setShowAudioMenu(false);
         if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
         return false;
       } else {
@@ -1016,6 +1116,7 @@ function getFullscreenElement(): Element | null {
       if (isLocked) {
         if (e.key.toLowerCase() === "escape") {
           setIsLocked(false);
+          setShowLockHint(false);
         }
         return;
       }
@@ -1066,13 +1167,13 @@ function getFullscreenElement(): Element | null {
           break;
         case "p":
           e.preventDefault();
-          if (hasPrevEpisode && onPrevEpisode) {
+          if (!isEpisodeTransitioning && hasPrevEpisode && onPrevEpisode) {
             onPrevEpisode();
           }
           break;
         case "n":
           e.preventDefault();
-          if (hasNextEpisode && onNextEpisode) {
+          if (!isEpisodeTransitioning && hasNextEpisode && onNextEpisode) {
             onNextEpisode();
           }
           break;
@@ -1092,6 +1193,7 @@ function getFullscreenElement(): Element | null {
     volume,
     skipSec,
     isLocked,
+    isEpisodeTransitioning,
     hasPrevEpisode,
     hasNextEpisode,
     onPrevEpisode,
@@ -1191,31 +1293,50 @@ function getFullscreenElement(): Element | null {
         aria-hidden="true"
       />
 
-      {/* Floating Unlock Button when LOCKED (Only in detail mode) */}
-      {!isMini && isLocked && (
+      {/* Floating Unlock Button when LOCKED (Only in fullscreen and when hint is active) */}
+      {!isMini && isLocked && showLockHint && (
         <div className="absolute top-4 left-4 z-40 animate-in fade-in duration-200">
           <button
             onClick={(e) => {
               e.stopPropagation();
               setIsLocked(false);
+              setShowLockHint(false);
+              if (lockHintTimerRef.current) clearTimeout(lockHintTimerRef.current);
               triggerControls();
             }}
-            className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-black/85 hover:bg-violet-600 text-amber-400 hover:text-white border border-amber-500/40 shadow-2xl backdrop-blur-md text-xs font-semibold transition-all active:scale-95 cursor-pointer"
+            className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-black/90 hover:bg-violet-600 text-amber-400 hover:text-white border border-amber-500/50 shadow-2xl backdrop-blur-md text-xs font-semibold transition-all active:scale-95 cursor-pointer"
             title="Mở khóa màn hình"
             aria-label="Mở khóa màn hình"
           >
             <Unlock className="h-4 w-4" />
-            <span>Màn hình đã khóa • Bấm để mở</span>
+            <span>Màn hình đã khóa — Bấm để mở</span>
           </button>
         </div>
       )}
 
       {/* Source Switch Warning Toast */}
       {sourceSwitchWarning && (
-        <div className="absolute top-4 inset-x-0 mx-auto w-fit max-w-[90%] pointer-events-none z-40 animate-in fade-in slide-in-from-top-2 duration-200">
-          <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-zinc-950/90 backdrop-blur-md text-amber-300 text-xs font-medium border border-amber-500/30 shadow-xl">
-            <Info className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-            <span>Thời gian giữa Vietsub và bản lồng tiếng có thể không đồng bộ. Vui lòng tự điều chỉnh nếu cần.</span>
+        <div
+          onTouchStart={handleWarningTouchStart}
+          onTouchEnd={handleWarningTouchEnd}
+          className="absolute top-4 inset-x-0 mx-auto w-fit max-w-[90%] pointer-events-auto z-40 animate-in fade-in slide-in-from-top-2 duration-200"
+        >
+          <div className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-zinc-950/95 backdrop-blur-md text-amber-300 text-xs font-medium border border-amber-500/40 shadow-2xl">
+            <Info className="h-4 w-4 text-amber-400 shrink-0" />
+            <span className="leading-tight">
+              Thời gian giữa các bản Vietsub, Thuyết minh và Lồng tiếng có thể không đồng bộ. Bạn có thể tự điều chỉnh nếu cần.
+            </span>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onDismissSourceWarning?.();
+              }}
+              className="ml-1 p-0.5 rounded-full hover:bg-white/20 text-zinc-400 hover:text-white transition-colors cursor-pointer"
+              title="Đóng thông báo"
+              aria-label="Đóng thông báo"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
           </div>
         </div>
       )}
@@ -1288,8 +1409,37 @@ function getFullscreenElement(): Element | null {
         </div>
       )}
 
+      {/* Horizontal Seek Gesture HUD Overlay */}
+      {!isMini && seekHud && !isLocked && (
+        <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-30 animate-in fade-in zoom-in-95 duration-150">
+          <div className="flex flex-col items-center gap-2 rounded-2xl bg-black/85 backdrop-blur-md px-6 py-4 text-white shadow-2xl border border-white/10 min-w-[150px]">
+            {seekHud.delta >= 0 ? (
+              <RotateCw className="h-8 w-8 text-violet-400" />
+            ) : (
+              <RotateCcw className="h-8 w-8 text-violet-400" />
+            )}
+            <div className="text-base font-bold tabular-nums">
+              {formatTime(seekHud.targetTime)}
+            </div>
+            <div className="text-xs font-medium text-violet-300 tabular-nums">
+              {seekHud.delta >= 0 ? `+${Math.round(seekHud.delta)}s` : `${Math.round(seekHud.delta)}s`}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Episode Transition Overlay */}
+      {isEpisodeTransitioning && (
+        <div className="absolute inset-0 pointer-events-auto flex items-center justify-center bg-black/75 backdrop-blur-[3px] transition-all z-35">
+          <div className="flex flex-col items-center gap-3 text-white px-6 py-4 rounded-2xl bg-zinc-950/80 border border-white/10 shadow-2xl">
+            <Loader2 className="h-10 w-10 animate-spin text-violet-500" />
+            <span className="text-sm font-medium text-zinc-200">Đang tối ưu nguồn phát...</span>
+          </div>
+        </div>
+      )}
+
       {/* Buffering Spinner */}
-      {isBuffering && !errorMsg && (
+      {isBuffering && !errorMsg && !isEpisodeTransitioning && (
         <div className="absolute inset-0 pointer-events-none flex items-center justify-center bg-black/30 backdrop-blur-[2px] transition-all z-10">
           <div className="flex flex-col items-center gap-2 text-white">
             <Loader2 className="h-10 w-10 animate-spin text-violet-500" />
@@ -1322,11 +1472,11 @@ function getFullscreenElement(): Element | null {
           <button
             onClick={(e) => {
               e.stopPropagation();
-              if (hasPrevEpisode && onPrevEpisode) onPrevEpisode();
+              if (!isEpisodeTransitioning && hasPrevEpisode && onPrevEpisode) onPrevEpisode();
             }}
-            disabled={!hasPrevEpisode}
+            disabled={!hasPrevEpisode || isEpisodeTransitioning}
             className={`pointer-events-auto flex h-11 w-11 sm:h-13 sm:w-13 items-center justify-center rounded-full bg-black/60 backdrop-blur-md text-white border border-white/15 transition-all shadow-xl ${
-              hasPrevEpisode
+              hasPrevEpisode && !isEpisodeTransitioning
                 ? "hover:bg-violet-600/90 hover:scale-110 active:scale-95 cursor-pointer opacity-90 hover:opacity-100"
                 : "opacity-35 cursor-not-allowed"
             }`}
@@ -1340,10 +1490,15 @@ function getFullscreenElement(): Element | null {
           <button
             onClick={(e) => {
               e.stopPropagation();
-              togglePlay();
-              triggerControls();
+              if (!isEpisodeTransitioning) {
+                togglePlay();
+                triggerControls();
+              }
             }}
-            className="pointer-events-auto flex h-16 w-16 sm:h-20 sm:w-20 items-center justify-center rounded-full bg-violet-600/90 hover:bg-violet-600 text-white shadow-2xl shadow-violet-600/50 hover:scale-110 active:scale-95 transition-all z-10 cursor-pointer"
+            disabled={isEpisodeTransitioning}
+            className={`pointer-events-auto flex h-16 w-16 sm:h-20 sm:w-20 items-center justify-center rounded-full bg-violet-600/90 hover:bg-violet-600 text-white shadow-2xl shadow-violet-600/50 hover:scale-110 active:scale-95 transition-all z-10 cursor-pointer ${
+              isEpisodeTransitioning ? "pointer-events-none opacity-50" : ""
+            }`}
             title={isPlaying ? "Tạm dừng (K / Space)" : "Phát (K / Space)"}
             aria-label={isPlaying ? "Tạm dừng" : "Phát"}
           >
@@ -1358,11 +1513,11 @@ function getFullscreenElement(): Element | null {
           <button
             onClick={(e) => {
               e.stopPropagation();
-              if (hasNextEpisode && onNextEpisode) onNextEpisode();
+              if (!isEpisodeTransitioning && hasNextEpisode && onNextEpisode) onNextEpisode();
             }}
-            disabled={!hasNextEpisode}
+            disabled={!hasNextEpisode || isEpisodeTransitioning}
             className={`pointer-events-auto flex h-11 w-11 sm:h-13 sm:w-13 items-center justify-center rounded-full bg-black/60 backdrop-blur-md text-white border border-white/15 transition-all shadow-xl ${
-              hasNextEpisode
+              hasNextEpisode && !isEpisodeTransitioning
                 ? "hover:bg-violet-600/90 hover:scale-110 active:scale-95 cursor-pointer opacity-90 hover:opacity-100"
                 : "opacity-35 cursor-not-allowed"
             }`}
@@ -1447,11 +1602,11 @@ function getFullscreenElement(): Element | null {
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                if (hasPrevEpisode && onPrevEpisode) onPrevEpisode();
+                if (!isEpisodeTransitioning && hasPrevEpisode && onPrevEpisode) onPrevEpisode();
               }}
-              disabled={!hasPrevEpisode}
+              disabled={!hasPrevEpisode || isEpisodeTransitioning}
               className={`p-1 sm:p-1.5 min-h-[32px] min-w-[32px] sm:min-h-[36px] sm:min-w-[36px] rounded-lg transition-colors flex items-center justify-center shrink-0 ${
-                hasPrevEpisode
+                hasPrevEpisode && !isEpisodeTransitioning
                   ? "hover:bg-white/10 text-white cursor-pointer"
                   : "opacity-40 cursor-not-allowed text-zinc-500"
               }`}
@@ -1465,11 +1620,11 @@ function getFullscreenElement(): Element | null {
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                if (hasNextEpisode && onNextEpisode) onNextEpisode();
+                if (!isEpisodeTransitioning && hasNextEpisode && onNextEpisode) onNextEpisode();
               }}
-              disabled={!hasNextEpisode}
+              disabled={!hasNextEpisode || isEpisodeTransitioning}
               className={`p-1 sm:p-1.5 min-h-[32px] min-w-[32px] sm:min-h-[36px] sm:min-w-[36px] rounded-lg transition-colors flex items-center justify-center shrink-0 ${
-                hasNextEpisode
+                hasNextEpisode && !isEpisodeTransitioning
                   ? "hover:bg-white/10 text-white cursor-pointer"
                   : "opacity-40 cursor-not-allowed text-zinc-500"
               }`}
@@ -1521,22 +1676,54 @@ function getFullscreenElement(): Element | null {
             </div>
           </div>
 
-          {/* Right: Lock, PiP, Settings, Fullscreen */}
+          {/* Right: Audio Switcher, Lock, PiP, Settings, Fullscreen */}
           <div className="flex items-center gap-0.5 sm:gap-1.5 shrink-0 relative">
-            {/* Lock Player Button */}
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsLocked(true);
-                setShowControls(false);
-                setShowSettings(false);
-              }}
-              className="p-1 sm:p-1.5 min-h-[32px] min-w-[32px] sm:min-h-[36px] sm:min-w-[36px] rounded-lg hover:bg-white/10 text-zinc-300 hover:text-white transition-colors flex items-center justify-center cursor-pointer shrink-0"
-              title="Khóa màn hình (Tránh chạm nhầm)"
-              aria-label="Khóa màn hình"
-            >
-              <Lock className="h-4 w-4 sm:h-5 sm:w-5" />
-            </button>
+            {/* Audio Track / Server Switcher Button - Beside Lock, ONLY in fullscreen and when availableServers >= 2 */}
+            {isFullscreen && availableServers && availableServers.length >= 2 && (
+              <button
+                ref={audioBtnRef}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (availableServers.length === 2) {
+                    const nextIdx = activeServerIndex === 0 ? 1 : 0;
+                    onSwitchServer?.(nextIdx);
+                  } else {
+                    setShowAudioMenu((prev) => !prev);
+                    setShowSettings(false);
+                  }
+                }}
+                className={`p-1 sm:p-1.5 min-h-[32px] min-w-[32px] sm:min-h-[36px] sm:min-w-[36px] rounded-lg transition-colors flex items-center justify-center cursor-pointer shrink-0 ${
+                  showAudioMenu ? "bg-white/20 text-violet-400" : "hover:bg-white/10 text-zinc-300 hover:text-white"
+                }`}
+                title={
+                  availableServers.length === 2
+                    ? `Đổi sang ${availableServers[activeServerIndex === 0 ? 1 : 0]?.name || "bản khác"}`
+                    : "Đổi bản Vietsub / Thuyết minh / Lồng tiếng"
+                }
+                aria-label="Đổi bản dịch âm thanh"
+              >
+                <Languages className="h-4 w-4 sm:h-5 sm:w-5" />
+              </button>
+            )}
+
+            {/* Lock Player Button - ONLY in fullscreen */}
+            {isFullscreen && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsLocked(true);
+                  setShowControls(false);
+                  setShowSettings(false);
+                  setShowAudioMenu(false);
+                  showLockHintToast();
+                }}
+                className="p-1 sm:p-1.5 min-h-[32px] min-w-[32px] sm:min-h-[36px] sm:min-w-[36px] rounded-lg hover:bg-white/10 text-zinc-300 hover:text-white transition-colors flex items-center justify-center cursor-pointer shrink-0"
+                title="Khóa màn hình (Tránh chạm nhầm)"
+                aria-label="Khóa màn hình"
+              >
+                <Lock className="h-4 w-4 sm:h-5 sm:w-5" />
+              </button>
+            )}
 
             {/* Picture-in-Picture Button */}
             {supportsPip && (
@@ -1564,6 +1751,7 @@ function getFullscreenElement(): Element | null {
                 e.stopPropagation();
                 updateSettingsCoords();
                 setShowSettings(!showSettings);
+                setShowAudioMenu(false);
               }}
               className={`p-1 sm:p-1.5 min-h-[32px] min-w-[32px] sm:min-h-[36px] sm:min-w-[36px] rounded-lg transition-colors flex items-center justify-center cursor-pointer shrink-0 ${
                 showSettings ? "bg-white/20 text-violet-400" : "hover:bg-white/10 text-zinc-300"
@@ -1590,6 +1778,46 @@ function getFullscreenElement(): Element | null {
                 <Maximize className="h-4 w-4 sm:h-5 sm:w-5" />
               )}
             </button>
+
+            {/* Fullscreen Audio Track Switcher Popup (≥ 3 options) */}
+            {isFullscreen && showAudioMenu && availableServers && availableServers.length >= 3 && (
+              <div
+                ref={audioMenuRef}
+                onClick={(e) => e.stopPropagation()}
+                className="absolute right-12 bottom-12 w-64 max-w-[calc(100vw-2rem)] rounded-2xl bg-zinc-900/95 border border-zinc-700/80 shadow-2xl p-3 space-y-2 z-30 backdrop-blur-xl text-xs animate-in fade-in zoom-in-95 duration-150"
+              >
+                <div className="font-semibold text-zinc-300 px-1 flex items-center justify-between">
+                  <span>Bản dịch / Lồng tiếng</span>
+                  <span className="text-[10px] text-zinc-500 font-normal">Giữ thời gian phát</span>
+                </div>
+                <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
+                  {availableServers.map((srv, idx) => {
+                    const isSelected = idx === activeServerIndex;
+                    return (
+                      <button
+                        key={srv.index ?? idx}
+                        disabled={isSelected}
+                        onClick={() => {
+                          if (!isSelected) {
+                            onSwitchServer?.(idx);
+                            setShowAudioMenu(false);
+                            triggerControls();
+                          }
+                        }}
+                        className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-left transition-all ${
+                          isSelected
+                            ? "bg-violet-600/30 text-violet-300 border border-violet-500/40 cursor-default font-semibold"
+                            : "hover:bg-zinc-800 text-zinc-200 cursor-pointer active:scale-98"
+                        }`}
+                      >
+                        <span className="truncate">{srv.name}</span>
+                        {isSelected && <Check className="h-4 w-4 text-violet-400 shrink-0 ml-2" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Settings Menu Popup — Portaled in normal mode so it overflows cleanly without clipping */}
             {showSettings && (

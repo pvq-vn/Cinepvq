@@ -432,9 +432,10 @@ export const historyStore = {
 
   add(
     movie: { slug: string; name: string; original_name?: string; thumb_url: string },
-    episode?: { slug: string; name: string },
+    episode?: { slug: string; name: string; season?: number },
     currentTime?: number,
-    duration?: number
+    duration?: number,
+    season?: number
   ): void {
     const key = getUserStorageKey(KEYS.HISTORY);
     const items = this.getAll();
@@ -467,8 +468,9 @@ export const historyStore = {
     safeSetItem(key, finalItems);
 
     // Also persist discrete per-episode progress to prevent cross-episode overwrites
+    const epSeason = season || episode?.season || 1;
     if (episode?.slug && typeof currentTime === "number") {
-      episodeProgressStore.save(movie.slug, episode.slug, 1, currentTime, duration || 0);
+      episodeProgressStore.save(movie.slug, episode.slug, epSeason, currentTime, duration || 0);
     }
   },
 

@@ -9,6 +9,11 @@ import {
 import CustomHlsPlayer from "@/components/CustomHlsPlayer";
 import { useUserStore } from "@/hooks/useUserStore";
 import {
+  type AudioServerInfo,
+  type EpisodeTransitionState,
+  normalizeAudioTrackKind,
+} from "@/contexts/GlobalPlayerContext";
+import {
   Sparkles,
   ShieldAlert,
   RefreshCw,
@@ -16,6 +21,7 @@ import {
   Check,
   ChevronDown,
   Info,
+  X,
 } from "lucide-react";
 
 export interface VideoPlayerProps {
@@ -42,29 +48,15 @@ export interface VideoPlayerProps {
   isMini?: boolean;
   sourceSwitchWarning?: boolean;
   onTriggerSourceWarning?: () => void;
+  onDismissSourceWarning?: () => void;
+  pendingAudioWarning?: boolean;
+  onSetPendingAudioWarning?: (pending: boolean) => void;
+  episodeTransition?: EpisodeTransitionState;
+  onFinishEpisodeTransition?: (success: boolean) => void;
+  availableServers?: AudioServerInfo[];
+  activeServerIndex?: number;
+  onSwitchServer?: (index: number) => void;
   autoPlay?: boolean;
-}
-
-type AudioSemanticType = "SUBTITLE" | "DUBBED" | "UNKNOWN";
-
-function getAudioSemanticType(name?: string): AudioSemanticType {
-  if (!name) return "UNKNOWN";
-  const norm = name.toLowerCase();
-  if (
-    /thuy[eế]t\s*minh|\btm\b/i.test(norm) ||
-    /l[oồ]ng\s*ti[eế]ng|\blt\b/i.test(norm) ||
-    /dubbed/i.test(norm)
-  ) {
-    return "DUBBED";
-  }
-  if (
-    /vietsub|\bsub\b/i.test(norm) ||
-    /ph[uụ]\s*[đd][eề]/i.test(norm) ||
-    /subtitles?/i.test(norm)
-  ) {
-    return "SUBTITLE";
-  }
-  return "UNKNOWN";
 }
 
 export default function VideoPlayer({
@@ -91,6 +83,14 @@ export default function VideoPlayer({
   isMini = false,
   sourceSwitchWarning = false,
   onTriggerSourceWarning,
+  onDismissSourceWarning,
+  pendingAudioWarning = false,
+  onSetPendingAudioWarning,
+  episodeTransition,
+  onFinishEpisodeTransition,
+  availableServers = [],
+  activeServerIndex = 0,
+  onSwitchServer,
   autoPlay = true,
 }: VideoPlayerProps) {
   const { settings, updateSettings } = useUserStore();
@@ -125,6 +125,13 @@ export default function VideoPlayer({
     setResumeTime(initialTime);
     setCurrentAutoPlay(autoPlay);
     setLocalAudioWarning(false);
+  }
+
+  // Also sync resumeTime if initialTime prop changes
+  const [prevInitialTime, setPrevInitialTime] = useState(initialTime);
+  if (initialTime !== prevInitialTime) {
+    setPrevInitialTime(initialTime);
+    setResumeTime(initialTime);
   }
 
   useEffect(() => {
@@ -165,7 +172,7 @@ export default function VideoPlayer({
     warningTimerRef.current = setTimeout(() => {
       setLocalAudioWarning(false);
       warningTimerRef.current = null;
-    }, 1800);
+    }, 2800);
   }, []);
 
   const handlePlayingChangeInternal = useCallback(
@@ -173,14 +180,25 @@ export default function VideoPlayer({
       isPlayingLocallyRef.current = playing;
       onPlayingChange?.(playing);
 
-      // Warning displays ONLY after the new source actually begins playback!
-      if (playing && pendingAudioWarningRef.current) {
-        pendingAudioWarningRef.current = false;
-        triggerLocalWarningToast();
-        onTriggerSourceWarning?.();
+      if (playing) {
+        onFinishEpisodeTransition?.(true);
+        // Warning displays ONLY after the new source actually begins playback!
+        if (pendingAudioWarning || pendingAudioWarningRef.current) {
+          pendingAudioWarningRef.current = false;
+          onSetPendingAudioWarning?.(false);
+          triggerLocalWarningToast();
+          onTriggerSourceWarning?.();
+        }
       }
     },
-    [onPlayingChange, onTriggerSourceWarning, triggerLocalWarningToast]
+    [
+      onPlayingChange,
+      onFinishEpisodeTransition,
+      pendingAudioWarning,
+      onSetPendingAudioWarning,
+      triggerLocalWarningToast,
+      onTriggerSourceWarning,
+    ]
   );
 
   // 1. Resolve all available sources on episode / movie change
@@ -317,6 +335,16 @@ export default function VideoPlayer({
   // Find active source object
   const activeSource = displaySources.find((s) => s.sourceId === activeSourceId) || null;
 
+  // Track last known HLS source during render to prevent unmounting CustomHlsPlayer during episode switch
+  const [lastKnownHlsSource, setLastKnownHlsSource] = useState<ResolvedSource | null>(null);
+  const [prevActiveSource, setPrevActiveSource] = useState<ResolvedSource | null>(null);
+  if (activeSource !== prevActiveSource) {
+    setPrevActiveSource(activeSource);
+    if (activeSource?.type === "hls") {
+      setLastKnownHlsSource(activeSource);
+    }
+  }
+
   // 2. Automatic Fallback Handler on Fatal Error
   const handleFatalError = useCallback(
     (reason?: string) => {
@@ -371,18 +399,21 @@ export default function VideoPlayer({
     setResumeTime(currentPos);
     setCurrentAutoPlay(wasPlaying);
 
-    // 2. Check if audio semantic type switched between SUBTITLE <-> DUBBED
+    // 2. Check if audio semantic type switched between vietsub <-> thuyet-minh <-> long-tieng
     if (oldSrc && newSrc) {
-      const oldKind = getAudioSemanticType(oldSrc.displayName || oldSrc.name || oldSrc.serverName);
-      const newKind = getAudioSemanticType(newSrc.displayName || newSrc.name || newSrc.serverName);
+      const oldKind = normalizeAudioTrackKind(oldSrc.displayName || oldSrc.name || oldSrc.serverName);
+      const newKind = normalizeAudioTrackKind(newSrc.displayName || newSrc.name || newSrc.serverName);
       if (
-        (oldKind === "SUBTITLE" && newKind === "DUBBED") ||
-        (oldKind === "DUBBED" && newKind === "SUBTITLE")
+        oldKind !== newKind &&
+        oldKind !== "other" &&
+        newKind !== "other"
       ) {
         // Flag pending warning: only show AFTER new source actually starts playing
         pendingAudioWarningRef.current = true;
+        onSetPendingAudioWarning?.(true);
       } else {
         pendingAudioWarningRef.current = false;
+        onSetPendingAudioWarning?.(false);
       }
     }
 
@@ -507,7 +538,7 @@ export default function VideoPlayer({
       )}
 
       {/* Main Video Viewport */}
-      {isResolving && !activeSource ? (
+      {isResolving && !activeSource && !lastKnownHlsSource ? (
         <div className="relative w-full overflow-hidden rounded-2xl bg-zinc-950 shadow-2xl shadow-black/60 aspect-video border border-zinc-800 flex flex-col items-center justify-center gap-3">
           <div className="flex h-12 w-12 items-center justify-center rounded-full bg-violet-600/20 text-violet-400 animate-spin">
             <RefreshCw className="h-6 w-6" />
@@ -519,10 +550,10 @@ export default function VideoPlayer({
             Ưu tiên K20 Direct &gt; VSMOV &gt; KKPhim1 &gt; NguonC
           </p>
         </div>
-      ) : activeSource && activeSource.type === "hls" ? (
+      ) : activeSource?.type === "hls" || (!activeSource && lastKnownHlsSource) ? (
         <CustomHlsPlayer
           key="cinepvq-active-hls"
-          src={activeSource.url}
+          src={activeSource?.type === "hls" ? activeSource.url : (lastKnownHlsSource?.url || "")}
           poster={poster}
           initialTime={resumeTime}
           autoPlay={currentAutoPlay}
@@ -542,14 +573,30 @@ export default function VideoPlayer({
           onVideoRef={handleRegisterVideoRef}
           isMini={isMini}
           sourceSwitchWarning={localAudioWarning || sourceSwitchWarning}
+          onDismissSourceWarning={onDismissSourceWarning}
+          isEpisodeTransitioning={isResolving || Boolean(episodeTransition?.isTransitioning)}
+          availableServers={availableServers}
+          activeServerIndex={activeServerIndex}
+          onSwitchServer={onSwitchServer}
         />
       ) : activeSource && activeSource.type === "iframe" ? (
         <div className="relative w-full overflow-hidden rounded-2xl bg-black shadow-2xl shadow-black/60 aspect-video border border-zinc-800/80">
           {(localAudioWarning || sourceSwitchWarning) && (
-            <div className="absolute top-4 inset-x-0 mx-auto w-fit max-w-[90%] pointer-events-none z-40 animate-in fade-in slide-in-from-top-2 duration-200">
+            <div className="absolute top-4 inset-x-0 mx-auto w-fit max-w-[90%] z-40 animate-in fade-in slide-in-from-top-2 duration-200">
               <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-zinc-950/90 backdrop-blur-md text-amber-300 text-xs font-medium border border-amber-500/30 shadow-xl">
                 <Info className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-                <span>Thời gian giữa Vietsub và bản lồng tiếng có thể không đồng bộ. Vui lòng tự điều chỉnh nếu cần.</span>
+                <span>Thời gian giữa các bản Vietsub, Thuyết minh và Lồng tiếng có thể không đồng bộ. Bạn có thể tự điều chỉnh nếu cần.</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLocalAudioWarning(false);
+                    onDismissSourceWarning?.();
+                  }}
+                  className="ml-1 p-0.5 hover:bg-white/20 rounded-full text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                  aria-label="Đóng thông báo"
+                >
+                  <X className="h-3 w-3" />
+                </button>
               </div>
             </div>
           )}
@@ -565,10 +612,21 @@ export default function VideoPlayer({
       ) : (
         <div className="relative w-full overflow-hidden rounded-2xl bg-black shadow-2xl shadow-black/60 aspect-video border border-zinc-800/80">
           {(localAudioWarning || sourceSwitchWarning) && (
-            <div className="absolute top-4 inset-x-0 mx-auto w-fit max-w-[90%] pointer-events-none z-40 animate-in fade-in slide-in-from-top-2 duration-200">
+            <div className="absolute top-4 inset-x-0 mx-auto w-fit max-w-[90%] z-40 animate-in fade-in slide-in-from-top-2 duration-200">
               <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-zinc-950/90 backdrop-blur-md text-amber-300 text-xs font-medium border border-amber-500/30 shadow-xl">
                 <Info className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-                <span>Thời gian giữa Vietsub và bản lồng tiếng có thể không đồng bộ. Vui lòng tự điều chỉnh nếu cần.</span>
+                <span>Thời gian giữa các bản Vietsub, Thuyết minh và Lồng tiếng có thể không đồng bộ. Bạn có thể tự điều chỉnh nếu cần.</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLocalAudioWarning(false);
+                    onDismissSourceWarning?.();
+                  }}
+                  className="ml-1 p-0.5 hover:bg-white/20 rounded-full text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                  aria-label="Đóng thông báo"
+                >
+                  <X className="h-3 w-3" />
+                </button>
               </div>
             </div>
           )}

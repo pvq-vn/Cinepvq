@@ -46,6 +46,14 @@ export default function GlobalPlayerHost() {
     registerVideoElement,
     sourceSwitchWarning,
     triggerSourceWarning,
+    dismissSourceWarning,
+    pendingAudioWarning,
+    setPendingAudioWarning,
+    episodeTransition,
+    finishEpisodeTransition,
+    availableServers,
+    activeServerIndex,
+    switchServer,
   } = useGlobalPlayer();
 
   const isClient = useSyncExternalStore(emptySubscribe, getClientSnapshot, getServerSnapshot);
@@ -314,6 +322,14 @@ export default function GlobalPlayerHost() {
           onVideoRef={registerVideoElement}
           sourceSwitchWarning={sourceSwitchWarning}
           onTriggerSourceWarning={triggerSourceWarning}
+          onDismissSourceWarning={dismissSourceWarning}
+          pendingAudioWarning={pendingAudioWarning}
+          onSetPendingAudioWarning={setPendingAudioWarning}
+          episodeTransition={episodeTransition}
+          onFinishEpisodeTransition={finishEpisodeTransition}
+          availableServers={availableServers}
+          activeServerIndex={activeServerIndex}
+          onSwitchServer={switchServer}
           autoPlay={session.autoPlay ?? true}
         />
       </div>

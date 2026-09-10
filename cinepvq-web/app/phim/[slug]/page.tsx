@@ -7,7 +7,11 @@ import { useFetchMovieDetail } from "@/hooks/useMovies";
 import { searchMovies } from "@/services/api";
 import { extractCategoriesFromMovie } from "@/types/movie";
 import { useUserStore } from "@/hooks/useUserStore";
-import { useGlobalPlayer } from "@/contexts/GlobalPlayerContext";
+import {
+  useGlobalPlayer,
+  normalizeAudioTrackKind,
+  type AudioServerInfo,
+} from "@/contexts/GlobalPlayerContext";
 import { episodeProgressStore } from "@/services/userStore";
 import SimilarMovies from "@/components/MovieDetail/SimilarMovies";
 import MovieComments from "@/components/MovieDetail/MovieComments";
@@ -49,11 +53,14 @@ function parseSeasonNumber(title?: string, slug?: string): number {
   return 1;
 }
 
-function getAudioKind(name?: string): "vietsub" | "thuyetminh" | "other" {
-  if (!name) return "other";
-  if (/thuy[eế]t\s*minh|\btm\b/i.test(name)) return "thuyetminh";
-  if (/vietsub|\bsub\b/i.test(name)) return "vietsub";
-  return "other";
+function isElementInFullscreen(): boolean {
+  if (typeof document === "undefined") return false;
+  return Boolean(
+    document.fullscreenElement ||
+      (document as unknown as { webkitFullscreenElement?: Element }).webkitFullscreenElement ||
+      (document as unknown as { mozFullScreenElement?: Element }).mozFullScreenElement ||
+      (document as unknown as { msFullscreenElement?: Element }).msFullscreenElement
+  );
 }
 
 /**
@@ -108,13 +115,19 @@ export default function MovieDetailPage() {
     videoRef,
     currentTime,
     isPlaying,
-    triggerSourceWarning,
+    startEpisodeTransition,
+    flushCurrentEpisodeProgress,
+    registerServerHandlers,
+    setPendingAudioWarning,
   } = useGlobalPlayer();
 
   // User-selected Episode & Server states
   const [selectedEpisodeSlug, setSelectedEpisodeSlug] = useState<string | null>(null);
   const [activeServerIndex, setActiveServerIndex] = useState<number>(0);
-  const [customResumeTime, setCustomResumeTime] = useState<number | null>(null);
+  const [pendingResumeOverride, setPendingResumeOverride] = useState<{
+    episodeSlug: string;
+    time: number;
+  } | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
   const [nextEpisodeCountdown, setNextEpisodeCountdown] = useState<number | null>(null);
   const [activeChunkIndex, setActiveChunkIndex] = useState<number>(0);
@@ -269,11 +282,11 @@ export default function MovieDetailPage() {
   const currentVideoUrl = activeEpisode?.embed || "";
   const activeEpisodeSlug = activeEpisode?.slug || "";
 
-  // Initial resume time for VideoPlayer
+  // Initial resume time for VideoPlayer — keyed strictly by episode to prevent cross-episode leakage
   const movieSlug = movie?.slug;
   const resumeTime =
-    customResumeTime !== null
-      ? customResumeTime
+    pendingResumeOverride && pendingResumeOverride.episodeSlug === activeEpisodeSlug
+      ? pendingResumeOverride.time
       : activeEpisodeSlug && movieSlug
       ? episodeProgressStore.get(movieSlug, activeEpisodeSlug, currentSeason) ||
         (savedHistory?.episodeSlug === activeEpisodeSlug ? savedHistory.currentTime || 0 : 0)
@@ -319,23 +332,36 @@ export default function MovieDetailPage() {
   // ─── Select Episode Handler ──────────────────────────────────────────────
   const handleSelectEpisode = useCallback(
     (ep: EpisodeItem, initialSeek?: number) => {
+      // Transition lock: ignore rapid multiple clicks during transition
+      if (!startEpisodeTransition(ep.slug)) {
+        return;
+      }
+
+      // Flush current playing episode progress to disk/store before switching
+      flushCurrentEpisodeProgress();
+
       setIsWatchingManual(true);
       setNextEpisodeCountdown(null);
       setSelectedEpisodeSlug(ep.slug);
 
-      // Resolve resume progress for target episode
-      let targetTime = 0;
+      // Resolve resume progress for target episode:
+      // If explicit initialSeek is passed, record override for target ep.
+      // Otherwise, target ep will read directly from its own store key.
       if (typeof initialSeek === "number") {
-        targetTime = initialSeek;
+        setPendingResumeOverride({
+          episodeSlug: ep.slug,
+          time: initialSeek,
+        });
+        lastSavedTimeRef.current = initialSeek;
       } else {
+        setPendingResumeOverride(null);
         const mSlug = movie?.slug || slug;
-        if (mSlug && ep.slug) {
-          targetTime = episodeProgressStore.get(mSlug, ep.slug, currentSeason) || 0;
-        }
+        const targetSaved =
+          mSlug && ep.slug
+            ? episodeProgressStore.get(mSlug, ep.slug, currentSeason) || 0
+            : 0;
+        lastSavedTimeRef.current = targetSaved;
       }
-
-      setCustomResumeTime(targetTime);
-      lastSavedTimeRef.current = targetTime;
 
       // Keep active chunk in sync
       if (episodeChunks.length > 0) {
@@ -347,6 +373,11 @@ export default function MovieDetailPage() {
       }
 
       if (movie) {
+        const mSlug = movie.slug || slug;
+        const targetTime =
+          typeof initialSeek === "number"
+            ? initialSeek
+            : episodeProgressStore.get(mSlug, ep.slug, currentSeason) || 0;
         addHistory(movie, { slug: ep.slug, name: ep.name }, targetTime);
       }
 
@@ -357,12 +388,110 @@ export default function MovieDetailPage() {
         window.history.replaceState(null, "", url.toString());
       }
 
-      setTimeout(() => {
-        scrollToPlayer();
-      }, 150);
+      // Never jump scroll if user is already in fullscreen mode
+      const isFs = isElementInFullscreen();
+      if (!isFs) {
+        setTimeout(() => {
+          scrollToPlayer();
+        }, 150);
+      }
     },
-    [movie, slug, currentSeason, episodeItems, episodeChunks, addHistory, scrollToPlayer]
+    [
+      startEpisodeTransition,
+      flushCurrentEpisodeProgress,
+      movie,
+      slug,
+      currentSeason,
+      episodeItems,
+      episodeChunks,
+      addHistory,
+      scrollToPlayer,
+    ]
   );
+
+  // ─── Switch Server Handler (Vietsub, Thuyết minh, Lồng tiếng) ──────────────
+  const handleSwitchServer = useCallback(
+    (targetIndex: number) => {
+      if (targetIndex === activeServerIndex) return;
+      const oldServer = servers[activeServerIndex];
+      const targetServer = servers[targetIndex];
+      if (!targetServer || !oldServer) return;
+
+      // 1. Capture current timestamp & playing state
+      const video = videoRef.current;
+      const curTime = video ? video.currentTime : currentTime || 0;
+
+      // 2. Map current episode to target server
+      if (!activeEpisode) return;
+      const curSlug = activeEpisode.slug;
+      const curName = activeEpisode.name;
+      const curNum = parseInt(curName.replace(/\D/g, ""), 10);
+
+      const targetItems = targetServer.items || [];
+      const matchedEp =
+        targetItems.find((e) => e.slug === curSlug) ||
+        targetItems.find((e) => e.slug.toLowerCase() === curSlug.toLowerCase()) ||
+        targetItems.find((e) => e.name === curName) ||
+        targetItems.find((e) => e.name.toLowerCase() === curName.toLowerCase()) ||
+        (isNaN(curNum)
+          ? undefined
+          : targetItems.find((e) => {
+              const eNum =
+                parseInt(e.name.replace(/\D/g, ""), 10) ||
+                parseInt(e.slug.replace(/\D/g, ""), 10);
+              return !isNaN(eNum) && eNum === curNum;
+            }));
+
+      if (!matchedEp) {
+        console.warn(
+          `[ServerSwitch] Không tìm thấy tập tương ứng trên server ${targetServer.server_name}`
+        );
+        return; // Không được âm thầm phát tập khác
+      }
+
+      // 3. Audio track kind change detection:
+      // Warning appears when switching between different kinds: Vietsub <-> Thuyết minh <-> Lồng tiếng
+      const oldKind = normalizeAudioTrackKind(oldServer.server_name);
+      const targetKind = normalizeAudioTrackKind(targetServer.server_name);
+      if (oldKind !== targetKind && oldKind !== "other" && targetKind !== "other") {
+        setPendingAudioWarning(true);
+      }
+
+      // 4. Set resume override specifically for target matched episode slug
+      setPendingResumeOverride({
+        episodeSlug: matchedEp.slug,
+        time: curTime,
+      });
+
+      setActiveServerIndex(targetIndex);
+      setSelectedEpisodeSlug(matchedEp.slug);
+    },
+    [
+      activeServerIndex,
+      servers,
+      videoRef,
+      currentTime,
+      activeEpisode,
+      setPendingAudioWarning,
+    ]
+  );
+
+  // Register available servers and switch callback with GlobalPlayer
+  useEffect(() => {
+    if (servers.length === 0) return;
+    const serverInfos: AudioServerInfo[] = servers.map((s, idx) => ({
+      index: idx,
+      serverName: s.server_name,
+      name: s.server_name,
+      kind: normalizeAudioTrackKind(s.server_name),
+    }));
+
+    registerServerHandlers({
+      servers: serverInfos,
+      activeIndex: activeServerIndex,
+      onSwitchServer: handleSwitchServer,
+    });
+  }, [servers, activeServerIndex, handleSwitchServer, registerServerHandlers]);
 
   // ─── Video Time Update ───────────────────────────────────────────────────
   const handleTimeUpdate = useCallback(
@@ -1097,37 +1226,7 @@ export default function MovieDetailPage() {
                   {servers.map((server, sIdx) => (
                     <button
                       key={server.server_name}
-                      onClick={() => {
-                        const oldServer = servers[activeServerIndex];
-                        const targetServer = servers[sIdx];
-                        if (sIdx !== activeServerIndex && oldServer && targetServer) {
-                          // Capture current video timestamp & playing state
-                          const curTime = videoRef.current ? videoRef.current.currentTime : (currentTime || 0);
-                          setCustomResumeTime(curTime);
-
-                          const oldKind = getAudioKind(oldServer.server_name);
-                          const newKind = getAudioKind(targetServer.server_name);
-                          if ((oldKind === "vietsub" && newKind === "thuyetminh") || (oldKind === "thuyetminh" && newKind === "vietsub")) {
-                            triggerSourceWarning();
-                          }
-                        }
-
-                        setActiveServerIndex(sIdx);
-                        if (targetServer && targetServer.items && activeEpisode) {
-                          const curName = activeEpisode.name;
-                          const curSlug = activeEpisode.slug;
-                          const curNum = parseInt(curName.replace(/\D/g, ""), 10);
-                          const match = targetServer.items.find((e) => {
-                            if (e.slug === curSlug || e.name === curName) return true;
-                            if (e.slug.toLowerCase() === curSlug.toLowerCase()) return true;
-                            const eNum = parseInt(e.name.replace(/\D/g, ""), 10);
-                            return !isNaN(curNum) && !isNaN(eNum) && curNum === eNum;
-                          });
-                          if (match) {
-                            setSelectedEpisodeSlug(match.slug);
-                          }
-                        }
-                      }}
+                      onClick={() => handleSwitchServer(sIdx)}
                       className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
                         activeServerIndex === sIdx
                           ? "bg-violet-600 text-white shadow-md"
