@@ -144,7 +144,15 @@ export default function MovieDetailPage() {
     return false;
   });
 
-  const isWatching = isWatchingManual || Boolean(session && session.movieSlug === slug);
+  const isWatching =
+    mode !== "mini" &&
+    Boolean(
+      isWatchingManual ||
+      searchParams.get("watch") === "true" ||
+      searchParams.get("ep") ||
+      (session && session.movieSlug === slug && mode === "detail")
+    );
+
 
   // Auto-scroll to top instantly when watching to ensure player is in view
   useEffect(() => {
@@ -242,7 +250,13 @@ export default function MovieDetailPage() {
   const activeEpisode = useMemo(() => {
     if (episodeItems.length === 0) return null;
 
-    // 1. User clicked an episode directly (with robust slug or numeric match)
+    // 1. Active global player session for this movie (keeps running episode intact)
+    if (session && session.movieSlug === (movie?.slug || slug) && session.episodeSlug) {
+      const found = episodeItems.find((e) => e.slug === session.episodeSlug);
+      if (found) return found;
+    }
+
+    // 2. User clicked an episode directly (with robust slug or numeric match)
     if (selectedEpisodeSlug) {
       const found =
         episodeItems.find((e) => e.slug === selectedEpisodeSlug) ||
@@ -252,12 +266,6 @@ export default function MovieDetailPage() {
           const eNum = parseInt(e.slug.replace(/\D/g, ""), 10) || parseInt(e.name.replace(/\D/g, ""), 10);
           return !isNaN(curNum) && !isNaN(eNum) && curNum === eNum;
         });
-      if (found) return found;
-    }
-
-    // 1.5 Active global player session for this movie (keeps running episode intact)
-    if (session && session.movieSlug === (movie?.slug || slug) && session.episodeSlug) {
-      const found = episodeItems.find((e) => e.slug === session.episodeSlug);
       if (found) return found;
     }
 
@@ -330,6 +338,25 @@ export default function MovieDetailPage() {
     }
   }, []);
 
+  // When expanding from mini player to detail mode, ensure watching view and scroll into view
+  useEffect(() => {
+    if (expandScrollTrigger > 0) {
+      setIsWatchingManual(true);
+      setTimeout(() => {
+        scrollToPlayer();
+      }, 100);
+    }
+  }, [expandScrollTrigger, scrollToPlayer]);
+
+  // Synchronize selectedEpisodeSlug when session.episodeSlug updates (e.g. Next episode or autoplay next)
+  useEffect(() => {
+    if (session?.movieSlug === (movie?.slug || slug) && session?.episodeSlug) {
+      if (selectedEpisodeSlug !== session.episodeSlug) {
+        setSelectedEpisodeSlug(session.episodeSlug);
+      }
+    }
+  }, [session?.movieSlug, session?.episodeSlug, movie?.slug, slug, selectedEpisodeSlug]);
+
   // ─── Select Episode Handler ──────────────────────────────────────────────
   const handleSelectEpisode = useCallback(
     (ep: EpisodeItem, initialSeek?: number) => {
@@ -344,6 +371,7 @@ export default function MovieDetailPage() {
         videoRef.current.pause();
       }
 
+      setMode("detail");
       setIsWatchingManual(true);
       setNextEpisodeCountdown(null);
       setSelectedEpisodeSlug(ep.slug);
@@ -547,6 +575,7 @@ export default function MovieDetailPage() {
 
   // ─── Primary Hero Actions ────────────────────────────────────────────────
   const handleWatchNow = useCallback(() => {
+    setMode("detail");
     setIsWatchingManual(true);
     if (episodeItems.length > 0) {
       handleSelectEpisode(episodeItems[0], 0);
@@ -554,9 +583,10 @@ export default function MovieDetailPage() {
     setTimeout(() => {
       scrollToPlayer();
     }, 150);
-  }, [episodeItems, handleSelectEpisode, scrollToPlayer]);
+  }, [episodeItems, handleSelectEpisode, scrollToPlayer, setMode]);
 
   const handleResumeWatching = useCallback(() => {
+    setMode("detail");
     setIsWatchingManual(true);
     if (savedHistory?.episodeSlug) {
       const ep = episodeItems.find((e) => e.slug === savedHistory.episodeSlug);
@@ -573,7 +603,7 @@ export default function MovieDetailPage() {
       }
     }
     handleWatchNow();
-  }, [savedHistory, episodeItems, movie?.slug, currentSeason, handleSelectEpisode, handleWatchNow, scrollToPlayer]);
+  }, [savedHistory, episodeItems, movie?.slug, currentSeason, handleSelectEpisode, handleWatchNow, scrollToPlayer, setMode]);
 
   const handleShare = useCallback(() => {
     if (typeof window !== "undefined") {
@@ -587,10 +617,10 @@ export default function MovieDetailPage() {
   useEffect(() => {
     if (!isWatching || !movie || !activeEpisode || !currentVideoUrl) return;
 
-    // If global player session is already active for this movie with the exact same episode, videoUrl, and server:
+    // If global player session is already active for this movie and same episode & server/stream:
     if (
       session?.movieSlug === (movie.slug || slug) &&
-      session?.episodeSlug === activeEpisodeSlug &&
+      (!selectedEpisodeSlug || selectedEpisodeSlug === session.episodeSlug) &&
       session?.videoUrl === currentVideoUrl &&
       session?.serverName === (currentServer?.server_name || "Vietsub")
     ) {

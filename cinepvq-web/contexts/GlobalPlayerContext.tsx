@@ -108,6 +108,7 @@ interface GlobalPlayerContextType {
   startPlayback: (session: GlobalPlayerSession) => void;
   setMode: (mode: GlobalPlayerMode) => void;
   closeMiniPlayer: () => void;
+  minimizeToMini: () => void;
   restoreToDetail: () => void;
   registerVideoElement: (el: HTMLVideoElement | null) => void;
   registerEpisodeHandlers: (handlers: EpisodeHandlers) => void;
@@ -121,12 +122,75 @@ interface GlobalPlayerContextType {
 
 const GlobalPlayerContext = createContext<GlobalPlayerContextType | null>(null);
 
+export function exitFullscreenSafely(video?: HTMLVideoElement | null): void {
+  if (typeof document === "undefined") return;
+
+  try {
+    const fsElement =
+      document.fullscreenElement ||
+      (document as unknown as { webkitFullscreenElement?: Element }).webkitFullscreenElement ||
+      (document as unknown as { mozFullScreenElement?: Element }).mozFullScreenElement ||
+      (document as unknown as { msFullscreenElement?: Element }).msFullscreenElement;
+
+    if (fsElement) {
+      const exitFn =
+        document.exitFullscreen ||
+        (document as unknown as { webkitExitFullscreen?: () => Promise<void> }).webkitExitFullscreen ||
+        (document as unknown as { mozCancelFullScreen?: () => Promise<void> }).mozCancelFullScreen ||
+        (document as unknown as { msExitFullscreen?: () => Promise<void> }).msExitFullscreen;
+
+      if (exitFn) {
+        const res = exitFn.call(document);
+        if (res && typeof res.catch === "function") {
+          res.catch(() => {});
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("[Fullscreen] Exit error:", err);
+  }
+
+  if (video) {
+    try {
+      const v = video as unknown as {
+        webkitDisplayingFullscreen?: boolean;
+        webkitExitFullscreen?: () => void;
+      };
+      if (v.webkitDisplayingFullscreen && typeof v.webkitExitFullscreen === "function") {
+        v.webkitExitFullscreen();
+      }
+    } catch {
+      // Ignored
+    }
+  }
+
+  try {
+    if (
+      typeof window !== "undefined" &&
+      window.screen?.orientation &&
+      typeof (window.screen.orientation as unknown as { unlock?: () => void }).unlock === "function"
+    ) {
+      (window.screen.orientation as unknown as { unlock: () => void }).unlock();
+    }
+  } catch {
+    // Ignored
+  }
+}
+
 export function GlobalPlayerProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
   const [session, setSession] = useState<GlobalPlayerSession | null>(null);
-  const [mode, setMode] = useState<GlobalPlayerMode>("hidden");
+  const [mode, setModeState] = useState<GlobalPlayerMode>("hidden");
+  const modeRef = useRef<GlobalPlayerMode>("hidden");
+  const modeBeforeHiddenRef = useRef<GlobalPlayerMode>("hidden");
+
+  const setMode = useCallback((newMode: GlobalPlayerMode) => {
+    modeRef.current = newMode;
+    setModeState(newMode);
+  }, []);
+
   const [isPlaying, setIsPlaying] = useState(false);
   const [isNativePip, setIsNativePip] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -172,11 +236,24 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     serverHandlers.onSwitchServer(index);
   }, [serverHandlers]);
 
-  // Episode transition state (idempotent, single active transition token)
+  // Episode transition state (idempotent, single active transition token with timeout fallback)
   const [episodeTransition, setEpisodeTransition] = useState<EpisodeTransitionState>({
     isTransitioning: false,
     token: 0,
   });
+  const transitionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const finishEpisodeTransition = useCallback((_success: boolean) => {
+    void _success;
+    if (transitionTimeoutRef.current) {
+      clearTimeout(transitionTimeoutRef.current);
+      transitionTimeoutRef.current = null;
+    }
+    setEpisodeTransition({
+      isTransitioning: false,
+      token: 0,
+    });
+  }, []);
 
   const startEpisodeTransition = useCallback((targetSlug: string) => {
     let started = false;
@@ -192,16 +269,21 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         targetEpisodeSlug: targetSlug,
       };
     });
-    return started;
-  }, []);
 
-  const finishEpisodeTransition = useCallback((_success: boolean) => {
-    void _success;
-    setEpisodeTransition({
-      isTransitioning: false,
-      token: 0,
-    });
-  }, []);
+    if (started) {
+      if (transitionTimeoutRef.current) {
+        clearTimeout(transitionTimeoutRef.current);
+      }
+      // Timeout fallback: Automatically clear transition overlay after 8 seconds
+      // so user is never stuck in infinite loading deadlock, especially in Fullscreen!
+      transitionTimeoutRef.current = setTimeout(() => {
+        console.warn("[GlobalPlayer] Episode transition timed out (8s fallback), clearing overlay...");
+        finishEpisodeTransition(true);
+      }, 8000);
+    }
+
+    return started;
+  }, [finishEpisodeTransition]);
 
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -235,7 +317,19 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     const onLeavePip = () => {
       setIsNativePip(false);
       // When leaving native PiP:
-      // If currently on movie detail page: restore detail mode & trigger scroll
+      // If was previously in mini mode, or current mode is mini: stay in mini mode!
+      const wasMini =
+        modeRef.current === "mini" ||
+        modeBeforeHiddenRef.current === "mini";
+
+      if (wasMini) {
+        if (modeRef.current !== "mini") {
+          setMode("mini");
+        }
+        return;
+      }
+
+      // If on movie detail page and was in detail mode: restore detail mode & trigger scroll
       // If on other pages: restore mini mode if video is playing, or hidden if paused
       if (typeof window !== "undefined") {
         const curPath = window.location.pathname;
@@ -403,6 +497,24 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     setSession(null);
   }, []);
 
+  const minimizeToMini = useCallback(() => {
+    if (!session) return;
+
+    // Cross-browser ensure Fullscreen is exited when minimizing
+    exitFullscreenSafely(videoRef.current);
+
+    setMode("mini");
+    // If currently on the movie detail page, navigate to the movie info view without watch query param
+    // so the page displays the full movie info (STATE 1) rather than an empty player slot
+    if (typeof window !== "undefined") {
+      const curPath = window.location.pathname;
+      const movieDetailPath = `/phim/${session.movieSlug}`;
+      if (curPath === movieDetailPath) {
+        router.push(movieDetailPath, { scroll: false });
+      }
+    }
+  }, [session, router, setMode]);
+
   const restoreToDetail = useCallback(() => {
     if (!session) return;
     const epSlug = session.episodeSlug;
@@ -413,7 +525,83 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     // Signal page.tsx to scroll to player once it renders in detail mode
     setExpandScrollTrigger((n) => n + 1);
     router.push(targetUrl);
-  }, [session, router]);
+  }, [session, router, setMode]);
+
+  // Page Visibility API: Auto Native PiP (Pop-up nhỏ)
+  // CHỈ kích hoạt tự động khi người dùng chuyển sang tab khác của trình duyệt hoặc thu nhỏ trình duyệt
+  // Yêu cầu video phải đang ở trạng thái playing mới tự động nhảy Pop-up nhỏ.
+  // Khi người dùng quay lại tab Cinepvq, Pop-up Nhỏ tự động đóng lại, chuyển quyền hiển thị về Pop-up Lớn (nếu đang ở trang khác) hoặc Player chính (nếu đang ở trang phim).
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+
+    const handleVisibilityChange = async () => {
+      const video = videoRef.current;
+      if (!video || !session) return;
+
+      if (document.hidden) {
+        // Record the mode before tab was hidden
+        modeBeforeHiddenRef.current = modeRef.current;
+
+        // Tab hidden or browser minimized
+        const isActuallyPlaying = !video.paused && !video.ended;
+        if (
+          isActuallyPlaying &&
+          document.pictureInPictureEnabled &&
+          !document.pictureInPictureElement
+        ) {
+          try {
+            await video.requestPictureInPicture();
+          } catch (err) {
+            console.warn("[GlobalPlayer] Auto Native PiP request failed:", err);
+          }
+        }
+      } else {
+        // Tab visible again:
+        // 1. Close Native PiP if active
+        if (document.pictureInPictureElement) {
+          try {
+            await document.exitPictureInPicture();
+          } catch (err) {
+            console.warn("[GlobalPlayer] Auto Native PiP exit failed:", err);
+          }
+        }
+
+        // 2. TUYỆT ĐỐI KHÔNG ép setMode("detail") nếu state hiện tại đang là mode === "mini" (hoặc trước đó ở mini).
+        // Tôn trọng trạng thái thu nhỏ của người dùng kể cả khi đang Pause.
+        const wasMini =
+          modeRef.current === "mini" ||
+          modeBeforeHiddenRef.current === "mini";
+
+        if (wasMini) {
+          if (modeRef.current !== "mini") {
+            setMode("mini");
+          }
+          return;
+        }
+
+        // 3. Nếu trước đó là mode detail và đang ở trang chi tiết phim thì khôi phục detail
+        if (typeof window !== "undefined") {
+          const curPath = window.location.pathname;
+          const movieDetailPath = `/phim/${session.movieSlug}`;
+          if (curPath === movieDetailPath) {
+            if (modeRef.current !== "detail") {
+              setMode("detail");
+              setExpandScrollTrigger((n) => n + 1);
+            }
+          } else if (!video.paused && !video.ended) {
+            if (modeRef.current !== "mini") {
+              setMode("mini");
+            }
+          }
+        }
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [session, videoRef, setMode]);
 
   // Route transition observer
   useEffect(() => {
@@ -428,23 +616,21 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
 
     if (wasOnMovieDetail && !isNowOnMovieDetail) {
       // User navigated away from the movie detail page
+      exitFullscreenSafely(videoRef.current);
       const video = videoRef.current;
       const isActuallyPlaying = video
         ? !video.paused && !video.ended
         : isPlaying;
 
       if (isActuallyPlaying) {
-        // Auto Mini Player: Only when video is genuinely PLAYING
+        // Auto Mini Player (Pop-up Lớn): Only when video is genuinely PLAYING
         setMode("mini");
       } else {
         // Paused: Do NOT auto open Mini Player
         setMode("hidden");
       }
-    } else if (!wasOnMovieDetail && isNowOnMovieDetail) {
-      // User returned to the movie detail page of this session
-      setMode("detail");
     }
-  }, [pathname, session, isPlaying]);
+  }, [pathname, session, isPlaying, setMode]);
 
   return (
     <GlobalPlayerContext.Provider
@@ -474,6 +660,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         startPlayback,
         setMode,
         closeMiniPlayer,
+        minimizeToMini,
         restoreToDetail,
         registerVideoElement,
         registerEpisodeHandlers,

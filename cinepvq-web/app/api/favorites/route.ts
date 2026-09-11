@@ -81,6 +81,16 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    // Explicit clear all action
+    if (action === "clear") {
+      await favoriteRepository.clearFavorites(userId);
+      return NextResponse.json({
+        status: "success",
+        favorites: [],
+        message: "Favorites cleared successfully",
+      });
+    }
+
     // Explicit remove action
     if (action === "remove" || action === "delete") {
       const targetSlug = slug || movieSlug || (typeof movie === "string" ? movie : movie?.slug);
@@ -144,16 +154,25 @@ export async function DELETE(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const slug = body.movieSlug || body.slug;
+    const { clearAll, movieSlug, slug } = body;
 
-    if (!slug) {
+    if (clearAll) {
+      await favoriteRepository.clearFavorites(userId);
+      return NextResponse.json({
+        status: "success",
+        message: "Favorites cleared",
+      });
+    }
+
+    const targetSlug = movieSlug || slug;
+    if (!targetSlug) {
       return NextResponse.json(
-        { status: "error", message: "movieSlug is required" },
+        { status: "error", message: "movieSlug or clearAll is required" },
         { status: 400 }
       );
     }
 
-    const removed = await favoriteRepository.removeFavorite(userId, slug);
+    const removed = await favoriteRepository.removeFavorite(userId, targetSlug);
     return NextResponse.json({
       status: "success",
       removed,

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Bookmark, Heart, Play } from "lucide-react";
 import type { Movie } from "@/types/movie";
 import { useUserStore } from "@/hooks/useUserStore";
+import { normalizeEpisodeLabel } from "@/lib/format";
 
 interface MovieCardProps {
   movie: Movie;
@@ -62,7 +63,7 @@ export default function MovieCard({
           )}
           <div className="mt-1 flex items-center gap-2 text-[11px] text-zinc-400">
             {movie.quality && <span>{movie.quality}</span>}
-            {movie.current_episode && <span>• {movie.current_episode}</span>}
+            {movie.current_episode && <span>• {normalizeEpisodeLabel(movie.current_episode)}</span>}
           </div>
         </div>
       </Link>
@@ -137,7 +138,7 @@ export default function MovieCard({
             )}
             {movie.current_episode && (
               <span className="rounded bg-black/70 px-2 py-0.5 font-medium text-white backdrop-blur-sm">
-                {movie.current_episode}
+                {normalizeEpisodeLabel(movie.current_episode)}
               </span>
             )}
           </div>
@@ -228,7 +229,7 @@ export default function MovieCard({
 
           {movie.current_episode && (
             <span className="rounded bg-black/70 px-2 py-0.5 font-medium text-white backdrop-blur-sm">
-              {movie.current_episode}
+              {normalizeEpisodeLabel(movie.current_episode)}
             </span>
           )}
         </div>

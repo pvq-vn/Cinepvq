@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { History, Play, Trash2, ArrowLeft, LogIn, Clock, Film } from "lucide-react";
 import { useUserStore } from "@/hooks/useUserStore";
+import { normalizeEpisodeLabel } from "@/lib/format";
 
 export default function HistoryPage() {
   const { user, history, mounted, removeHistory, clearHistory } = useUserStore();
@@ -90,7 +91,7 @@ export default function HistoryPage() {
               </span>
               {mostRecent.episodeName && (
                 <span className="rounded-md bg-violet-600 px-2 py-0.5 text-[10px] text-white">
-                  Tập {mostRecent.episodeName}
+                  {normalizeEpisodeLabel(mostRecent.episodeName)}
                 </span>
               )}
             </div>
@@ -211,7 +212,7 @@ export default function HistoryPage() {
                       <div className="flex flex-wrap items-center gap-2 text-xs">
                         {item.episodeName && (
                           <span className="font-semibold text-violet-600 dark:text-violet-400 bg-violet-500/10 px-2 py-0.5 rounded-md">
-                            Tập {item.episodeName}
+                            {normalizeEpisodeLabel(item.episodeName)}
                           </span>
                         )}
                         {progressPercent !== null && (

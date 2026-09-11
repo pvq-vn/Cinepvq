@@ -18,6 +18,7 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { GENRES, COUNTRIES, GENRE_MAP, COUNTRY_MAP } from "@/lib/taxonomy";
+import { saveRecentSearch } from "@/components/SearchModal";
 import type { Movie } from "@/types/movie";
 
 const CATEGORIES = [
@@ -87,6 +88,13 @@ function SearchDiscoveryContent() {
     setPrevUrlKeyword(queryKeyword);
     setInputVal(queryKeyword);
   }
+
+  // Save keyword to recent searches
+  useEffect(() => {
+    if (queryKeyword) {
+      saveRecentSearch(queryKeyword);
+    }
+  }, [queryKeyword]);
 
   // ─── URL Sanitization Effect ─────────────────────────────────────────────
   // Automatically purges invalid states from URL:

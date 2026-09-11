@@ -511,6 +511,20 @@ export const historyStore = {
   },
 };
 
+type ProgressSyncListener = (
+  movieSlug: string,
+  episodeSlug: string,
+  season: number,
+  currentTime: number,
+  duration: number
+) => void;
+
+let progressSyncListener: ProgressSyncListener | null = null;
+
+export function setProgressSyncListener(listener: ProgressSyncListener | null) {
+  progressSyncListener = listener;
+}
+
 // ─── Episode Playback Progress Repository (Prevents Cross-Episode Overwrites) ──
 
 export const episodeProgressStore = {
@@ -531,18 +545,25 @@ export const episodeProgressStore = {
     episodeSlug: string,
     season = 1,
     currentTime = 0,
-    duration = 0
+    duration = 0,
+    explicitUpdatedAt?: string,
+    skipRemoteSync = false
   ): void {
     if (!movieSlug || !episodeSlug) return;
     const key = getUserStorageKey(KEYS.EPISODE_PROGRESS);
     const all = this.getAll();
     const progressKey = `${movieSlug}_s${season}_${episodeSlug}`;
+    const updatedAt = explicitUpdatedAt || new Date().toISOString();
     all[progressKey] = {
       currentTime: Math.floor(currentTime),
       duration: Math.floor(duration),
-      updatedAt: new Date().toISOString(),
+      updatedAt,
     };
     safeSetItem(key, all);
+
+    if (!skipRemoteSync && progressSyncListener) {
+      progressSyncListener(movieSlug, episodeSlug, season, currentTime, duration);
+    }
   },
 };
 

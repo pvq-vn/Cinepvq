@@ -88,6 +88,18 @@ export function useUserStore() {
     []
   );
 
+  const removeFavorite = useCallback((slug: string) => {
+    favoritesStore.remove(slug);
+    notify();
+    userSyncManager.syncFavoriteRemove(slug);
+  }, []);
+
+  const clearFavorites = useCallback(() => {
+    favoritesStore.clearForCurrentUser();
+    notify();
+    userSyncManager.syncFavoriteClear();
+  }, []);
+
   const toggleWatchlist = useCallback(
     (movie: Movie | MovieDetail | WatchlistItem | FavoriteMovie) => {
       const res = watchlistStore.toggle(movie);
@@ -213,6 +225,8 @@ export function useUserStore() {
     unreadNotificationsCount: notifications.filter((n) => !n.read).length,
     toggleFavorite,
     isFavorite,
+    removeFavorite,
+    clearFavorites,
     toggleWatchlist,
     isWatchlist,
     addToWatchlist,

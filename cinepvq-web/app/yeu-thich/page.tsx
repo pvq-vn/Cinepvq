@@ -5,7 +5,7 @@ import { Heart, Film, ArrowLeft, Trash2, LogIn } from "lucide-react";
 import { useUserStore } from "@/hooks/useUserStore";
 
 export default function FavoritesPage() {
-  const { user, favorites, mounted, toggleFavorite } = useUserStore();
+  const { user, favorites, mounted, removeFavorite, clearFavorites } = useUserStore();
 
   if (!mounted) {
     return (
@@ -47,18 +47,35 @@ export default function FavoritesPage() {
             </p>
           </div>
 
-          {!user && (
-            <div className="flex items-center gap-2 p-3 rounded-2xl bg-violet-600/10 border border-violet-500/20 text-xs text-violet-700 dark:text-violet-300">
-              <span>Đang lưu trên máy này. Đăng nhập để đồng bộ đám mây:</span>
-              <Link
-                href="/dang-nhap?redirect=/yeu-thich"
-                className="inline-flex items-center gap-1 rounded-xl bg-violet-600 px-3 py-1.5 font-bold text-white shadow-sm hover:bg-violet-500 transition-colors"
+          <div className="flex flex-wrap items-center gap-2.5">
+            {!user && (
+              <div className="flex items-center gap-2 p-3 rounded-2xl bg-violet-600/10 border border-violet-500/20 text-xs text-violet-700 dark:text-violet-300">
+                <span>Đang lưu trên máy này. Đăng nhập để đồng bộ đám mây:</span>
+                <Link
+                  href="/dang-nhap?redirect=/yeu-thich"
+                  className="inline-flex items-center gap-1 rounded-xl bg-violet-600 px-3 py-1.5 font-bold text-white shadow-sm hover:bg-violet-500 transition-colors"
+                >
+                  <LogIn className="h-3.5 w-3.5" />
+                  Đăng nhập
+                </Link>
+              </div>
+            )}
+
+            {favorites.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm("Bạn có chắc chắn muốn xóa toàn bộ danh sách phim yêu thích?")) {
+                    clearFavorites();
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-red-600 dark:text-red-400 hover:underline px-2.5 py-1.5 rounded-xl border border-red-200/60 dark:border-red-900/40 bg-red-50/50 dark:bg-red-950/20"
               >
-                <LogIn className="h-3.5 w-3.5" />
-                Đăng nhập
-              </Link>
-            </div>
-          )}
+                <Trash2 className="h-3.5 w-3.5" />
+                Xóa tất cả
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Empty State */}
@@ -111,9 +128,13 @@ export default function FavoritesPage() {
                 {/* Remove button */}
                 <button
                   type="button"
-                  onClick={() => toggleFavorite(movie)}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    removeFavorite(movie.slug);
+                  }}
                   aria-label={`Xóa ${movie.name} khỏi yêu thích`}
-                  className="absolute top-2 right-2 flex h-8 w-8 items-center justify-center rounded-full bg-black/60 backdrop-blur-md text-zinc-300 hover:text-rose-500 hover:bg-black/80 transition-all opacity-0 group-hover:opacity-100 focus:opacity-100"
+                  className="absolute top-2 right-2 flex h-8 w-8 items-center justify-center rounded-full bg-black/60 backdrop-blur-md text-zinc-300 hover:text-rose-500 hover:bg-black/80 transition-all opacity-90 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100 shadow-md cursor-pointer"
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>

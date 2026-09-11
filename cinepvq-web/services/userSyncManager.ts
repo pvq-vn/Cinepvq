@@ -13,6 +13,8 @@ import {
   historyStore,
   settingsStore,
   notificationStore,
+  episodeProgressStore,
+  setProgressSyncListener,
 } from "@/services/userStore";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import type {
@@ -26,6 +28,16 @@ import type {
 
 let isSyncing = false;
 let syncScheduled = false;
+
+let progressTimer: NodeJS.Timeout | null = null;
+let pendingProgress: {
+  movieSlug: string;
+  episodeSlug: string;
+  season: number;
+  currentTime: number;
+  duration: number;
+  updatedAt: string;
+} | null = null;
 
 /**
  * Returns authenticated HTTP headers including Supabase Bearer token if available.
@@ -138,58 +150,87 @@ export const userSyncManager = {
           })
           .catch((err) => console.warn("[UserSync] Sync favorites failed", err)),
 
-        // Sync history (push local if exists, else pull)
-        (localHist.length > 0
-          ? fetch("/api/history", {
-              method: "POST",
-              headers: authHeaders,
-              body: JSON.stringify({ action: "sync", history: localHist }),
-            })
-          : fetch("/api/history", {
-              headers: authHeaders,
-            })
-        )
+        // Sync history: BẮT BUỘC fetch tiến độ mới nhất từ Supabase, so sánh timestamp và ghi đè local storage nếu DB mới hơn
+        fetch("/api/history", {
+          headers: authHeaders,
+        })
           .then((r) => r.json())
           .then((data) => {
             if (data.status === "success" && Array.isArray(data.history)) {
+              const remoteHistory: WatchHistoryItem[] = data.history;
               const currentLocal = historyStore.getAll();
-              if (currentLocal.length === 0 && data.history.length > 0) {
-                // Device had no local history (e.g. freshly logged in on mobile):
-                // Directly hydrate store from cloud
-                historyStore.setAll(data.history);
-                if (typeof window !== "undefined") {
-                  window.dispatchEvent(new Event("cinepvq_storage_update"));
-                }
-              } else {
-                // Two-way merge: reconcile local & remote by slug and most recent updatedAt/progress
-                const mergedMap = new Map<string, WatchHistoryItem>();
-                data.history.forEach((h: WatchHistoryItem) => {
-                  if (h && h.slug) mergedMap.set(h.slug, h);
-                });
-                currentLocal.forEach((loc) => {
-                  if (!loc || !loc.slug) return;
-                  if (!mergedMap.has(loc.slug)) {
-                    mergedMap.set(loc.slug, loc);
-                  } else {
-                    const remote = mergedMap.get(loc.slug)!;
-                    const timeLoc = loc.updatedAt ? new Date(loc.updatedAt).getTime() : 0;
-                    const timeRemote = remote.updatedAt ? new Date(remote.updatedAt).getTime() : 0;
-                    if (timeLoc > timeRemote) {
-                      mergedMap.set(loc.slug, loc);
-                    } else if (timeLoc === timeRemote && (loc.currentTime || 0) > (remote.currentTime || 0)) {
-                      mergedMap.set(loc.slug, loc);
-                    }
+              const localMap = new Map<string, WatchHistoryItem>();
+              currentLocal.forEach((item) => {
+                if (item && item.slug) localMap.set(item.slug, item);
+              });
+
+              const mergedMap = new Map<string, WatchHistoryItem>();
+              const itemsToPush: WatchHistoryItem[] = [];
+
+              // 1. Duyệt toàn bộ lịch sử từ DB
+              remoteHistory.forEach((remote) => {
+                if (!remote || !remote.slug) return;
+                const local = localMap.get(remote.slug);
+                const timeRemote = remote.updatedAt
+                  ? new Date(remote.updatedAt).getTime()
+                  : 0;
+                const timeLocal = local?.updatedAt
+                  ? new Date(local.updatedAt).getTime()
+                  : 0;
+
+                if (!local || timeRemote >= timeLocal) {
+                  // DB có dữ liệu mới hơn hoặc bằng (hoặc thiết bị này chưa có):
+                  // GHI ĐÈ local storage (cả historyStore lẫn episodeProgressStore)
+                  mergedMap.set(remote.slug, remote);
+
+                  if (remote.episodeSlug && typeof remote.currentTime === "number") {
+                    episodeProgressStore.save(
+                      remote.slug,
+                      remote.episodeSlug,
+                      1,
+                      remote.currentTime,
+                      remote.duration || 0,
+                      remote.updatedAt,
+                      true // skipRemoteSync to avoid echo
+                    );
                   }
-                });
-                const mergedList = Array.from(mergedMap.values()).sort((a, b) => {
-                  const timeA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-                  const timeB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-                  return timeB - timeA;
-                });
-                historyStore.setAll(mergedList);
-                if (typeof window !== "undefined") {
-                  window.dispatchEvent(new Event("cinepvq_storage_update"));
+                } else {
+                  // Dữ liệu local trên máy này mới hơn hẳn DB (xem offline hoặc vừa xem):
+                  // Giữ local và chuẩn bị đẩy lên DB
+                  mergedMap.set(remote.slug, local);
+                  itemsToPush.push(local);
                 }
+              });
+
+              // 2. Duyệt các phim chỉ có ở local mà DB chưa có
+              currentLocal.forEach((loc) => {
+                if (loc && loc.slug && !mergedMap.has(loc.slug)) {
+                  mergedMap.set(loc.slug, loc);
+                  itemsToPush.push(loc);
+                }
+              });
+
+              const mergedList = Array.from(mergedMap.values()).sort((a, b) => {
+                const timeA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+                const timeB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+                return timeB - timeA;
+              });
+
+              historyStore.setAll(mergedList);
+
+              // 3. Nếu có item local mới hơn, đồng bộ đẩy lên DB
+              if (itemsToPush.length > 0) {
+                fetch("/api/history", {
+                  method: "POST",
+                  headers: authHeaders,
+                  body: JSON.stringify({ action: "sync", history: itemsToPush }),
+                }).catch((err) =>
+                  console.warn("[UserSync] Push local history to remote failed", err)
+                );
+              }
+
+              if (typeof window !== "undefined") {
+                window.dispatchEvent(new Event("cinepvq_storage_update"));
               }
             }
           })
@@ -316,6 +357,43 @@ export const userSyncManager = {
       }
     } catch (err) {
       console.warn("[UserSync] Favorite sync failed, local state retained", err);
+    }
+  },
+
+  async syncFavoriteRemove(movieSlug: string) {
+    const user = authStore.getUser();
+    if (!user) return;
+
+    try {
+      const authHeaders = await getAuthHeaders();
+      await fetch("/api/favorites", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          action: "remove",
+          movieSlug,
+        }),
+      });
+    } catch (err) {
+      console.warn("[UserSync] Favorite remove sync failed", err);
+    }
+  },
+
+  async syncFavoriteClear() {
+    const user = authStore.getUser();
+    if (!user) return;
+
+    try {
+      const authHeaders = await getAuthHeaders();
+      await fetch("/api/favorites", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          action: "clear",
+        }),
+      });
+    } catch (err) {
+      console.warn("[UserSync] Favorite clear sync failed", err);
     }
   },
 
@@ -505,4 +583,62 @@ export const userSyncManager = {
       console.warn("[UserSync] Watchlist clear sync failed", err);
     }
   },
+
+  /**
+   * Debounced sync playback progress directly to Supabase DB.
+   * Prevents API flood during rapid playback updates while guaranteeing
+   * cross-device synchronicity.
+   */
+  debouncedSyncProgress(
+    movieSlug: string,
+    episodeSlug: string,
+    season = 1,
+    currentTime = 0,
+    duration = 0
+  ) {
+    if (typeof window === "undefined") return;
+    const user = authStore.getUser();
+    if (!user || !user.email) return;
+
+    pendingProgress = {
+      movieSlug,
+      episodeSlug,
+      season,
+      currentTime: Math.floor(currentTime),
+      duration: Math.floor(duration),
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (progressTimer) clearTimeout(progressTimer);
+    progressTimer = setTimeout(async () => {
+      if (!pendingProgress) return;
+      const target = pendingProgress;
+      pendingProgress = null;
+      try {
+        const authHeaders = await getAuthHeaders();
+        await fetch("/api/history", {
+          method: "POST",
+          headers: authHeaders,
+          body: JSON.stringify({
+            action: "upsert",
+            movieSlug: target.movieSlug,
+            episodeSlug: target.episodeSlug,
+            position: target.currentTime,
+            duration: target.duration,
+            updatedAt: target.updatedAt,
+          }),
+        });
+      } catch (err) {
+        console.warn("[UserSync] Debounced progress sync failed", err);
+      }
+    }, 1500);
+  },
 };
+
+// Wire userStore's episodeProgressStore.save to debouncedSyncProgress
+if (typeof window !== "undefined") {
+  setProgressSyncListener(
+    userSyncManager.debouncedSyncProgress.bind(userSyncManager)
+  );
+}
+

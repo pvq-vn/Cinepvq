@@ -27,7 +27,7 @@ import {
   X,
   Check,
 } from "lucide-react";
-import type { AudioServerInfo } from "@/contexts/GlobalPlayerContext";
+import { exitFullscreenSafely, type AudioServerInfo } from "@/contexts/GlobalPlayerContext";
 import { episodeProgressStore } from "@/services/userStore";
 
 export interface CustomHlsPlayerProps {
@@ -59,6 +59,9 @@ export interface CustomHlsPlayerProps {
   movieSlug?: string;
   episodeSlug?: string;
   season?: number;
+  onMinimize?: () => void;
+  onExpand?: () => void;
+  onFinishEpisodeTransition?: (success: boolean) => void;
 }
 
 interface QualityLevel {
@@ -143,6 +146,9 @@ export default function CustomHlsPlayer({
   movieSlug,
   episodeSlug,
   season,
+  onMinimize,
+  onExpand,
+  onFinishEpisodeTransition,
 }: CustomHlsPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -150,7 +156,17 @@ export default function CustomHlsPlayer({
   const hideControlsTimer = useRef<NodeJS.Timeout | null>(null);
   const loadSessionIdRef = useRef<number>(0);
   const prevEpisodeSlugRef = useRef<string | undefined>(episodeSlug);
+  const prevSrcRef = useRef<string>(src);
   const isEpisodeSwitchRef = useRef<boolean>(false);
+
+  const isMiniRef = useRef(isMini);
+  isMiniRef.current = isMini;
+
+  const onExpandRef = useRef(onExpand);
+  onExpandRef.current = onExpand;
+
+  const onMinimizeRef = useRef(onMinimize);
+  onMinimizeRef.current = onMinimize;
 
   useEffect(() => {
     if (videoRef.current) {
@@ -387,10 +403,8 @@ export default function CustomHlsPlayer({
   }, [onError]);
 
   const initialTimeRef = useRef(initialTime);
+  initialTimeRef.current = initialTime;
   const initialTimeAppliedRef = useRef(false);
-  useEffect(() => {
-    initialTimeRef.current = initialTime;
-  }, [initialTime]);
 
   const playbackRateRef = useRef(playbackRate);
   useEffect(() => {
@@ -421,6 +435,12 @@ export default function CustomHlsPlayer({
     if (!episodeSlug) return;
     if (prevEpisodeSlugRef.current && episodeSlug !== prevEpisodeSlugRef.current) {
       isEpisodeSwitchRef.current = true;
+      // Force pause the video immediately so the old episode's audio/video stops playing
+      if (videoRef.current && !videoRef.current.paused) {
+        videoRef.current.pause();
+      }
+      setIsPlaying(false);
+
       const targetSaved =
         movieSlug && episodeSlug
           ? episodeProgressStore.get(movieSlug, episodeSlug, season || 1) || 0
@@ -436,6 +456,16 @@ export default function CustomHlsPlayer({
     }
   }, [episodeSlug, movieSlug, season, initialTime]);
 
+  // Force pause video immediately whenever isEpisodeTransitioning turns on
+  useEffect(() => {
+    if (isEpisodeTransitioning) {
+      if (videoRef.current && !videoRef.current.paused) {
+        videoRef.current.pause();
+      }
+      setIsPlaying(false);
+    }
+  }, [isEpisodeTransitioning]);
+
   // 1. Initialize HLS.js or Native Video
   useEffect(() => {
     const video = videoRef.current;
@@ -448,13 +478,30 @@ export default function CustomHlsPlayer({
       isEpisodeSwitchRef.current ||
       Boolean(episodeSlug && prevEpisodeSlugRef.current && episodeSlug !== prevEpisodeSlugRef.current);
 
+    const isServerSwitch = Boolean(
+      !wasEpisodeSwitch &&
+      prevSrcRef.current &&
+      src !== prevSrcRef.current
+    );
+
     const targetEpisodeSavedTime = wasEpisodeSwitch
       ? (movieSlug && episodeSlug
           ? episodeProgressStore.get(movieSlug, episodeSlug, season || 1) || 0
+          : typeof initialTime === "number"
+          ? initialTime
           : typeof initialTimeRef.current === "number"
           ? initialTimeRef.current
           : 0)
-      : Math.max(0, initialTimeRef.current || 0);
+      : isServerSwitch
+      ? (typeof initialTime === "number" && initialTime > 0
+          ? initialTime
+          : (video && video.currentTime > 0 ? video.currentTime : initialTimeRef.current || 0))
+      : Math.max(0, typeof initialTime === "number" ? initialTime : (initialTimeRef.current || 0));
+
+    prevSrcRef.current = src;
+    prevEpisodeSlugRef.current = episodeSlug;
+    initialTimeRef.current = targetEpisodeSavedTime;
+    initialTimeAppliedRef.current = false;
 
     setErrorMsg(null);
     setIsBuffering(true);
@@ -463,8 +510,6 @@ export default function CustomHlsPlayer({
     setBuffered(0);
     setQualityLevels([]);
     setCurrentQuality(-1);
-    initialTimeRef.current = targetEpisodeSavedTime;
-    initialTimeAppliedRef.current = false;
     syncMediaAudio(video);
 
     // Pre-emptively overwrite video currentTime to target initial time to prevent any browser
@@ -557,20 +602,27 @@ export default function CustomHlsPlayer({
         isEpisodeSwitchRef.current = false;
         prevEpisodeSlugRef.current = episodeSlug;
 
-        if (autoPlayRef.current) {
+        const shouldPlay = autoPlayRef.current || isServerSwitch;
+        if (shouldPlay) {
           const playPromise = video.play();
           if (playPromise !== undefined) {
             playPromise
               .then(() => {
                 setIsPlaying(true);
+                onFinishEpisodeTransition?.(true);
               })
               .catch((err) => {
-                // Autoplay blocked: strictly preserve mute state, do NOT force video.muted = true
+                // Autoplay blocked by browser policy (e.g. in fullscreen)
                 console.warn("[CustomHlsPlayer] Autoplay was blocked by browser policy:", err);
                 setIsPlaying(false);
                 setShowControls(true);
+                onFinishEpisodeTransition?.(true);
               });
+          } else {
+            onFinishEpisodeTransition?.(true);
           }
+        } else {
+          onFinishEpisodeTransition?.(true);
         }
       });
 
@@ -637,19 +689,26 @@ export default function CustomHlsPlayer({
         isEpisodeSwitchRef.current = false;
         prevEpisodeSlugRef.current = episodeSlug;
         
-        if (autoPlayRef.current) {
+        const shouldNativePlay = autoPlayRef.current || isServerSwitch;
+        if (shouldNativePlay) {
           const playPromise = video.play();
           if (playPromise !== undefined) {
             playPromise
               .then(() => {
                 setIsPlaying(true);
+                onFinishEpisodeTransition?.(true);
               })
               .catch((err) => {
                 console.warn("[CustomHlsPlayer] Native autoplay was blocked by browser policy:", err);
                 setIsPlaying(false);
                 setShowControls(true);
+                onFinishEpisodeTransition?.(true);
               });
+          } else {
+            onFinishEpisodeTransition?.(true);
           }
+        } else {
+          onFinishEpisodeTransition?.(true);
         }
       });
     } else {
@@ -674,7 +733,17 @@ export default function CustomHlsPlayer({
     // playbackRate, preferredQuality, and autoPlay are decoupled via refs to prevent
     // destroying and recreating the active Hls instance during playback speed or quality changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src]);
+  }, [src, episodeSlug]);
+
+  // Safety timeout: automatically dismiss episode transition overlay if still active after 8s
+  useEffect(() => {
+    if (isEpisodeTransitioning) {
+      const timer = setTimeout(() => {
+        onFinishEpisodeTransition?.(true);
+      }, 8000);
+      return () => clearTimeout(timer);
+    }
+  }, [isEpisodeTransitioning, onFinishEpisodeTransition]);
 
 function getFullscreenElement(): Element | null {
   if (typeof document === "undefined") return null;
@@ -918,6 +987,23 @@ function getFullscreenElement(): Element | null {
       console.warn("[Fullscreen] Toggle error:", err);
     }
   }, []);
+
+  // Toggle between In-app Mini Player (Pop-up Lớn) and Detail Player (Màn hình chính)
+  const handleToggleMini = useCallback(() => {
+    if (isMiniRef.current) {
+      if (onExpandRef.current) {
+        onExpandRef.current();
+      }
+    } else {
+      exitFullscreenSafely(videoRef.current);
+      setIsFullscreen(false);
+      if (onMinimizeRef.current) {
+        onMinimizeRef.current();
+      } else {
+        togglePiP();
+      }
+    }
+  }, [togglePiP]);
 
   // 9. Playback Speed
   const handlePlaybackRateChange = (rate: number) => {
@@ -1232,8 +1318,9 @@ function getFullscreenElement(): Element | null {
           toggleMute();
           break;
         case "i":
+        case "I":
           e.preventDefault();
-          togglePiP();
+          handleToggleMini();
           break;
         case "p":
           e.preventDefault();
@@ -1274,6 +1361,7 @@ function getFullscreenElement(): Element | null {
     toggleFullscreen,
     toggleMute,
     togglePiP,
+    handleToggleMini,
     showDoubleTapFeedback,
   ]);
 
@@ -1348,8 +1436,16 @@ function getFullscreenElement(): Element | null {
           onPlayingChange?.(false);
         }}
         onWaiting={() => setIsBuffering(true)}
-        onPlaying={() => setIsBuffering(false)}
-        onCanPlay={() => setIsBuffering(false)}
+        onPlaying={() => {
+          setIsBuffering(false);
+          // Only dismiss transition when playback has genuinely started on the newly applied episode source
+          if (!isEpisodeSwitchRef.current && initialTimeAppliedRef.current) {
+            onFinishEpisodeTransition?.(true);
+          }
+        }}
+        onCanPlay={() => {
+          setIsBuffering(false);
+        }}
         onTimeUpdate={handleTimeUpdate}
         onEnded={() => {
           setIsPlaying(false);
@@ -1503,6 +1599,23 @@ function getFullscreenElement(): Element | null {
       {/* Episode Transition Overlay */}
       {isEpisodeTransitioning && (
         <div className="absolute inset-0 pointer-events-auto flex items-center justify-center bg-black/75 backdrop-blur-[3px] transition-all z-35">
+          {isFullscreen && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (typeof document !== "undefined" && document.fullscreenElement) {
+                  document.exitFullscreen().catch(() => {});
+                }
+              }}
+              className="absolute top-4 right-4 sm:top-6 sm:right-6 flex items-center gap-2 px-3.5 py-2 rounded-xl bg-zinc-900/80 hover:bg-zinc-800 text-zinc-200 hover:text-white border border-white/10 text-xs sm:text-sm font-medium backdrop-blur-md transition-all cursor-pointer shadow-lg active:scale-95 z-50"
+              title="Thoát toàn màn hình (Esc)"
+              aria-label="Thoát toàn màn hình"
+            >
+              <X className="h-4 w-4" />
+              <span>Thoát</span>
+            </button>
+          )}
           <div className="flex flex-col items-center gap-3 text-white px-6 py-4 rounded-2xl bg-zinc-950/80 border border-white/10 shadow-2xl">
             <Loader2 className="h-10 w-10 animate-spin text-violet-500" />
             <span className="text-sm font-medium text-zinc-200">Đang tối ưu nguồn phát...</span>
@@ -1797,20 +1910,28 @@ function getFullscreenElement(): Element | null {
               </button>
             )}
 
-            {/* Picture-in-Picture Button */}
-            {supportsPip && (
+            {/* In-app Mini Player (Pop-up Lớn) Minimize / Expand Button */}
+            {(onMinimize || onExpand || supportsPip) && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  togglePiP();
+                  handleToggleMini();
                 }}
                 className={`p-1 sm:p-1.5 min-h-[32px] min-w-[32px] sm:min-h-[36px] sm:min-w-[36px] rounded-lg transition-colors flex items-center justify-center cursor-pointer shrink-0 ${
-                  isPip
+                  isMini
                     ? "bg-violet-600 text-white"
                     : "hover:bg-white/10 text-zinc-300 hover:text-white"
                 }`}
-                title={isPip ? "Thoát chế độ thu nhỏ (I)" : "Thu nhỏ phát tiếp (I)"}
-                aria-label={isPip ? "Thoát hình trong hình" : "Hình trong hình"}
+                title={
+                  isMini
+                    ? "Phóng to trình phát (I)"
+                    : onMinimize
+                    ? "Thu nhỏ trình phát (Pop-up) (I)"
+                    : isPip
+                    ? "Thoát chế độ thu nhỏ (I)"
+                    : "Thu nhỏ phát tiếp (I)"
+                }
+                aria-label={isMini ? "Phóng to trình phát" : "Thu nhỏ trình phát"}
               >
                 <PictureInPicture className="h-4 w-4 sm:h-5 sm:w-5" />
               </button>

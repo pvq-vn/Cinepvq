@@ -58,6 +58,8 @@ export interface VideoPlayerProps {
   activeServerIndex?: number;
   onSwitchServer?: (index: number) => void;
   autoPlay?: boolean;
+  onMinimize?: () => void;
+  onExpand?: () => void;
 }
 
 export default function VideoPlayer({
@@ -93,6 +95,8 @@ export default function VideoPlayer({
   activeServerIndex = 0,
   onSwitchServer,
   autoPlay = true,
+  onMinimize,
+  onExpand,
 }: VideoPlayerProps) {
   const { settings, updateSettings } = useUserStore();
   const [sources, setSources] = useState<ResolvedSource[]>([]);
@@ -102,6 +106,8 @@ export default function VideoPlayer({
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
   const [resumeTime, setResumeTime] = useState<number>(initialTime);
   const [currentAutoPlay, setCurrentAutoPlay] = useState<boolean>(autoPlay);
+  const [lastKnownHlsSource, setLastKnownHlsSource] = useState<ResolvedSource | null>(null);
+  const [prevActiveSource, setPrevActiveSource] = useState<ResolvedSource | null>(null);
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const isPlayingLocallyRef = useRef<boolean>(autoPlay);
@@ -123,6 +129,11 @@ export default function VideoPlayer({
   const [prevEpisodeKey, setPrevEpisodeKey] = useState(episodeKey);
   if (episodeKey !== prevEpisodeKey) {
     setPrevEpisodeKey(episodeKey);
+    // Clear stale HLS source from previous episode so it is never replayed for the new episode!
+    setLastKnownHlsSource(null);
+    if (localVideoRef.current && !localVideoRef.current.paused) {
+      localVideoRef.current.pause();
+    }
     const targetEpisodeSavedTime = (movieSlug && episodeSlug)
       ? episodeProgressStore.get(movieSlug, episodeSlug, season || 1) || 0
       : (initialTime || 0);
@@ -144,6 +155,16 @@ export default function VideoPlayer({
   useEffect(() => {
     pendingAudioWarningRef.current = false;
   }, [episodeKey]);
+
+  // Timeout fallback for episode transition in VideoPlayer: unblocks overlay after 8s
+  useEffect(() => {
+    if (episodeTransition?.isTransitioning) {
+      const timer = setTimeout(() => {
+        onFinishEpisodeTransition?.(true);
+      }, 8000);
+      return () => clearTimeout(timer);
+    }
+  }, [episodeTransition?.isTransitioning, onFinishEpisodeTransition]);
 
   // Close menu on outside click
   useEffect(() => {
@@ -189,7 +210,7 @@ export default function VideoPlayer({
       isPlayingLocallyRef.current = playing;
       onPlayingChange?.(playing);
 
-      if (playing) {
+      if (playing && !isResolving) {
         onFinishEpisodeTransition?.(true);
         // Warning displays ONLY after the new source actually begins playback!
         if (pendingAudioWarning || pendingAudioWarningRef.current) {
@@ -202,6 +223,7 @@ export default function VideoPlayer({
     },
     [
       onPlayingChange,
+      isResolving,
       onFinishEpisodeTransition,
       pendingAudioWarning,
       onSetPendingAudioWarning,
@@ -345,8 +367,6 @@ export default function VideoPlayer({
   const activeSource = displaySources.find((s) => s.sourceId === activeSourceId) || null;
 
   // Track last known HLS source during render to prevent unmounting CustomHlsPlayer during episode switch
-  const [lastKnownHlsSource, setLastKnownHlsSource] = useState<ResolvedSource | null>(null);
-  const [prevActiveSource, setPrevActiveSource] = useState<ResolvedSource | null>(null);
   if (activeSource !== prevActiveSource) {
     setPrevActiveSource(activeSource);
     if (activeSource?.type === "hls") {
@@ -547,7 +567,7 @@ export default function VideoPlayer({
       )}
 
       {/* Main Video Viewport */}
-      {isResolving && !activeSource && !lastKnownHlsSource ? (
+      {isResolving && !activeSource && !lastKnownHlsSource && !episodeTransition?.isTransitioning ? (
         <div className="relative w-full overflow-hidden rounded-2xl bg-zinc-950 shadow-2xl shadow-black/60 aspect-video border border-zinc-800 flex flex-col items-center justify-center gap-3">
           <div className="flex h-12 w-12 items-center justify-center rounded-full bg-violet-600/20 text-violet-400 animate-spin">
             <RefreshCw className="h-6 w-6" />
@@ -559,10 +579,16 @@ export default function VideoPlayer({
             Ưu tiên K20 Direct &gt; VSMOV &gt; KKPhim1 &gt; NguonC
           </p>
         </div>
-      ) : activeSource?.type === "hls" || (!activeSource && lastKnownHlsSource) ? (
+      ) : activeSource?.type === "hls" || (!activeSource && (lastKnownHlsSource || episodeTransition?.isTransitioning || (videoUrl && videoUrl.includes(".m3u8")))) ? (
         <CustomHlsPlayer
           key="cinepvq-active-hls"
-          src={activeSource?.type === "hls" ? activeSource.url : (lastKnownHlsSource?.url || "")}
+          src={
+            activeSource?.type === "hls"
+              ? activeSource.url
+              : videoUrl && videoUrl.includes(".m3u8")
+              ? videoUrl
+              : lastKnownHlsSource?.url || ""
+          }
           poster={poster}
           initialTime={resumeTime}
           autoPlay={currentAutoPlay}
@@ -590,6 +616,9 @@ export default function VideoPlayer({
           movieSlug={movieSlug}
           episodeSlug={episodeSlug}
           season={season}
+          onMinimize={onMinimize}
+          onExpand={onExpand}
+          onFinishEpisodeTransition={onFinishEpisodeTransition}
         />
       ) : activeSource && activeSource.type === "iframe" ? (
         <div className="relative w-full overflow-hidden rounded-2xl bg-black shadow-2xl shadow-black/60 aspect-video border border-zinc-800/80">

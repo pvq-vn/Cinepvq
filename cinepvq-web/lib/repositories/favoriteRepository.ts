@@ -149,6 +149,16 @@ export const favoriteRepository = {
   },
 
   /**
+   * Clear all favorites for a user.
+   */
+  async clearFavorites(userId: string): Promise<void> {
+    const realUserId = await userRepository.resolveUserId(userId);
+    if (!realUserId) return;
+
+    await query("DELETE FROM favorites WHERE user_id = $1", [realUserId]);
+  },
+
+  /**
    * Toggle favorite status. Returns true if added, false if removed.
    */
   async toggleFavorite(
