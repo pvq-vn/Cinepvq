@@ -46,7 +46,8 @@ class PlayerViewModel(
         slug: String,
         episodeSlug: String,
         serverName: String? = null,
-        initialEmbedUrl: String? = null
+        initialEmbedUrl: String? = null,
+        resumePositionMs: Long? = null
     ) {
         viewModelScope.launch {
             _isLoadingStream.value = true
@@ -57,26 +58,70 @@ class PlayerViewModel(
             val detail = movieRes.getOrNull()
             _movie.value = detail
 
-            // 2. Find matching episode
-            val allEpisodes = detail?.episodes?.flatMap { it.items } ?: emptyList()
-            val targetEp = allEpisodes.find { it.slug == episodeSlug }
-                ?: EpisodeItem(name = episodeSlug, slug = episodeSlug, embed = initialEmbedUrl ?: "")
-            _currentEpisode.value = targetEp
-
-            // 3. Find resume position from local watch history
-            val history = CinepvqApp.instance.database.watchHistoryDao().getHistoryBySlug(slug)
-            if (history != null && history.currentTime > 0) {
-                // If history is for the same episode or general resume
-                initialResumePositionMs = history.currentTime * 1000L
+            // 2. Select target server matching serverName, or fallback to first server
+            val targetServer = if (!serverName.isNullOrBlank()) {
+                detail?.episodes?.find { it.serverName.equals(serverName, ignoreCase = true) }
+                    ?: detail?.episodes?.find {
+                        val isTm = serverName.contains("Thuyết minh", ignoreCase = true) || serverName.contains("TM", ignoreCase = true)
+                        if (isTm) it.serverName.contains("Thuyết minh", ignoreCase = true) || it.serverName.contains("TM", ignoreCase = true)
+                        else it.serverName.contains("Vietsub", ignoreCase = true)
+                    }
+                    ?: detail?.episodes?.firstOrNull()
+            } else {
+                detail?.episodes?.firstOrNull()
             }
 
-            // 4. Resolve multi-source stream (K20 Direct HLS, KKPhim HLS, etc.)
+            // 3. Find matching episode in targetServer (match slug, then digit number, fallback to first)
+            val serverEpisodes = targetServer?.items ?: emptyList()
+            var targetEp = serverEpisodes.find { it.slug == episodeSlug }
+            if (targetEp == null) {
+                val sourceEp = detail?.episodes?.flatMap { it.items }?.find { it.slug == episodeSlug }
+                val targetName = sourceEp?.name ?: episodeSlug
+                val targetDigits = targetName.filter { it.isDigit() }
+                targetEp = if (targetDigits.isNotEmpty()) {
+                    serverEpisodes.find { it.name.filter { c -> c.isDigit() } == targetDigits }
+                } else null
+            }
+            if (targetEp == null) {
+                targetEp = serverEpisodes.firstOrNull() ?: EpisodeItem(
+                    name = episodeSlug,
+                    slug = episodeSlug,
+                    embed = initialEmbedUrl ?: ""
+                )
+            }
+            _currentEpisode.value = targetEp
+
+            // 4. Resume position logic:
+            // If explicit resumePositionMs passed (e.g. user toggled Vietsub -> Thuyết Minh at 11:46), use it!
+            if (resumePositionMs != null && resumePositionMs > 0L) {
+                initialResumePositionMs = resumePositionMs
+            } else {
+                initialResumePositionMs = 0L
+                val history = userSyncRepository.getHistoryDirect(slug)
+                if (history != null && history.episodeSlug == episodeSlug && history.currentTime > 0) {
+                    val dur = history.duration
+                    val isNearEnd = dur > 0 && (dur - history.currentTime < 15 || (history.currentTime.toFloat() / dur) >= 0.95f)
+                    if (!isNearEnd) {
+                        initialResumePositionMs = history.currentTime * 1000L
+                    }
+                }
+            }
+
+            // 5. Extract episode number for resolver if available
+            val epNum = targetEp.name.filter { it.isDigit() }.toIntOrNull() ?: 1
+
+            // 6. Resolve multi-source stream with the actual target server & episode URLs
+            val effectiveM3u8 = targetEp.m3u8Url?.ifBlank { null }
+                ?: if (targetEp.embed.contains(".m3u8")) targetEp.embed else null
+            val effectiveEmbed = targetEp.embed.ifBlank { initialEmbedUrl }
+
             val sources = videoSourceRepository.resolveStreams(
                 slug = slug,
-                episodeSlug = episodeSlug,
-                serverName = serverName,
-                fallbackM3u8 = targetEp.m3u8Url,
-                fallbackEmbed = targetEp.embed.ifBlank { initialEmbedUrl }
+                episode = epNum,
+                episodeSlug = targetEp.slug,
+                serverName = targetServer?.serverName ?: serverName,
+                fallbackM3u8 = effectiveM3u8,
+                fallbackEmbed = effectiveEmbed
             )
 
             _availableSources.value = sources
@@ -95,9 +140,12 @@ class PlayerViewModel(
         _activeStream.value = source
     }
 
-    fun recordProgress(currentMs: Long, durationMs: Long) {
+    fun recordProgress(forEpisodeSlug: String, currentMs: Long, durationMs: Long) {
         val m = _movie.value ?: return
         val ep = _currentEpisode.value ?: return
+        // Guard against race condition where stale playback loop records to new episode
+        if (ep.slug != forEpisodeSlug) return
+
         val currentSec = currentMs / 1000L
         val durationSec = durationMs / 1000L
 
@@ -110,7 +158,7 @@ class PlayerViewModel(
                 originalName = m.originalName,
                 thumbUrl = m.thumbUrl,
                 episodeSlug = ep.slug,
-                episodeName = "Tập ${ep.name}",
+                episodeName = ep.displayName,
                 currentTime = currentSec,
                 duration = durationSec
             )

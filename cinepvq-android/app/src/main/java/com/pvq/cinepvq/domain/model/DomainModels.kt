@@ -30,7 +30,20 @@ data class MovieDetail(
     val categories: List<String> = emptyList(),
     val countries: List<String> = emptyList(),
     val episodes: List<EpisodeServer> = emptyList()
-)
+) {
+    val parsedTitleAndPart: Pair<String, String?>
+        get() {
+            val partRegex = Regex("(?i)[(]?\\s*(Phần|Season)\\s*(\\d+|[IVXLCDM]+)\\s*[)]?")
+            val match = partRegex.find(name)
+            return if (match != null) {
+                val partText = match.value.trim('(', ')', ' ')
+                val cleanTitle = name.replace(match.value, "").trim(' ', '-', ':')
+                Pair(cleanTitle, partText)
+            } else {
+                Pair(name, null)
+            }
+        }
+}
 
 data class EpisodeServer(
     val serverName: String,
@@ -42,7 +55,23 @@ data class EpisodeItem(
     val slug: String,
     val embed: String = "",
     val m3u8Url: String? = null
-)
+) {
+    val displayName: String
+        get() {
+            val clean = name.trim()
+            return if (clean.startsWith("Tập", ignoreCase = true)) clean else "Tập $clean"
+        }
+
+    val episodeNumberOnly: String
+        get() {
+            val digits = name.replace(Regex("[^0-9]"), "").trim()
+            return if (digits.isNotEmpty()) {
+                if (digits.length == 1) "0$digits" else digits
+            } else {
+                name.replace(Regex("(?i)tập\\s*"), "").trim().ifBlank { name }
+            }
+        }
+}
 
 enum class StreamType {
     HLS_DIRECT,

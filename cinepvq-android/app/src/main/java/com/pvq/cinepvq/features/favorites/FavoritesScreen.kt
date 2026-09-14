@@ -34,9 +34,17 @@ import com.pvq.cinepvq.ui.theme.*
 fun FavoritesScreen(
     onMovieClick: (String) -> Unit,
     onExploreClick: () -> Unit,
+    onBarsVisibilityChanged: ((Boolean) -> Unit)? = null,
     viewModel: FavoritesViewModel = viewModel()
 ) {
     val favorites by viewModel.favorites.collectAsStateWithLifecycle()
+    val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+
+    com.pvq.cinepvq.core.designsystem.components.TrackLazyGridScroll(
+        gridState = gridState,
+        threshold = 16,
+        onVisibilityChanged = onBarsVisibilityChanged
+    )
 
     Column(
         modifier = Modifier
@@ -82,8 +90,9 @@ fun FavoritesScreen(
                 )
             } else {
                 LazyVerticalGrid(
+                    state = gridState,
                     columns = GridCells.Adaptive(minSize = 105.dp),
-                    contentPadding = PaddingValues(start = 14.dp, end = 14.dp, bottom = 80.dp),
+                    contentPadding = PaddingValues(start = 14.dp, end = 14.dp, bottom = 88.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.fillMaxSize()

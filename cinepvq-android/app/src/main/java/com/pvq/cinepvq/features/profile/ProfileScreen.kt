@@ -31,6 +31,7 @@ import com.pvq.cinepvq.ui.theme.*
 @Composable
 fun ProfileScreen(
     onNavigateToAuth: () -> Unit,
+    onBarsVisibilityChanged: ((Boolean) -> Unit)? = null,
     viewModel: ProfileViewModel = viewModel()
 ) {
     val user by viewModel.currentUser.collectAsStateWithLifecycle()
@@ -40,6 +41,10 @@ fun ProfileScreen(
     val favCount by viewModel.favoritesCount.collectAsStateWithLifecycle()
     val histCount by viewModel.historyCount.collectAsStateWithLifecycle()
     val backendUrl by viewModel.backendUrl.collectAsStateWithLifecycle()
+    val syncIsError by viewModel.syncIsError.collectAsStateWithLifecycle()
+    val isTestingConnection by viewModel.isTestingConnection.collectAsStateWithLifecycle()
+    val testConnectionMessage by viewModel.testConnectionMessage.collectAsStateWithLifecycle()
+    val testConnectionIsError by viewModel.testConnectionIsError.collectAsStateWithLifecycle()
 
     var showEditDialog by remember { mutableStateOf(false) }
     var showServerDialog by remember { mutableStateOf(false) }
@@ -47,13 +52,20 @@ fun ProfileScreen(
     var newUsernameInput by remember { mutableStateOf("") }
     var serverUrlInput by remember { mutableStateOf("") }
 
+    val scrollState = rememberScrollState()
+    com.pvq.cinepvq.core.designsystem.components.TrackScrollState(
+        scrollState = scrollState,
+        threshold = 16,
+        onVisibilityChanged = onBarsVisibilityChanged
+    )
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(CinepvqBackground)
             .statusBarsPadding()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .verticalScroll(scrollState)
+            .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 88.dp)
     ) {
         // Header
         Row(
@@ -294,12 +306,33 @@ fun ProfileScreen(
                     }
 
                     if (syncMessage != null) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = syncMessage!!,
-                            color = CinepvqGreen,
-                            fontSize = 12.sp
-                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (syncIsError) CinepvqRed.copy(alpha = 0.15f) else CinepvqGreen.copy(alpha = 0.15f))
+                                .border(1.dp, if (syncIsError) CinepvqRed.copy(alpha = 0.4f) else CinepvqGreen.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (syncIsError) Icons.Default.Warning else Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = if (syncIsError) CinepvqRed else CinepvqGreen,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = syncMessage!!,
+                                    color = if (syncIsError) CinepvqRed else CinepvqGreen,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -439,6 +472,60 @@ fun ProfileScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Kiểm tra kết nối API",
+                            color = CinepvqTextPrimary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        if (testConnectionMessage != null) {
+                            Text(
+                                text = testConnectionMessage ?: "",
+                                color = if (testConnectionIsError) CinepvqRed else CinepvqGreen,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        } else {
+                            Text(
+                                text = "Ping máy chủ backend Cinepvq",
+                                color = CinepvqTextMuted,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                    Button(
+                        onClick = { viewModel.testConnection() },
+                        enabled = !isTestingConnection,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = CinepvqPrimary.copy(alpha = 0.2f),
+                            contentColor = CinepvqPrimary
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        if (isTestingConnection) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                                color = CinepvqPrimary
+                            )
+                        } else {
+                            Text("Ping Test", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = CinepvqBorderSubtle)
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
                         .padding(16.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
@@ -557,7 +644,7 @@ fun ProfileScreen(
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "Chọn cấu hình nhanh hoặc nhập IP máy chủ:",
+                        text = "Chọn cấu hình nhanh hoặc nhập Base URL:",
                         color = CinepvqTextSecondary,
                         fontSize = 12.sp,
                         modifier = Modifier.padding(bottom = 8.dp)
@@ -568,18 +655,28 @@ fun ProfileScreen(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         OutlinedButton(
-                            onClick = { serverUrlInput = "http://127.0.0.1:3000/" },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
-                        ) {
-                            Text("127.0.0.1 (USB)", fontSize = 11.sp)
-                        }
-                        OutlinedButton(
-                            onClick = { serverUrlInput = "http://192.168.1.230:3000/" },
+                            onClick = { serverUrlInput = com.pvq.cinepvq.BuildConfig.DEFAULT_DEV_LAN_URL },
                             modifier = Modifier.weight(1f),
                             contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
                         ) {
                             Text("Wi-Fi LAN", fontSize = 11.sp)
+                        }
+                        OutlinedButton(
+                            onClick = { serverUrlInput = com.pvq.cinepvq.BuildConfig.DEFAULT_EMULATOR_URL },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
+                        ) {
+                            Text("Máy ảo", fontSize = 11.sp)
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.resetToDefaultUrl()
+                                serverUrlInput = viewModel.backendUrl.value
+                            },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
+                        ) {
+                            Text("Mặc định", fontSize = 11.sp)
                         }
                     }
 
@@ -598,6 +695,42 @@ fun ProfileScreen(
                         ),
                         modifier = Modifier.fillMaxWidth()
                     )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    OutlinedButton(
+                        onClick = {
+                            if (serverUrlInput.isNotBlank()) {
+                                viewModel.updateBackendUrl(serverUrlInput)
+                            }
+                            viewModel.testConnection()
+                        },
+                        enabled = !isTestingConnection,
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(vertical = 8.dp)
+                    ) {
+                        if (isTestingConnection) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                                color = CinepvqPrimary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Đang kiểm tra...", fontSize = 12.sp)
+                        } else {
+                            Text("Kiểm tra kết nối URL này", fontSize = 12.sp)
+                        }
+                    }
+
+                    if (testConnectionMessage != null) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = testConnectionMessage ?: "",
+                            color = if (testConnectionIsError) CinepvqRed else CinepvqGreen,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
                 }
             },
             confirmButton = {

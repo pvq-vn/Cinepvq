@@ -56,14 +56,18 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
             }
         } catch (_: Exception) {}
 
-        // 2. Fallback to direct KKPhim M3U8 if available and not already resolved
-        if (streamList.isEmpty() && !fallbackM3u8.isNullOrBlank()) {
+        // 2. Direct KKPhim M3U8 for the selected server (always include if available)
+        val serverKey = serverName?.replace(" ", "_") ?: "default"
+        val directSourceId = "kkphim_direct_$serverKey"
+        val alreadyHasUrl = streamList.any { it.url == fallbackM3u8 }
+        if (!alreadyHasUrl && !fallbackM3u8.isNullOrBlank()) {
             val isM3u8 = fallbackM3u8.contains(".m3u8") || fallbackM3u8.contains("/m3u8")
             streamList.add(
+                0, // Top priority for the explicitly selected server
                 StreamSource(
-                    sourceId = "kkphim_direct",
-                    name = "KKPhim Direct HLS",
-                    displayName = "Server Trực Tiếp (HLS)",
+                    sourceId = directSourceId,
+                    name = "KKPhim Direct (${serverName ?: "HLS"})",
+                    displayName = "Server Trực Tiếp (${serverName ?: "HLS"})",
                     type = if (isM3u8) StreamType.HLS_DIRECT else StreamType.EMBED,
                     url = fallbackM3u8,
                     priority = 1,
@@ -74,14 +78,15 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
             )
         }
 
-        // 3. Fallback to embed URL if still empty
-        if (streamList.isEmpty() && !fallbackEmbed.isNullOrBlank()) {
+        // 3. Embed URL backup (include if available and not duplicate of HLS)
+        val hasEmbed = streamList.any { it.sourceId == "embed_fallback" || it.url == fallbackEmbed }
+        if (!hasEmbed && !fallbackEmbed.isNullOrBlank() && fallbackEmbed != fallbackM3u8) {
             val isM3u8 = fallbackEmbed.contains(".m3u8") || fallbackEmbed.contains("/m3u8")
             streamList.add(
                 StreamSource(
-                    sourceId = "embed_fallback",
+                    sourceId = "embed_fallback_$serverKey",
                     name = "Server Dự Phòng (Embed)",
-                    displayName = "Server Dự Phòng",
+                    displayName = "Server Dự Phòng (${serverName ?: "Embed"})",
                     type = if (isM3u8) StreamType.HLS_DIRECT else StreamType.EMBED,
                     url = fallbackEmbed,
                     priority = 4,

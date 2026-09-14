@@ -17,15 +17,24 @@ android {
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Backend URL Configurations
+        buildConfigField("String", "DEFAULT_EMULATOR_URL", "\"http://10.0.2.2:3000/\"")
+        buildConfigField("String", "DEFAULT_DEV_LAN_URL", "\"http://192.168.1.80:3000/\"")
+        buildConfigField("String", "DEFAULT_PROD_URL", "\"https://cinepvq-web.vercel.app/\"")
     }
 
     buildTypes {
+        debug {
+            buildConfigField("String", "BASE_BACKEND_URL", "\"http://192.168.1.80:3000/\"")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            buildConfigField("String", "BASE_BACKEND_URL", "\"https://cinepvq-web.vercel.app/\"")
         }
     }
     compileOptions {
@@ -34,6 +43,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

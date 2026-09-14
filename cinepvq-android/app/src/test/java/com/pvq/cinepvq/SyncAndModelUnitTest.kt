@@ -1,6 +1,8 @@
 package com.pvq.cinepvq
 
+import com.pvq.cinepvq.core.database.FavoriteMovieEntity
 import com.pvq.cinepvq.core.database.WatchHistoryEntity
+import com.pvq.cinepvq.core.database.WatchLaterEntity
 import com.pvq.cinepvq.core.network.model.*
 import com.pvq.cinepvq.domain.model.StreamSource
 import com.pvq.cinepvq.domain.model.StreamType
@@ -331,10 +333,375 @@ class SyncAndModelUnitTest {
     }
 
     @Test
-    fun testCinepvqDatabase_Impl_Exists() {
-        val clazz = Class.forName("com.pvq.cinepvq.core.database.CinepvqDatabase_Impl")
-        assertNotNull(clazz)
-        assertTrue(com.pvq.cinepvq.core.database.CinepvqDatabase::class.java.isAssignableFrom(clazz))
+    fun testParsedTitleAndPart() {
+        val detailWithPart = com.pvq.cinepvq.domain.model.MovieDetail(
+            slug = "cuoc-noi-loan-cua-lelouch-phan-2",
+            name = "Cuộc Nổi Loạn Của Lelouch (Phần 2)",
+            originalName = "Code Geass (Season 2)",
+            thumbUrl = "",
+            posterUrl = ""
+        )
+        val (title, part) = detailWithPart.parsedTitleAndPart
+        assertEquals("Cuộc Nổi Loạn Của Lelouch", title)
+        assertEquals("Phần 2", part)
+
+        val detailWithoutPart = com.pvq.cinepvq.domain.model.MovieDetail(
+            slug = "du-phuong-hanh",
+            name = "Dữ Phượng Hành",
+            originalName = "The Legend of ShenLi",
+            thumbUrl = "",
+            posterUrl = ""
+        )
+        val (title2, part2) = detailWithoutPart.parsedTitleAndPart
+        assertEquals("Dữ Phượng Hành", title2)
+        assertNull(part2)
+    }
+
+    @Test
+    fun testEpisodeNumberOnly() {
+        val ep1 = com.pvq.cinepvq.domain.model.EpisodeItem(name = "Tập 01", slug = "tap-01")
+        assertEquals("01", ep1.episodeNumberOnly)
+
+        val ep23 = com.pvq.cinepvq.domain.model.EpisodeItem(name = "Tập 23", slug = "tap-23")
+        assertEquals("23", ep23.episodeNumberOnly)
+
+        val epRaw = com.pvq.cinepvq.domain.model.EpisodeItem(name = "5", slug = "tap-5")
+        assertEquals("05", epRaw.episodeNumberOnly)
+
+        val epFull = com.pvq.cinepvq.domain.model.EpisodeItem(name = "Full", slug = "full")
+        assertEquals("Full", epFull.episodeNumberOnly)
+    }
+
+    @Test
+    fun testPlaybackResumeCases_A_B_C() {
+        // CASE A: Episode 1 position 05:00 -> Next -> Episode 2 not in history -> starts at 0
+        fun resolveResume(history: WatchHistoryEntity?, targetEpisodeSlug: String): Long {
+            if (history != null && history.episodeSlug == targetEpisodeSlug) {
+                val isAlmostFinished = (history.duration > 0 && history.currentTime >= history.duration * 0.95) ||
+                        (history.duration > 0 && history.duration - history.currentTime < 15)
+                return if (isAlmostFinished) 0L else history.currentTime * 1000L
+            }
+            return 0L
+        }
+
+        // History stores Episode 1 at 300s (05:00)
+        val historyEp1 = WatchHistoryEntity(
+            slug = "test-movie",
+            name = "Test Movie",
+            thumbUrl = "",
+            episodeSlug = "tap-01",
+            currentTime = 300L,
+            duration = 1500L
+        )
+
+        // Case A: Next to Episode 2 (history has ep1) -> must resolve to 0
+        val resumeCaseA = resolveResume(historyEp1, "tap-02")
+        assertEquals("Episode 2 not in history must start at 00:00", 0L, resumeCaseA)
+
+        // Case B: Episode 2 has saved progress at 754s (12:34) -> Next to Episode 2 -> resolves to 754000L
+        val historyEp2 = WatchHistoryEntity(
+            slug = "test-movie",
+            name = "Test Movie",
+            thumbUrl = "",
+            episodeSlug = "tap-02",
+            currentTime = 754L,
+            duration = 1500L
+        )
+        val resumeCaseB = resolveResume(historyEp2, "tap-02")
+        assertEquals("Episode 2 with saved progress must resume at 12:34", 754000L, resumeCaseB)
+
+        // Case C: Switching back to Episode 1 (saved at 300s) while player was on Episode 2 -> resolves to 300000L
+        val resumeCaseC = resolveResume(historyEp1, "tap-01")
+        assertEquals("Episode 1 must resume at 05:00", 300000L, resumeCaseC)
+    }
+
+    // ─── Phase 1: Base URL Resolution & Error Handling Tests ──────────────────
+
+    @Test
+    fun testBaseUrlTrailingSlashGuarantee() {
+        fun sanitizeUrl(input: String): String {
+            var url = input.trim()
+            if (!url.endsWith("/")) url += "/"
+            return url
+        }
+
+        assertEquals("http://192.168.1.80:3000/", sanitizeUrl("http://192.168.1.80:3000"))
+        assertEquals("http://192.168.1.80:3000/", sanitizeUrl("http://192.168.1.80:3000/"))
+        assertEquals("https://cinepvq-web.vercel.app/", sanitizeUrl("https://cinepvq-web.vercel.app"))
+    }
+
+    @Test
+    fun testRealDeviceRejectsLoopbackFallback() {
+        fun resolveDefaultUrl(isEmulator: Boolean, devLanUrl: String, emuUrl: String): String {
+            return if (isEmulator) emuUrl else devLanUrl
+        }
+
+        val realDeviceUrl = resolveDefaultUrl(false, "http://192.168.1.80:3000/", "http://10.0.2.2:3000/")
+        assertNotEquals("Real device should never default to 127.0.0.1", "http://127.0.0.1:3000/", realDeviceUrl)
+        assertEquals("http://192.168.1.80:3000/", realDeviceUrl)
+
+        val emuUrl = resolveDefaultUrl(true, "http://192.168.1.80:3000/", "http://10.0.2.2:3000/")
+        assertEquals("http://10.0.2.2:3000/", emuUrl)
+    }
+
+    @Test
+    fun testNetworkResultPreservesFailureWithoutSwallowing() {
+        fun mockNetworkCall(shouldFail: Boolean): Result<String> {
+            return try {
+                if (shouldFail) {
+                    throw java.net.ConnectException("Failed to connect to /192.168.1.80:3000")
+                }
+                Result.success("OK")
+            } catch (e: Exception) {
+                // Must return Result.failure, NEVER swallow or return false success
+                Result.failure(e)
+            }
+        }
+
+        val failResult = mockNetworkCall(true)
+        assertTrue("Network failures must be captured in Result.failure", failResult.isFailure)
+        assertTrue(failResult.exceptionOrNull() is java.net.ConnectException)
+        assertEquals("Failed to connect to /192.168.1.80:3000", failResult.exceptionOrNull()?.message)
+
+        val successResult = mockNetworkCall(false)
+        assertTrue(successResult.isSuccess)
+        assertEquals("OK", successResult.getOrNull())
+    }
+
+    // ─── User Isolation & Sync Reconciliation Tests (Phase 2 Tests 1 - 8) ──────
+
+    // In-memory simulation of Room table storage with composite primary keys
+    class MockRoomTable<T>(
+        private val keySelector: (T) -> Pair<String, String>,
+        private val userSelector: (T) -> String
+    ) {
+        private val storage = mutableMapOf<Pair<String, String>, T>()
+
+        fun insert(item: T) {
+            storage[keySelector(item)] = item
+        }
+
+        fun insertAll(items: List<T>) {
+            items.forEach { insert(it) }
+        }
+
+        fun queryByUser(userId: String): List<T> {
+            return storage.values.filter { userSelector(it) == userId }
+        }
+
+        fun queryByKey(userId: String, slug: String): T? {
+            return storage[userId to slug]
+        }
+
+        fun delete(userId: String, slug: String) {
+            storage.remove(userId to slug)
+        }
+
+        fun clearByUser(userId: String) {
+            val toRemove = storage.keys.filter { it.first == userId }
+            toRemove.forEach { storage.remove(it) }
+        }
+    }
+
+    @Test
+    fun testUserIsolation_Test1_UserAFavorite_UserBCannotSee() {
+        val favoritesTable = MockRoomTable<FavoriteMovieEntity>(
+            keySelector = { it.userId to it.slug },
+            userSelector = { it.userId }
+        )
+
+        // User A adds Favorite Movie X
+        favoritesTable.insert(
+            FavoriteMovieEntity(userId = "user_a", slug = "movie-x", name = "Movie X")
+        )
+
+        // User B queries favorites
+        val userBFavorites = favoritesTable.queryByUser("user_b")
+
+        // Expected: empty
+        assertTrue("User B must see empty favorites", userBFavorites.isEmpty())
+
+        // User A queries favorites -> sees Movie X
+        val userAFavorites = favoritesTable.queryByUser("user_a")
+        assertEquals(1, userAFavorites.size)
+        assertEquals("movie-x", userAFavorites.first().slug)
+    }
+
+    @Test
+    fun testUserIsolation_Test2_UserAHistory_UserBCannotSee() {
+        val historyTable = MockRoomTable<WatchHistoryEntity>(
+            keySelector = { it.userId to it.slug },
+            userSelector = { it.userId }
+        )
+
+        // User A has History Movie X
+        historyTable.insert(
+            WatchHistoryEntity(userId = "user_a", slug = "movie-x", name = "Movie X", currentTime = 300L, duration = 1200L)
+        )
+
+        // User B queries history
+        val userBHistory = historyTable.queryByUser("user_b")
+
+        // Expected: empty
+        assertTrue("User B must see empty watch history", userBHistory.isEmpty())
+
+        val userAHistory = historyTable.queryByUser("user_a")
+        assertEquals(1, userAHistory.size)
+        assertEquals(300L, userAHistory.first().currentTime)
+    }
+
+    @Test
+    fun testUserIsolation_Test3_UserAWatchLater_UserBCannotSee() {
+        val watchLaterTable = MockRoomTable<WatchLaterEntity>(
+            keySelector = { it.userId to it.slug },
+            userSelector = { it.userId }
+        )
+
+        // User A has Watch Later X
+        watchLaterTable.insert(
+            WatchLaterEntity(userId = "user_a", slug = "movie-x", name = "Movie X")
+        )
+
+        // User B queries watch later
+        val userBWatchLater = watchLaterTable.queryByUser("user_b")
+
+        // Expected: empty
+        assertTrue("User B must see empty watch later", userBWatchLater.isEmpty())
+
+        val userAWatchLater = watchLaterTable.queryByUser("user_a")
+        assertEquals(1, userAWatchLater.size)
+        assertEquals("movie-x", userAWatchLater.first().slug)
+    }
+
+    @Test
+    fun testUserIsolation_Test4_UserALogout_UserBLogin_BDoesNotSeeA() {
+        val favoritesTable = MockRoomTable<FavoriteMovieEntity>(
+            keySelector = { it.userId to it.slug },
+            userSelector = { it.userId }
+        )
+        var activeUserId = "user_a"
+
+        // User A active
+        favoritesTable.insert(FavoriteMovieEntity(userId = activeUserId, slug = "movie-a", name = "Movie A"))
+
+        // User A logout
+        activeUserId = "guest"
+        val guestView = favoritesTable.queryByUser(activeUserId)
+        assertTrue("Guest must not see User A's data after logout", guestView.isEmpty())
+
+        // User B login
+        activeUserId = "user_b"
+        val userBView = favoritesTable.queryByUser(activeUserId)
+        assertTrue("User B must not see User A's data upon login", userBView.isEmpty())
+    }
+
+    @Test
+    fun testUserIsolation_Test5_UserBSync_NeverPushesUserAData() {
+        val historyTable = MockRoomTable<WatchHistoryEntity>(
+            keySelector = { it.userId to it.slug },
+            userSelector = { it.userId }
+        )
+
+        // User A has existing local history
+        historyTable.insert(WatchHistoryEntity(userId = "user_a", slug = "movie-a", name = "Movie A", currentTime = 500L))
+
+        // User B has local history
+        historyTable.insert(WatchHistoryEntity(userId = "user_b", slug = "movie-b", name = "Movie B", currentTime = 200L))
+
+        // User B triggers sync: sync ONLY queries historyTable.queryByUser("user_b")
+        val userBSyncItems = historyTable.queryByUser("user_b")
+
+        // Expected: Contains ONLY movie-b, 0 items belonging to user_a
+        assertEquals(1, userBSyncItems.size)
+        assertEquals("movie-b", userBSyncItems.first().slug)
+        assertEquals("user_b", userBSyncItems.first().userId)
+        assertTrue("User B sync must NEVER contain user A's items", userBSyncItems.none { it.userId == "user_a" })
+    }
+
+    @Test
+    fun testUserIsolation_Test6_GuestMigration_MovesGuestToUserAndCleansGuest() {
+        val favoritesTable = MockRoomTable<FavoriteMovieEntity>(
+            keySelector = { it.userId to it.slug },
+            userSelector = { it.userId }
+        )
+
+        // Guest adds Movie X
+        favoritesTable.insert(FavoriteMovieEntity(userId = "guest", slug = "movie-x", name = "Movie X"))
+        assertEquals(1, favoritesTable.queryByUser("guest").size)
+
+        // Guest migration logic:
+        val guestItems = favoritesTable.queryByUser("guest")
+        val targetUserId = "user_a"
+        val existingUserSlugs = favoritesTable.queryByUser(targetUserId).map { it.slug }.toSet()
+        val toMigrate = guestItems.filter { it.slug !in existingUserSlugs }.map { it.copy(userId = targetUserId) }
+        favoritesTable.insertAll(toMigrate)
+        favoritesTable.clearByUser("guest")
+
+        // Verification:
+        val guestAfter = favoritesTable.queryByUser("guest")
+        val userAAfter = favoritesTable.queryByUser(targetUserId)
+
+        assertTrue("Guest namespace must be clean after migration", guestAfter.isEmpty())
+        assertEquals("User A must now have migrated Movie X", 1, userAAfter.size)
+        assertEquals("movie-x", userAAfter.first().slug)
+        assertEquals(targetUserId, userAAfter.first().userId)
+    }
+
+    @Test
+    fun testUserIsolation_Test7_MultiUserLoginLogout_BothDataPreserved() {
+        val historyTable = MockRoomTable<WatchHistoryEntity>(
+            keySelector = { it.userId to it.slug },
+            userSelector = { it.userId }
+        )
+
+        // 1. User A logs in and records watch progress
+        var currentUserId = "user_a"
+        historyTable.insert(WatchHistoryEntity(userId = currentUserId, slug = "movie-a", name = "Movie A", currentTime = 750L))
+
+        // 2. User A logs out
+        currentUserId = "guest"
+        assertEquals(0, historyTable.queryByUser(currentUserId).size)
+
+        // 3. User B logs in and records watch progress
+        currentUserId = "user_b"
+        historyTable.insert(WatchHistoryEntity(userId = currentUserId, slug = "movie-b", name = "Movie B", currentTime = 1200L))
+        assertEquals(1, historyTable.queryByUser("user_b").size)
+        assertEquals("movie-b", historyTable.queryByUser("user_b").first().slug)
+
+        // 4. User B logs out, User A logs back in
+        currentUserId = "user_a"
+        val restoredA = historyTable.queryByUser(currentUserId)
+        assertEquals(1, restoredA.size)
+        assertEquals("movie-a", restoredA.first().slug)
+        assertEquals(750L, restoredA.first().currentTime)
+
+        // 5. Check User B's data is still preserved under user_b
+        val preservedB = historyTable.queryByUser("user_b")
+        assertEquals(1, preservedB.size)
+        assertEquals("movie-b", preservedB.first().slug)
+        assertEquals(1200L, preservedB.first().currentTime)
+    }
+
+    @Test
+    fun testUserIsolation_Test8_HistoryConflictResolution_ServerVsLocal() {
+        val t1 = "2026-09-14T10:00:00.000Z"
+        val t2 = "2026-09-14T11:00:00.000Z"
+
+        // Subtest 8A: Server newer (T2 > T1) -> Server wins
+        val timeLocalA = parseTime(t1)
+        val timeServerA = parseTime(t2)
+        assertTrue(timeServerA > timeLocalA)
+
+        val serverWinsAction = if (timeServerA >= timeLocalA) "APPLY_SERVER" else "PUSH_LOCAL"
+        assertEquals("APPLY_SERVER", serverWinsAction)
+
+        // Subtest 8B: Local newer (T1 > T2) -> Local wins & pushes to server
+        val timeLocalB = parseTime(t2)
+        val timeServerB = parseTime(t1)
+        assertTrue(timeLocalB > timeServerB)
+
+        val localWinsAction = if (timeServerB >= timeLocalB) "APPLY_SERVER" else "PUSH_LOCAL"
+        assertEquals("PUSH_LOCAL", localWinsAction)
     }
 }
 

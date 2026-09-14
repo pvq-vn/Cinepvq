@@ -36,6 +36,7 @@ import com.pvq.cinepvq.ui.theme.*
 @Composable
 fun SearchScreen(
     onMovieClick: (String) -> Unit,
+    onBarsVisibilityChanged: ((Boolean) -> Unit)? = null,
     viewModel: SearchViewModel = viewModel()
 ) {
     val focusManager = LocalFocusManager.current
@@ -43,6 +44,13 @@ fun SearchScreen(
     val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
     val isSearching by viewModel.isSearching.collectAsStateWithLifecycle()
     val selectedTag by viewModel.selectedTag.collectAsStateWithLifecycle()
+
+    val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+    com.pvq.cinepvq.core.designsystem.components.TrackLazyGridScroll(
+        gridState = gridState,
+        threshold = 16,
+        onVisibilityChanged = onBarsVisibilityChanged
+    )
 
     Column(
         modifier = Modifier
@@ -284,8 +292,9 @@ fun SearchScreen(
                 }
                 else -> {
                     LazyVerticalGrid(
+                        state = gridState,
                         columns = GridCells.Adaptive(minSize = 105.dp),
-                        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, bottom = 80.dp),
+                        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, bottom = 88.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.fillMaxSize()

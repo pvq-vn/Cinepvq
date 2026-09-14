@@ -36,8 +36,12 @@ class CinepvqApp : Application(), SingletonImageLoader.Factory {
         NetworkModule(secureStorageManager)
     }
 
+    val userSyncRepository: UserSyncRepository by lazy {
+        UserSyncRepository(networkModule, database, secureStorageManager)
+    }
+
     val authRepository: AuthRepository by lazy {
-        AuthRepository(networkModule, secureStorageManager)
+        AuthRepository(networkModule, secureStorageManager, userSyncRepository)
     }
 
     val movieRepository: MovieRepository by lazy {
@@ -46,10 +50,6 @@ class CinepvqApp : Application(), SingletonImageLoader.Factory {
 
     val videoSourceRepository: VideoSourceRepository by lazy {
         VideoSourceRepository(networkModule)
-    }
-
-    val userSyncRepository: UserSyncRepository by lazy {
-        UserSyncRepository(networkModule, database, secureStorageManager)
     }
 
     override fun onCreate() {

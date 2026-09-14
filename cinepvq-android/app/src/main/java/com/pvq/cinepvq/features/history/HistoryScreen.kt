@@ -35,10 +35,18 @@ import com.pvq.cinepvq.ui.theme.*
 fun HistoryScreen(
     onResumeMovie: (String, String?) -> Unit,
     onExploreClick: () -> Unit,
+    onBarsVisibilityChanged: ((Boolean) -> Unit)? = null,
     viewModel: HistoryViewModel = viewModel()
 ) {
     val historyList by viewModel.history.collectAsStateWithLifecycle()
     var showClearConfirm by remember { mutableStateOf(false) }
+
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    com.pvq.cinepvq.core.designsystem.components.TrackLazyListScroll(
+        listState = listState,
+        threshold = 16,
+        onVisibilityChanged = onBarsVisibilityChanged
+    )
 
     Column(
         modifier = Modifier
@@ -97,7 +105,8 @@ fun HistoryScreen(
                 )
             } else {
                 LazyColumn(
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 80.dp),
+                    state = listState,
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 88.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {

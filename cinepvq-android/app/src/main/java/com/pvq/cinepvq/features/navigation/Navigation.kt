@@ -1,18 +1,29 @@
 package com.pvq.cinepvq.features.navigation
 
-import androidx.compose.foundation.layout.size
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
 import com.pvq.cinepvq.ui.theme.*
 
@@ -50,10 +61,42 @@ val bottomNavItems = listOf(
     BottomNavItem("Cá nhân", Screen.Profile.route, Icons.Filled.Person, Icons.Outlined.Person)
 )
 
+/**
+ * Robust navigation for top-level tabs.
+ * - Navigating to Home uses popBackStack to return directly to the persistent Home screen
+ *   without duplicating destinations or re-entering old restored screens.
+ * - Navigating to other tabs saves and restores their respective state cleanly.
+ */
+fun NavController.navigateToTab(targetRoute: String) {
+    val currentRoute = currentBackStackEntry?.destination?.route
+    if (currentRoute == targetRoute) return
+
+    if (targetRoute == Screen.Home.route) {
+        val popped = popBackStack(Screen.Home.route, inclusive = false)
+        if (!popped) {
+            navigate(Screen.Home.route) {
+                popUpTo(graph.findStartDestination().id) {
+                    inclusive = false
+                }
+                launchSingleTop = true
+            }
+        }
+    } else {
+        navigate(targetRoute) {
+            popUpTo(graph.findStartDestination().id) {
+                saveState = true
+            }
+            launchSingleTop = true
+            restoreState = true
+        }
+    }
+}
+
 @Composable
 fun CinepvqBottomNavBar(
     navController: NavController,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isVisible: Boolean = true
 ) {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
@@ -62,46 +105,69 @@ fun CinepvqBottomNavBar(
     val visibleRoutes = bottomNavItems.map { it.route }
     if (currentRoute !in visibleRoutes) return
 
-    NavigationBar(
-        modifier = modifier,
-        containerColor = CinepvqSurface,
+    val density = LocalDensity.current
+    val navBarBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val barContentHeight = 56.dp
+    val barTotalHeight = barContentHeight + navBarBottomInset
+
+    // Smooth auto-hide animations
+    val animatedOffsetY by animateDpAsState(
+        targetValue = if (isVisible) 0.dp else barTotalHeight + 40.dp,
+        animationSpec = tween(durationMillis = 250, easing = FastOutSlowInEasing),
+        label = "bottomBarTranslationY"
+    )
+    val animatedAlpha by animateFloatAsState(
+        targetValue = if (isVisible) 1f else 0f,
+        animationSpec = tween(durationMillis = 250, easing = FastOutSlowInEasing),
+        label = "bottomBarAlpha"
+    )
+
+    Surface(
+        modifier = modifier
+            .graphicsLayer {
+                translationY = with(density) { animatedOffsetY.toPx() }
+                alpha = animatedAlpha
+            }
+            .fillMaxWidth()
+            .height(barTotalHeight)
+            .border(width = 0.8.dp, color = CinepvqBorderSubtle),
+        color = CinepvqSurface.copy(alpha = 0.98f),
         contentColor = CinepvqTextSecondary,
         tonalElevation = 8.dp
     ) {
-        bottomNavItems.forEach { item ->
-            val selected = currentRoute == item.route
-            NavigationBarItem(
-                icon = {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(barContentHeight)
+                .padding(bottom = 0.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            bottomNavItems.forEach { item ->
+                val selected = currentRoute == item.route
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clickable(
+                            enabled = isVisible,
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = ripple(bounded = false, radius = 24.dp),
+                            onClick = {
+                                navController.navigateToTab(item.route)
+                            }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
                     Icon(
                         imageVector = if (selected) item.selectedIcon else item.unselectedIcon,
                         contentDescription = item.title,
-                        modifier = Modifier.size(22.dp)
+                        modifier = Modifier.size(24.dp),
+                        tint = if (selected) CinepvqPrimaryLight else CinepvqTextMuted
                     )
-                },
-                label = {
-                    Text(
-                        text = item.title,
-                        fontSize = 11.sp
-                    )
-                },
-                selected = selected,
-                onClick = {
-                    if (currentRoute != item.route) {
-                        navController.navigate(item.route) {
-                            popUpTo(Screen.Home.route) { saveState = true }
-                            launchSingleTop = true
-                            restoreState = true
-                        }
-                    }
-                },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = CinepvqPrimary,
-                    selectedTextColor = CinepvqPrimary,
-                    unselectedIconColor = CinepvqTextMuted,
-                    unselectedTextColor = CinepvqTextMuted,
-                    indicatorColor = CinepvqPrimary.copy(alpha = 0.15f)
-                )
-            )
+                }
+            }
         }
     }
 }
+

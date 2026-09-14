@@ -766,23 +766,22 @@ private fun DetailInfoRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+            .padding(vertical = 3.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.Top
     ) {
         Text(
             text = label,
             color = CinepvqTextMuted,
             fontSize = 12.sp,
-            modifier = Modifier.width(100.dp)
+            fontWeight = FontWeight.Medium
         )
         Text(
             text = value,
             color = if (isHighlight) CinepvqAmber else CinepvqTextPrimary,
             fontSize = 12.sp,
             fontWeight = if (isHighlight) FontWeight.Bold else FontWeight.Normal,
-            textAlign = TextAlign.End,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.weight(1f, fill = false)
         )
     }
 }

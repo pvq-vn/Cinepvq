@@ -1,5 +1,6 @@
 package com.pvq.cinepvq.data.auth
 
+import android.util.Log
 import com.pvq.cinepvq.core.network.NetworkModule
 import com.pvq.cinepvq.core.network.model.ProfileUpdateRequest
 import com.pvq.cinepvq.core.network.model.SupabaseSignInRequest
@@ -14,7 +15,8 @@ import kotlinx.serialization.json.jsonPrimitive
 
 class AuthRepository(
     private val networkModule: NetworkModule,
-    private val secureStorageManager: SecureStorageManager
+    private val secureStorageManager: SecureStorageManager,
+    private val userSyncRepository: com.pvq.cinepvq.data.user.UserSyncRepository
 ) {
     private val _currentUser = MutableStateFlow<User?>(loadCachedUser())
     val currentUser: StateFlow<User?> = _currentUser.asStateFlow()
@@ -60,6 +62,9 @@ class AuthRepository(
         secureStorageManager.userName = rawUsername
         secureStorageManager.userAvatar = avatar
 
+        // Migrate local guest data to newly authenticated user
+        userSyncRepository.migrateGuestDataToUser(userDto.id)
+
         val user = User(
             id = userDto.id,
             email = userDto.email ?: email,
@@ -73,8 +78,13 @@ class AuthRepository(
 
         // Asynchronously sync identity with Cinepvq backend
         try {
-            networkModule.cinepvqApi.syncUser()
-        } catch (_: Exception) {}
+            val syncRes = networkModule.cinepvqApi.syncUser()
+            if (!syncRes.isSuccessful) {
+                Log.w("AuthRepository", "syncUser server error HTTP ${syncRes.code()}: ${syncRes.message()}")
+            }
+        } catch (e: Exception) {
+            Log.e("AuthRepository", "syncUser network failed: ${e.message}", e)
+        }
 
         user
     }
@@ -106,6 +116,9 @@ class AuthRepository(
             secureStorageManager.userEmail = userDto.email ?: trimmedEmail
             secureStorageManager.userName = trimmedUsername
 
+            // Migrate local guest data to newly registered user
+            userSyncRepository.migrateGuestDataToUser(userDto.id)
+
             val user = User(
                 id = userDto.id,
                 email = userDto.email ?: trimmedEmail,
@@ -116,8 +129,13 @@ class AuthRepository(
             _isLoggedIn.value = true
 
             try {
-                networkModule.cinepvqApi.syncUser()
-            } catch (_: Exception) {}
+                val syncRes = networkModule.cinepvqApi.syncUser()
+                if (!syncRes.isSuccessful) {
+                    Log.w("AuthRepository", "syncUser server error HTTP ${syncRes.code()}: ${syncRes.message()}")
+                }
+            } catch (e: Exception) {
+                Log.e("AuthRepository", "syncUser network failed: ${e.message}", e)
+            }
 
             user
         } else {
@@ -137,6 +155,7 @@ class AuthRepository(
         } catch (_: Exception) {}
 
         secureStorageManager.clearAuth()
+        userSyncRepository.onUserLoggedOut()
         _currentUser.value = null
         _isLoggedIn.value = false
     }

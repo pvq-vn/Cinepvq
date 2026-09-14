@@ -2,8 +2,10 @@ package com.pvq.cinepvq.core.security
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Build
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.pvq.cinepvq.BuildConfig
 
 class SecureStorageManager(context: Context) {
 
@@ -48,15 +50,55 @@ class SecureStorageManager(context: Context) {
         get() = prefs.getString(KEY_USER_AVATAR, null)
         set(value) = prefs.edit().putString(KEY_USER_AVATAR, value).apply()
 
+    fun isEmulator(): Boolean {
+        return (Build.FINGERPRINT.startsWith("generic")
+                || Build.FINGERPRINT.startsWith("unknown")
+                || Build.MODEL.contains("google_sdk")
+                || Build.MODEL.contains("Emulator")
+                || Build.MODEL.contains("Android SDK built for x86")
+                || Build.MANUFACTURER.contains("Genymotion")
+                || (Build.BRAND.startsWith("generic") && Build.DEVICE.startsWith("generic"))
+                || "google_sdk" == Build.PRODUCT
+                || Build.HARDWARE.contains("goldfish")
+                || Build.HARDWARE.contains("ranchu"))
+    }
+
+    fun getDefaultBackendUrl(): String {
+        return if (BuildConfig.DEBUG) {
+            if (isEmulator()) {
+                BuildConfig.DEFAULT_EMULATOR_URL
+            } else {
+                BuildConfig.DEFAULT_DEV_LAN_URL
+            }
+        } else {
+            BuildConfig.DEFAULT_PROD_URL
+        }
+    }
+
     var backendBaseUrl: String
-        get() = prefs.getString(KEY_BACKEND_URL, "http://127.0.0.1:3000/") ?: "http://127.0.0.1:3000/"
+        get() {
+            val saved = prefs.getString(KEY_BACKEND_URL, null)
+            // Auto-heal legacy broken 127.0.0.1 on real devices
+            if (saved.isNullOrBlank() || (!isEmulator() && saved.contains("127.0.0.1"))) {
+                return getDefaultBackendUrl()
+            }
+            return if (saved.endsWith("/")) saved else "$saved/"
+        }
         set(value) {
-            val formatted = if (value.endsWith("/")) value else "$value/"
+            val trimmed = value.trim()
+            val formatted = if (trimmed.endsWith("/")) trimmed else "$trimmed/"
             prefs.edit().putString(KEY_BACKEND_URL, formatted).apply()
         }
 
+    fun resetBackendUrlToDefault() {
+        prefs.edit().remove(KEY_BACKEND_URL).apply()
+    }
+
     val isLoggedIn: Boolean
         get() = !accessToken.isNullOrBlank()
+
+    val activeUserId: String
+        get() = if (isLoggedIn && !userId.isNullOrBlank()) userId!! else GUEST_USER_ID
 
     fun clearAuth() {
         prefs.edit()
@@ -70,6 +112,7 @@ class SecureStorageManager(context: Context) {
     }
 
     companion object {
+        const val GUEST_USER_ID = "guest"
         private const val PREFS_FILENAME = "cinepvq_secure_prefs"
         private const val KEY_ACCESS_TOKEN = "access_token"
         private const val KEY_REFRESH_TOKEN = "refresh_token"

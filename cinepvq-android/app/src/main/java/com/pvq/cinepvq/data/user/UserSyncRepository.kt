@@ -1,8 +1,10 @@
 package com.pvq.cinepvq.data.user
 
+import android.util.Log
 import com.pvq.cinepvq.core.database.CinepvqDatabase
 import com.pvq.cinepvq.core.database.FavoriteMovieEntity
 import com.pvq.cinepvq.core.database.WatchHistoryEntity
+import com.pvq.cinepvq.core.database.WatchLaterEntity
 import com.pvq.cinepvq.core.network.NetworkModule
 import com.pvq.cinepvq.core.network.model.FavoriteActionRequest
 import com.pvq.cinepvq.core.network.model.FavoriteMovieDto
@@ -14,11 +16,22 @@ import com.pvq.cinepvq.core.security.SecureStorageManager
 import com.pvq.cinepvq.domain.model.FavoriteMovie
 import com.pvq.cinepvq.domain.model.MovieDetail
 import com.pvq.cinepvq.domain.model.WatchHistoryItem
+import com.pvq.cinepvq.domain.model.WatchLaterItem
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import java.text.SimpleDateFormat
 import java.util.*
+
+data class SyncResultSummary(
+    val isSuccess: Boolean,
+    val favoritesCount: Int = 0,
+    val historyCount: Int = 0,
+    val watchlistCount: Int = 0,
+    val errors: List<String> = emptyList()
+)
 
 class UserSyncRepository(
     private val networkModule: NetworkModule,
@@ -28,6 +41,9 @@ class UserSyncRepository(
 ) {
     private val favoriteDao = database.favoriteDao()
     private val historyDao = database.watchHistoryDao()
+    private val watchLaterDao = database.watchLaterDao()
+
+    val activeUserIdFlow = MutableStateFlow(secureStorageManager.activeUserId)
 
     private var progressSyncJob: Job? = null
     private var pendingProgress: HistoryActionRequest? = null
@@ -36,37 +52,58 @@ class UserSyncRepository(
         timeZone = TimeZone.getTimeZone("UTC")
     }
 
+    fun updateActiveUser(userId: String) {
+        activeUserIdFlow.value = userId
+    }
+
+    fun onUserLoggedOut() {
+        activeUserIdFlow.value = SecureStorageManager.GUEST_USER_ID
+    }
+
     // ── Favorites ─────────────────────────────────────────────────────────────
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     fun getAllFavorites(): Flow<List<FavoriteMovie>> {
-        return favoriteDao.getAllFavorites().map { list ->
-            list.map { it.toDomain() }
+        return activeUserIdFlow.flatMapLatest { uid ->
+            favoriteDao.getAllFavorites(uid).map { list ->
+                list.map { it.toDomain() }
+            }
         }
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     fun isFavorite(slug: String): Flow<Boolean> {
-        return favoriteDao.isFavorite(slug)
+        return activeUserIdFlow.flatMapLatest { uid ->
+            favoriteDao.isFavorite(uid, slug)
+        }
     }
 
     suspend fun toggleFavorite(movie: MovieDetail): Boolean {
         val slug = movie.slug
-        val exists = favoriteDao.isFavoriteDirect(slug)
+        val currentUid = secureStorageManager.activeUserId
+        val exists = favoriteDao.isFavoriteDirect(currentUid, slug)
         val nowIso = isoDateFormat.format(Date())
 
         if (exists) {
-            favoriteDao.deleteBySlug(slug)
+            favoriteDao.deleteBySlug(currentUid, slug)
             if (secureStorageManager.isLoggedIn) {
                 repositoryScope.launch {
                     try {
-                        networkModule.cinepvqApi.updateFavorites(
+                        val res = networkModule.cinepvqApi.updateFavorites(
                             FavoriteActionRequest(action = "remove", movieSlug = slug)
                         )
-                    } catch (_: Exception) {}
+                        if (!res.isSuccessful) {
+                            Log.w("UserSyncRepo", "removeFavorite server error HTTP ${res.code()}: ${res.message()}")
+                        }
+                    } catch (e: Exception) {
+                        Log.e("UserSyncRepo", "removeFavorite network failed: ${e.message}", e)
+                    }
                 }
             }
             return false
         } else {
             val entity = FavoriteMovieEntity(
+                userId = currentUid,
                 slug = slug,
                 name = movie.name,
                 originalName = movie.originalName,
@@ -80,7 +117,7 @@ class UserSyncRepository(
             if (secureStorageManager.isLoggedIn) {
                 repositoryScope.launch {
                     try {
-                        networkModule.cinepvqApi.updateFavorites(
+                        val res = networkModule.cinepvqApi.updateFavorites(
                             FavoriteActionRequest(
                                 movieSlug = slug,
                                 movie = FavoriteMovieDto(
@@ -94,7 +131,12 @@ class UserSyncRepository(
                                 )
                             )
                         )
-                    } catch (_: Exception) {}
+                        if (!res.isSuccessful) {
+                            Log.w("UserSyncRepo", "addFavorite server error HTTP ${res.code()}: ${res.message()}")
+                        }
+                    } catch (e: Exception) {
+                        Log.e("UserSyncRepo", "addFavorite network failed: ${e.message}", e)
+                    }
                 }
             }
             return true
@@ -102,28 +144,44 @@ class UserSyncRepository(
     }
 
     suspend fun removeFavorite(slug: String) {
-        favoriteDao.deleteBySlug(slug)
+        val currentUid = secureStorageManager.activeUserId
+        favoriteDao.deleteBySlug(currentUid, slug)
         if (secureStorageManager.isLoggedIn) {
             repositoryScope.launch {
                 try {
-                    networkModule.cinepvqApi.updateFavorites(
+                    val res = networkModule.cinepvqApi.updateFavorites(
                         FavoriteActionRequest(action = "remove", movieSlug = slug)
                     )
-                } catch (_: Exception) {}
+                    if (!res.isSuccessful) {
+                        Log.w("UserSyncRepo", "removeFavorite server error HTTP ${res.code()}: ${res.message()}")
+                    }
+                } catch (e: Exception) {
+                    Log.e("UserSyncRepo", "removeFavorite network failed: ${e.message}", e)
+                }
             }
         }
     }
 
     // ── Watch History & Playback Progress ──────────────────────────────────────
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     fun getAllHistory(): Flow<List<WatchHistoryItem>> {
-        return historyDao.getAllHistory().map { list ->
-            list.map { it.toDomain() }
+        return activeUserIdFlow.flatMapLatest { uid ->
+            historyDao.getAllHistory(uid).map { list ->
+                list.map { it.toDomain() }
+            }
         }
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     fun getHistory(slug: String): Flow<WatchHistoryItem?> {
-        return historyDao.observeHistoryBySlug(slug).map { it?.toDomain() }
+        return activeUserIdFlow.flatMapLatest { uid ->
+            historyDao.observeHistoryBySlug(uid, slug).map { it?.toDomain() }
+        }
+    }
+
+    suspend fun getHistoryDirect(slug: String): WatchHistoryEntity? {
+        return historyDao.getHistoryBySlug(secureStorageManager.activeUserId, slug)
     }
 
     suspend fun recordWatchProgress(
@@ -136,10 +194,12 @@ class UserSyncRepository(
         currentTime: Long,
         duration: Long
     ) {
+        val currentUid = secureStorageManager.activeUserId
         val nowIso = isoDateFormat.format(Date())
 
-        // 1. Update local Room SQLite immediately
+        // 1. Update local Room SQLite immediately with user namespace
         val entity = WatchHistoryEntity(
+            userId = currentUid,
             slug = movieSlug,
             name = movieName,
             originalName = originalName,
@@ -160,7 +220,18 @@ class UserSyncRepository(
                 episodeSlug = episodeSlug,
                 position = currentTime,
                 duration = duration,
-                updatedAt = nowIso
+                updatedAt = nowIso,
+                movie = WatchHistoryDto(
+                    slug = movieSlug,
+                    name = movieName,
+                    original_name = originalName,
+                    thumb_url = thumbUrl,
+                    episodeSlug = episodeSlug,
+                    episodeName = episodeName,
+                    currentTime = currentTime,
+                    duration = duration,
+                    updatedAt = nowIso
+                )
             )
 
             progressSyncJob?.cancel()
@@ -169,260 +240,81 @@ class UserSyncRepository(
                 val target = pendingProgress ?: return@launch
                 pendingProgress = null
                 try {
-                    networkModule.cinepvqApi.updateHistory(target)
-                } catch (_: Exception) {}
+                    val res = networkModule.cinepvqApi.updateHistory(target)
+                    if (!res.isSuccessful) {
+                        Log.w("UserSyncRepo", "recordWatchProgress server error HTTP ${res.code()}: ${res.message()}")
+                    }
+                } catch (e: Exception) {
+                    Log.e("UserSyncRepo", "recordWatchProgress network failed for $movieSlug: ${e.message}", e)
+                }
             }
         }
     }
 
     suspend fun removeHistory(slug: String) {
-        historyDao.deleteBySlug(slug)
+        val currentUid = secureStorageManager.activeUserId
+        historyDao.deleteBySlug(currentUid, slug)
         if (secureStorageManager.isLoggedIn) {
             repositoryScope.launch {
                 try {
-                    networkModule.cinepvqApi.updateHistory(
+                    val res = networkModule.cinepvqApi.updateHistory(
                         HistoryActionRequest(action = "remove", movieSlug = slug)
                     )
-                } catch (_: Exception) {}
+                    if (!res.isSuccessful) {
+                        Log.w("UserSyncRepo", "removeHistory server error HTTP ${res.code()}: ${res.message()}")
+                    }
+                } catch (e: Exception) {
+                    Log.e("UserSyncRepo", "removeHistory network failed: ${e.message}", e)
+                }
             }
         }
     }
 
     suspend fun clearHistory() {
-        historyDao.clearAll()
+        val currentUid = secureStorageManager.activeUserId
+        historyDao.clearByUser(currentUid)
         if (secureStorageManager.isLoggedIn) {
             repositoryScope.launch {
                 try {
-                    networkModule.cinepvqApi.updateHistory(
+                    val res = networkModule.cinepvqApi.updateHistory(
                         HistoryActionRequest(action = "clear")
                     )
-                } catch (_: Exception) {}
+                    if (!res.isSuccessful) {
+                        Log.w("UserSyncRepo", "clearHistory server error HTTP ${res.code()}: ${res.message()}")
+                    }
+                } catch (e: Exception) {
+                    Log.e("UserSyncRepo", "clearHistory network failed: ${e.message}", e)
+                }
             }
         }
     }
-
-    // ── Two-Way Synchronizer (Web <-> Android Conflict Handling) ──────────────
-
-    suspend fun syncWithServer() = withContext(Dispatchers.IO) {
-        if (!secureStorageManager.isLoggedIn) return@withContext
-
-        // 1. Sync Favorites
-        try {
-            val favRes = networkModule.cinepvqApi.getFavorites()
-            if (favRes.isSuccessful && favRes.body()?.favorites != null) {
-                val remoteFavs = favRes.body()!!.favorites
-                val remoteFavSlugs = remoteFavs.map { it.slug }.toSet()
-
-                // Insert all remote favorites into local Room DB
-                val entities = remoteFavs.map { r ->
-                    FavoriteMovieEntity(
-                        slug = r.slug,
-                        name = r.name,
-                        originalName = r.original_name,
-                        thumbUrl = r.thumb_url,
-                        quality = r.quality,
-                        currentEpisode = r.current_episode,
-                        addedAt = r.addedAt ?: ""
-                    )
-                }
-                favoriteDao.insertAll(entities)
-
-                // Push any local-only favorites (e.g. guest favorites created before login)
-                val allLocalFavs = favoriteDao.getAllFavoritesDirect()
-                val localOnlyFavs = allLocalFavs.filter { it.slug !in remoteFavSlugs }
-                if (localOnlyFavs.isNotEmpty()) {
-                    networkModule.cinepvqApi.updateFavorites(
-                        FavoriteActionRequest(
-                            action = "sync",
-                            favorites = localOnlyFavs.map { f ->
-                                FavoriteMovieDto(
-                                    slug = f.slug,
-                                    name = f.name,
-                                    original_name = f.originalName,
-                                    thumb_url = f.thumbUrl,
-                                    quality = f.quality,
-                                    current_episode = f.currentEpisode,
-                                    addedAt = f.addedAt
-                                )
-                            }
-                        )
-                    )
-                }
-            }
-        } catch (_: Exception) {}
-
-        // 2. Sync Watch History with Timestamp Resolution (Cases A - F)
-        try {
-            val histRes = networkModule.cinepvqApi.getHistory()
-            if (histRes.isSuccessful && histRes.body()?.history != null) {
-                val remoteHist = histRes.body()!!.history
-                val remoteSlugs = remoteHist.map { it.slug }.toSet()
-                val itemsToPush = mutableListOf<WatchHistoryDto>()
-
-                // Compare remote items with local items
-                remoteHist.forEach { r ->
-                    val local = historyDao.getHistoryBySlug(r.slug)
-                    val timeRemote = parseTime(r.updatedAt)
-                    val timeLocal = parseTime(local?.updatedAt)
-
-                    if (local == null || timeRemote >= timeLocal) {
-                        // Case A (remote newer), Case C (equal timestamps), Case E (remote-only): remote wins
-                        historyDao.upsert(
-                            WatchHistoryEntity(
-                                slug = r.slug,
-                                name = r.name,
-                                originalName = r.original_name,
-                                thumbUrl = r.thumb_url,
-                                episodeSlug = r.episodeSlug,
-                                episodeName = r.episodeName,
-                                currentTime = r.currentTime,
-                                duration = r.duration,
-                                updatedAt = r.updatedAt ?: ""
-                            )
-                        )
-                    } else {
-                        // Case B (local newer), Case F (newer episode in local): push local to server
-                        itemsToPush.add(
-                            WatchHistoryDto(
-                                slug = local.slug,
-                                name = local.name,
-                                original_name = local.originalName,
-                                thumb_url = local.thumbUrl,
-                                episodeSlug = local.episodeSlug,
-                                episodeName = local.episodeName,
-                                currentTime = local.currentTime,
-                                duration = local.duration,
-                                updatedAt = local.updatedAt
-                            )
-                        )
-                    }
-                }
-
-                // Case D: Local-only items (not present on remote): push to server
-                val allLocal = historyDao.getAllHistoryDirect()
-                val localOnly = allLocal.filter { it.slug !in remoteSlugs }
-                localOnly.forEach { local ->
-                    itemsToPush.add(
-                        WatchHistoryDto(
-                            slug = local.slug,
-                            name = local.name,
-                            original_name = local.originalName,
-                            thumb_url = local.thumbUrl,
-                            episodeSlug = local.episodeSlug,
-                            episodeName = local.episodeName,
-                            currentTime = local.currentTime,
-                            duration = local.duration,
-                            updatedAt = local.updatedAt
-                        )
-                    )
-                }
-
-                // Push itemsToPush back to server
-                if (itemsToPush.isNotEmpty()) {
-                    networkModule.cinepvqApi.updateHistory(
-                        HistoryActionRequest(action = "sync", history = itemsToPush)
-                    )
-                }
-            }
-        } catch (_: Exception) {}
-
-        // 3. Sync Watchlist (Xem Sau)
-        try {
-            val watchRes = networkModule.cinepvqApi.getWatchlist()
-            if (watchRes.isSuccessful && watchRes.body()?.watchlist != null) {
-                val remoteWatch = watchRes.body()!!.watchlist
-                val remoteSlugs = remoteWatch.map { it.slug }.toSet()
-                
-                // Compare remote items with local items
-                remoteWatch.forEach { r ->
-                    val local = watchLaterDao.isInWatchLaterDirect(r.slug)
-                    if (!local) {
-                        watchLaterDao.insert(
-                            com.pvq.cinepvq.core.database.WatchLaterEntity(
-                                slug = r.slug,
-                                name = r.name,
-                                originalName = r.original_name,
-                                thumbUrl = r.thumb_url,
-                                addedAt = r.addedAt ?: ""
-                            )
-                        )
-                    }
-                }
-                
-                val allLocal = watchLaterDao.getAllWatchLaterDirect()
-                val localOnly = allLocal.filter { it.slug !in remoteSlugs }
-                if (localOnly.isNotEmpty()) {
-                    networkModule.cinepvqApi.updateWatchlist(
-                        WatchlistActionRequest(
-                            action = "sync",
-                            watchlist = localOnly.map { f ->
-                                WatchlistDto(
-                                    slug = f.slug,
-                                    name = f.name,
-                                    original_name = f.originalName,
-                                    thumb_url = f.thumbUrl,
-                                    addedAt = f.addedAt
-                                )
-                            }
-                        )
-                    )
-                }
-            }
-        } catch (_: Exception) {}
-    }
-
-    private fun parseTime(iso: String?): Long {
-        if (iso.isNullOrBlank()) return 0L
-        return try {
-            isoDateFormat.parse(iso)?.time ?: 0L
-        } catch (_: Exception) {
-            0L
-        }
-    }
-
-    private fun FavoriteMovieEntity.toDomain() = FavoriteMovie(
-        slug = slug,
-        name = name,
-        originalName = originalName,
-        thumbUrl = thumbUrl,
-        quality = quality,
-        currentEpisode = currentEpisode,
-        addedAt = addedAt
-    )
-
-    private fun WatchHistoryEntity.toDomain() = WatchHistoryItem(
-        slug = slug,
-        name = name,
-        originalName = originalName,
-        thumbUrl = thumbUrl,
-        episodeSlug = episodeSlug,
-        episodeName = episodeName,
-        currentTime = currentTime,
-        duration = duration,
-        updatedAt = updatedAt
-    )
 
     // ── Watchlist (Xem Sau) ───────────────────────────────────────────────────
 
-    private val watchLaterDao = database.watchLaterDao()
-
-    fun getAllWatchLater(): Flow<List<com.pvq.cinepvq.domain.model.WatchLaterItem>> {
-        return watchLaterDao.getAllWatchLater().map { list ->
-            list.map { it.toWatchLaterDomain() }
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun getAllWatchLater(): Flow<List<WatchLaterItem>> {
+        return activeUserIdFlow.flatMapLatest { uid ->
+            watchLaterDao.getAllWatchLater(uid).map { list ->
+                list.map { it.toWatchLaterDomain() }
+            }
         }
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     fun isInWatchLater(slug: String): Flow<Boolean> {
-        return watchLaterDao.isInWatchLater(slug)
+        return activeUserIdFlow.flatMapLatest { uid ->
+            watchLaterDao.isInWatchLater(uid, slug)
+        }
     }
 
     suspend fun toggleWatchLater(movie: MovieDetail): Boolean {
         val slug = movie.slug
-        val exists = watchLaterDao.isInWatchLaterDirect(slug)
+        val currentUid = secureStorageManager.activeUserId
+        val exists = watchLaterDao.isInWatchLaterDirect(currentUid, slug)
         val nowIso = isoDateFormat.format(Date())
 
         if (exists) {
-            watchLaterDao.deleteBySlug(slug)
+            watchLaterDao.deleteBySlug(currentUid, slug)
             if (secureStorageManager.isLoggedIn) {
                 repositoryScope.launch {
                     try {
@@ -432,7 +324,8 @@ class UserSyncRepository(
             }
             return false
         } else {
-            val entity = com.pvq.cinepvq.core.database.WatchLaterEntity(
+            val entity = WatchLaterEntity(
+                userId = currentUid,
                 slug = slug,
                 name = movie.name,
                 originalName = movie.originalName,
@@ -467,7 +360,8 @@ class UserSyncRepository(
     }
 
     suspend fun removeWatchLater(slug: String) {
-        watchLaterDao.deleteBySlug(slug)
+        val currentUid = secureStorageManager.activeUserId
+        watchLaterDao.deleteBySlug(currentUid, slug)
         if (secureStorageManager.isLoggedIn) {
             repositoryScope.launch {
                 try {
@@ -477,7 +371,315 @@ class UserSyncRepository(
         }
     }
 
-    private fun com.pvq.cinepvq.core.database.WatchLaterEntity.toWatchLaterDomain() = com.pvq.cinepvq.domain.model.WatchLaterItem(
+    // ── Guest Data Migration ──────────────────────────────────────────────────
+
+    suspend fun migrateGuestDataToUser(newUserId: String) = withContext(Dispatchers.IO) {
+        if (newUserId.isBlank() || newUserId == SecureStorageManager.GUEST_USER_ID) return@withContext
+
+        // 1. Migrate guest favorites
+        val guestFavs = favoriteDao.getAllFavoritesDirect(SecureStorageManager.GUEST_USER_ID)
+        if (guestFavs.isNotEmpty()) {
+            val userFavSlugs = favoriteDao.getAllFavoritesDirect(newUserId).map { it.slug }.toSet()
+            val toInsert = guestFavs.filter { it.slug !in userFavSlugs }.map { it.copy(userId = newUserId) }
+            if (toInsert.isNotEmpty()) {
+                favoriteDao.insertAll(toInsert)
+            }
+            favoriteDao.clearByUser(SecureStorageManager.GUEST_USER_ID)
+        }
+
+        // 2. Migrate guest history
+        val guestHistory = historyDao.getAllHistoryDirect(SecureStorageManager.GUEST_USER_ID)
+        if (guestHistory.isNotEmpty()) {
+            guestHistory.forEach { gh ->
+                val userH = historyDao.getHistoryBySlug(newUserId, gh.slug)
+                if (userH == null || gh.currentTime > userH.currentTime) {
+                    historyDao.upsert(gh.copy(userId = newUserId))
+                }
+            }
+            historyDao.clearByUser(SecureStorageManager.GUEST_USER_ID)
+        }
+
+        // 3. Migrate guest watch later
+        val guestWL = watchLaterDao.getAllWatchLaterDirect(SecureStorageManager.GUEST_USER_ID)
+        if (guestWL.isNotEmpty()) {
+            val userWLSlugs = watchLaterDao.getAllWatchLaterDirect(newUserId).map { it.slug }.toSet()
+            val toInsert = guestWL.filter { it.slug !in userWLSlugs }.map { it.copy(userId = newUserId) }
+            if (toInsert.isNotEmpty()) {
+                watchLaterDao.insertAll(toInsert)
+            }
+            watchLaterDao.clearByUser(SecureStorageManager.GUEST_USER_ID)
+        }
+
+        // 4. Update active user flow to new user
+        activeUserIdFlow.value = newUserId
+    }
+
+    // ── Two-Way Synchronizer (Web <-> Android Conflict Handling) ──────────────
+
+    suspend fun testConnection(): Result<Long> = networkModule.testConnection()
+
+    suspend fun syncWithServer(): Result<SyncResultSummary> = withContext(Dispatchers.IO) {
+        if (!secureStorageManager.isLoggedIn) {
+            return@withContext Result.failure(Exception("Chưa đăng nhập"))
+        }
+
+        val currentUid = secureStorageManager.userId
+            ?: return@withContext Result.failure(Exception("Không có User ID xác thực"))
+
+        activeUserIdFlow.value = currentUid
+
+        val errors = mutableListOf<String>()
+        var favCount = 0
+        var histCount = 0
+        var watchCount = 0
+
+        // 1. Sync Favorites
+        try {
+            val favRes = networkModule.cinepvqApi.getFavorites()
+            if (favRes.isSuccessful && favRes.body()?.favorites != null) {
+                val remoteFavs = favRes.body()!!.favorites
+                favCount = remoteFavs.size
+                val remoteFavSlugs = remoteFavs.map { it.slug }.toSet()
+
+                // Insert all remote favorites into local Room DB for current user
+                val entities = remoteFavs.map { r ->
+                    FavoriteMovieEntity(
+                        userId = currentUid,
+                        slug = r.slug,
+                        name = r.name,
+                        originalName = r.original_name,
+                        thumbUrl = r.thumb_url,
+                        quality = r.quality,
+                        currentEpisode = r.current_episode,
+                        addedAt = r.addedAt ?: ""
+                    )
+                }
+                favoriteDao.insertAll(entities)
+
+                // Push any local-only favorites belonging to current user
+                val allLocalFavs = favoriteDao.getAllFavoritesDirect(currentUid)
+                val localOnlyFavs = allLocalFavs.filter { it.slug !in remoteFavSlugs }
+                if (localOnlyFavs.isNotEmpty()) {
+                    val pushRes = networkModule.cinepvqApi.updateFavorites(
+                        FavoriteActionRequest(
+                            action = "sync",
+                            favorites = localOnlyFavs.map { f ->
+                                FavoriteMovieDto(
+                                    slug = f.slug,
+                                    name = f.name,
+                                    original_name = f.originalName,
+                                    thumb_url = f.thumbUrl,
+                                    quality = f.quality,
+                                    current_episode = f.currentEpisode,
+                                    addedAt = f.addedAt
+                                )
+                            }
+                        )
+                    )
+                    if (!pushRes.isSuccessful) {
+                        Log.w("UserSyncRepo", "Push local favorites returned HTTP ${pushRes.code()}: ${pushRes.message()}")
+                    }
+                }
+            } else {
+                val err = "Lỗi tải Favorites (HTTP ${favRes.code()}: ${favRes.message().ifBlank { "Lỗi phản hồi" }})"
+                Log.e("UserSyncRepo", err)
+                errors.add(err)
+            }
+        } catch (e: Exception) {
+            Log.e("UserSyncRepo", "Sync Favorites network failure: ${e.message}", e)
+            errors.add("Favorites: ${e.localizedMessage ?: e.message}")
+        }
+
+        // 2. Sync Watch History with Timestamp Resolution (Cases A - F)
+        try {
+            val histRes = networkModule.cinepvqApi.getHistory()
+            if (histRes.isSuccessful && histRes.body()?.history != null) {
+                val remoteHist = histRes.body()!!.history
+                histCount = remoteHist.size
+                val remoteSlugs = remoteHist.map { it.slug }.toSet()
+                val itemsToPush = mutableListOf<WatchHistoryDto>()
+
+                // Compare remote items with local items of current user
+                remoteHist.forEach { r ->
+                    val local = historyDao.getHistoryBySlug(currentUid, r.slug)
+                    val timeRemote = parseTime(r.updatedAt)
+                    val timeLocal = parseTime(local?.updatedAt)
+
+                    if (local == null || timeRemote >= timeLocal) {
+                        // Case A (remote newer), Case C (equal timestamps), Case E (remote-only): remote wins
+                        historyDao.upsert(
+                            WatchHistoryEntity(
+                                userId = currentUid,
+                                slug = r.slug,
+                                name = r.name,
+                                originalName = r.original_name,
+                                thumbUrl = r.thumb_url,
+                                episodeSlug = r.episodeSlug,
+                                episodeName = r.episodeName,
+                                currentTime = r.currentTime,
+                                duration = r.duration,
+                                updatedAt = r.updatedAt ?: ""
+                            )
+                        )
+                    } else {
+                        // Case B (local newer), Case F (newer episode in local): push local to server
+                        itemsToPush.add(
+                            WatchHistoryDto(
+                                slug = local.slug,
+                                name = local.name,
+                                original_name = local.originalName,
+                                thumb_url = local.thumbUrl,
+                                episodeSlug = local.episodeSlug,
+                                episodeName = local.episodeName,
+                                currentTime = local.currentTime,
+                                duration = local.duration,
+                                updatedAt = local.updatedAt
+                            )
+                        )
+                    }
+                }
+
+                // Case D: Local-only items for current user (not present on remote): push to server
+                val allLocal = historyDao.getAllHistoryDirect(currentUid)
+                val localOnly = allLocal.filter { it.slug !in remoteSlugs }
+                localOnly.forEach { local ->
+                    itemsToPush.add(
+                        WatchHistoryDto(
+                            slug = local.slug,
+                            name = local.name,
+                            original_name = local.originalName,
+                            thumb_url = local.thumbUrl,
+                            episodeSlug = local.episodeSlug,
+                            episodeName = local.episodeName,
+                            currentTime = local.currentTime,
+                            duration = local.duration,
+                            updatedAt = local.updatedAt
+                        )
+                    )
+                }
+
+                // Push itemsToPush back to server
+                if (itemsToPush.isNotEmpty()) {
+                    val pushRes = networkModule.cinepvqApi.updateHistory(
+                        HistoryActionRequest(action = "sync", history = itemsToPush)
+                    )
+                    if (!pushRes.isSuccessful) {
+                        Log.w("UserSyncRepo", "Push local history returned HTTP ${pushRes.code()}: ${pushRes.message()}")
+                    }
+                }
+            } else {
+                val err = "Lỗi tải History (HTTP ${histRes.code()}: ${histRes.message().ifBlank { "Lỗi phản hồi" }})"
+                Log.e("UserSyncRepo", err)
+                errors.add(err)
+            }
+        } catch (e: Exception) {
+            Log.e("UserSyncRepo", "Sync History network failure: ${e.message}", e)
+            errors.add("History: ${e.localizedMessage ?: e.message}")
+        }
+
+        // 3. Sync Watchlist (Xem Sau)
+        try {
+            val watchRes = networkModule.cinepvqApi.getWatchlist()
+            if (watchRes.isSuccessful && watchRes.body()?.watchlist != null) {
+                val remoteWatch = watchRes.body()!!.watchlist
+                watchCount = remoteWatch.size
+                val remoteSlugs = remoteWatch.map { it.slug }.toSet()
+
+                // Compare remote items with local items of current user
+                remoteWatch.forEach { r ->
+                    val local = watchLaterDao.isInWatchLaterDirect(currentUid, r.slug)
+                    if (!local) {
+                        watchLaterDao.insert(
+                            WatchLaterEntity(
+                                userId = currentUid,
+                                slug = r.slug,
+                                name = r.name,
+                                originalName = r.original_name,
+                                thumbUrl = r.thumb_url,
+                                addedAt = r.addedAt ?: ""
+                            )
+                        )
+                    }
+                }
+
+                val allLocal = watchLaterDao.getAllWatchLaterDirect(currentUid)
+                val localOnly = allLocal.filter { it.slug !in remoteSlugs }
+                if (localOnly.isNotEmpty()) {
+                    val pushRes = networkModule.cinepvqApi.updateWatchlist(
+                        WatchlistActionRequest(
+                            action = "sync",
+                            watchlist = localOnly.map { f ->
+                                WatchlistDto(
+                                    slug = f.slug,
+                                    name = f.name,
+                                    original_name = f.originalName,
+                                    thumb_url = f.thumbUrl,
+                                    addedAt = f.addedAt
+                                )
+                            }
+                        )
+                    )
+                    if (!pushRes.isSuccessful) {
+                        Log.w("UserSyncRepo", "Push local watchlist returned HTTP ${pushRes.code()}: ${pushRes.message()}")
+                    }
+                }
+            } else {
+                val err = "Lỗi tải Watchlist (HTTP ${watchRes.code()}: ${watchRes.message().ifBlank { "Lỗi phản hồi" }})"
+                Log.e("UserSyncRepo", err)
+                errors.add(err)
+            }
+        } catch (e: Exception) {
+            Log.e("UserSyncRepo", "Sync Watchlist network failure: ${e.message}", e)
+            errors.add("Watchlist: ${e.localizedMessage ?: e.message}")
+        }
+
+        if (errors.isNotEmpty()) {
+            val combined = errors.joinToString("; ")
+            Result.failure(Exception(combined))
+        } else {
+            Result.success(
+                SyncResultSummary(
+                    isSuccess = true,
+                    favoritesCount = favCount,
+                    historyCount = histCount,
+                    watchlistCount = watchCount
+                )
+            )
+        }
+    }
+
+    private fun parseTime(iso: String?): Long {
+        if (iso.isNullOrBlank()) return 0L
+        return try {
+            isoDateFormat.parse(iso)?.time ?: 0L
+        } catch (_: Exception) {
+            0L
+        }
+    }
+
+    private fun FavoriteMovieEntity.toDomain() = FavoriteMovie(
+        slug = slug,
+        name = name,
+        originalName = originalName,
+        thumbUrl = thumbUrl,
+        quality = quality,
+        currentEpisode = currentEpisode,
+        addedAt = addedAt
+    )
+
+    private fun WatchHistoryEntity.toDomain() = WatchHistoryItem(
+        slug = slug,
+        name = name,
+        originalName = originalName,
+        thumbUrl = thumbUrl,
+        episodeSlug = episodeSlug,
+        episodeName = episodeName,
+        currentTime = currentTime,
+        duration = duration,
+        updatedAt = updatedAt
+    )
+
+    private fun WatchLaterEntity.toWatchLaterDomain() = WatchLaterItem(
         slug = slug,
         name = name,
         originalName = originalName,

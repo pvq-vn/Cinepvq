@@ -10,11 +10,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.launch
 
 class SearchViewModel(
     private val movieRepository: MovieRepository = CinepvqApp.instance.movieRepository,
-    private val database: com.pvq.cinepvq.core.database.CinepvqDatabase = CinepvqApp.instance.database
+    private val database: com.pvq.cinepvq.core.database.CinepvqDatabase = CinepvqApp.instance.database,
+    private val secureStorageManager: com.pvq.cinepvq.core.security.SecureStorageManager = CinepvqApp.instance.secureStorageManager,
+    private val userSyncRepository: com.pvq.cinepvq.data.user.UserSyncRepository = CinepvqApp.instance.userSyncRepository
 ) : ViewModel() {
 
     val query = MutableStateFlow("")
@@ -37,8 +40,11 @@ class SearchViewModel(
     val activeCountry = MutableStateFlow<String?>(null)
     val activeSort = MutableStateFlow("latest")
 
-    // Search History
-    val searchHistory = database.searchHistoryDao().getRecentSearches()
+    // Search History isolated by active user
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val searchHistory = userSyncRepository.activeUserIdFlow.flatMapLatest { uid ->
+        database.searchHistoryDao().getRecentSearches(uid)
+    }
 
     init {
         loadInitialList()
@@ -103,22 +109,25 @@ class SearchViewModel(
 
     fun saveSearchQuery(query: String) {
         if (query.isBlank()) return
+        val uid = secureStorageManager.activeUserId
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             database.searchHistoryDao().insert(
-                com.pvq.cinepvq.core.database.SearchHistoryEntity(query.trim())
+                com.pvq.cinepvq.core.database.SearchHistoryEntity(userId = uid, query = query.trim())
             )
         }
     }
 
     fun deleteSearchQuery(query: String) {
+        val uid = secureStorageManager.activeUserId
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            database.searchHistoryDao().delete(query)
+            database.searchHistoryDao().delete(userId = uid, query = query)
         }
     }
 
     fun clearSearchHistory() {
+        val uid = secureStorageManager.activeUserId
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            database.searchHistoryDao().clearAll()
+            database.searchHistoryDao().clearByUser(userId = uid)
         }
     }
 

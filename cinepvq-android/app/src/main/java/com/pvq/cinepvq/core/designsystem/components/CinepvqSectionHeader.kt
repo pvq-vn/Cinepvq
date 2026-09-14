@@ -47,7 +47,7 @@ fun CinepvqSectionHeader(
         if (onSeeAllClick != null) {
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = "Tất cả →",
+                text = "Tất cả >",
                 color = CinepvqPrimaryLight,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,

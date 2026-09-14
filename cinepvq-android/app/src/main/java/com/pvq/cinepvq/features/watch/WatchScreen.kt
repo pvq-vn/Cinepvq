@@ -1,36 +1,28 @@
 package com.pvq.cinepvq.features.watch
 
+import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pvq.cinepvq.core.designsystem.components.ErrorView
 import com.pvq.cinepvq.core.designsystem.components.LoadingView
 import com.pvq.cinepvq.features.detail.DetailViewModel
+import com.pvq.cinepvq.features.player.PlayerAudioLanguageBottomSheet
 import com.pvq.cinepvq.features.player.PlayerScreen
+import com.pvq.cinepvq.features.watch.components.*
 import com.pvq.cinepvq.ui.theme.*
-
-private const val CHUNK_SIZE = 30
 
 @Composable
 fun WatchScreen(
@@ -40,32 +32,105 @@ fun WatchScreen(
     initialEmbedUrl: String? = null,
     onBackClick: () -> Unit,
     onNavigateToMovie: (String) -> Unit,
-    viewModel: DetailViewModel = viewModel()
+    viewModel: DetailViewModel = viewModel(),
+    qaFullscreen: Boolean = false,
+    qaControls: Boolean = false,
+    qaComments: Boolean = false,
+    qaBrightness: Float = -1f,
+    qaVolume: Float = -1f,
+    qaSeek: Long = -1L
 ) {
     val context = LocalContext.current
     val activity = context as? ComponentActivity
+
+    // Restore portrait orientation when leaving WatchScreen
+    DisposableEffect(Unit) {
+        onDispose {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+    }
+
+    LaunchedEffect(qaFullscreen) {
+        if (qaFullscreen) {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
+    }
 
     LaunchedEffect(slug) {
         viewModel.loadMovie(slug)
     }
 
     val movie by viewModel.movieDetail.collectAsStateWithLifecycle()
+    val isFavorite by viewModel.isFavorite.collectAsStateWithLifecycle()
+    val isWatchLater by viewModel.isWatchLater.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
     val selectedServerIndex by viewModel.selectedServerIndex.collectAsStateWithLifecycle()
+    val comments by viewModel.comments.collectAsStateWithLifecycle()
+    val isPostingComment by viewModel.isPostingComment.collectAsStateWithLifecycle()
+    val similarMovies by viewModel.similarMovies.collectAsStateWithLifecycle()
 
-    var activeChunkIndex by remember { mutableIntStateOf(0) }
     var currentEpisodeSlug by remember { mutableStateOf(initialEpisodeSlug) }
     var currentServerName by remember { mutableStateOf(initialServerName) }
     var currentEmbedUrl by remember { mutableStateOf(initialEmbedUrl) }
 
-    // This handles fullscreen toggles from within the Player
-    var isFullscreen by remember { mutableStateOf(false) }
+    // Fullscreen state: strictly controlled by explicit user toggle
+    var isFullscreen by remember { mutableStateOf(qaFullscreen) }
+    val effectiveFullscreen = isFullscreen
 
+    // Comment States: Portrait Sheet vs Landscape Side Panel
+    var showCommentSheet by remember { mutableStateOf(false) }
+    var showLandscapeComments by remember { mutableStateOf(qaComments) }
+
+    // Audio Language Bottom Sheet & Sync Warning State
+    var showAudioLanguageSheet by remember { mutableStateOf(false) }
+    var showSyncWarning by remember { mutableStateOf(false) }
+
+    val servers = movie?.episodes ?: emptyList()
+    val currentServer = servers.getOrNull(selectedServerIndex) ?: servers.firstOrNull()
+    val allEpisodes = currentServer?.items ?: emptyList()
+    val currentEpData = allEpisodes.find { it.slug == currentEpisodeSlug }
+
+    // Language switcher handler (Section I.3 & I.4)
+    val handleLanguageSwitch: () -> Unit = {
+        if (servers.size == 2) {
+            val newIndex = if (selectedServerIndex == 0) 1 else 0
+            viewModel.selectServer(newIndex)
+            val newServer = servers.getOrNull(newIndex)
+            currentServerName = newServer?.serverName
+            val targetDigits = currentEpData?.name?.filter { it.isDigit() } ?: ""
+            val matchingEp = newServer?.items?.find { it.slug == currentEpisodeSlug }
+                ?: if (targetDigits.isNotEmpty()) newServer?.items?.find { it.name.filter { c -> c.isDigit() } == targetDigits } else null
+                ?: newServer?.items?.getOrNull(allEpisodes.indexOfFirst { it.slug == currentEpisodeSlug }.coerceAtLeast(0))
+                ?: newServer?.items?.firstOrNull()
+            if (matchingEp != null) {
+                currentEpisodeSlug = matchingEp.slug
+                currentEmbedUrl = matchingEp.embed
+            }
+            showSyncWarning = true
+        } else if (servers.size >= 3) {
+            showAudioLanguageSheet = true
+        }
+    }
+
+    // Share Helper
+    val onShareMovie = {
+        val movieTitle = movie?.name ?: "Cinepvq"
+        val sendIntent = Intent().apply {
+            action = Intent.ACTION_SEND
+            putExtra(Intent.EXTRA_TEXT, "Xem phim $movieTitle trên Cinepvq")
+            type = "text/plain"
+        }
+        context.startActivity(Intent.createChooser(sendIntent, "Chia sẻ phim"))
+    }
+
+    // Back Handler: Close landscape comments -> Exit fullscreen -> Back navigation
     BackHandler {
-        if (isFullscreen) {
+        if (showLandscapeComments) {
+            showLandscapeComments = false
+        } else if (effectiveFullscreen) {
             isFullscreen = false
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         } else {
             onBackClick()
         }
@@ -75,246 +140,175 @@ fun WatchScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(CinepvqBackground)
-            .then(if (isFullscreen) Modifier else Modifier.statusBarsPadding())
+            .then(if (effectiveFullscreen) Modifier else Modifier.statusBarsPadding())
     ) {
-        // Player Section (Sticky at the top)
+        // ── Sticky Player Section at Top ──────────────────────────────────
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .then(if (isFullscreen) Modifier.fillMaxSize() else Modifier.aspectRatio(16f / 9f))
+                .then(if (effectiveFullscreen) Modifier.fillMaxSize() else Modifier.aspectRatio(16f / 9f))
                 .background(Color.Black)
         ) {
-            PlayerScreen(
-                slug = slug,
-                episodeSlug = currentEpisodeSlug,
-                serverName = currentServerName,
-                embedUrl = currentEmbedUrl,
-                isFullscreen = isFullscreen,
-                onFullscreenToggle = { fullscreen ->
-                    isFullscreen = fullscreen
-                    activity?.requestedOrientation = if (fullscreen) {
-                        ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                    } else {
-                        ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                    }
-                },
-                onBackClick = onBackClick,
-                onSwitchEpisode = { _, epSlug ->
-                    currentEpisodeSlug = epSlug
+            Row(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier
+                        .weight(if (effectiveFullscreen && showLandscapeComments) 0.65f else 1f)
+                        .fillMaxHeight()
+                ) {
+                    PlayerScreen(
+                        slug = slug,
+                        episodeSlug = currentEpisodeSlug,
+                        serverName = currentServerName,
+                        embedUrl = currentEmbedUrl,
+                        isFullscreen = effectiveFullscreen,
+                        onFullscreenToggle = { fullscreen ->
+                            isFullscreen = fullscreen
+                            if (!fullscreen) showLandscapeComments = false
+                            activity?.requestedOrientation = if (fullscreen) {
+                                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                            } else {
+                                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                            }
+                        },
+                        onBackClick = {
+                            if (effectiveFullscreen) {
+                                if (showLandscapeComments) {
+                                    showLandscapeComments = false
+                                } else {
+                                    isFullscreen = false
+                                    activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                }
+                            } else {
+                                onBackClick()
+                            }
+                        },
+                        onSwitchEpisode = { _, epSlug ->
+                            currentEpisodeSlug = epSlug
+                            val newEp = allEpisodes.find { it.slug == epSlug }
+                            if (newEp != null) {
+                                currentEmbedUrl = newEp.embed
+                            }
+                        },
+                        isFavorite = isFavorite,
+                        onToggleFavorite = { viewModel.toggleFavorite() },
+                        isWatchLater = isWatchLater,
+                        onToggleWatchLater = { viewModel.toggleWatchLater() },
+                        onOpenComments = {
+                            if (effectiveFullscreen) {
+                                showLandscapeComments = !showLandscapeComments
+                            } else {
+                                showCommentSheet = true
+                            }
+                        },
+                        onShareClick = onShareMovie,
+                        servers = servers,
+                        selectedServerIndex = selectedServerIndex,
+                        onOpenAudioLanguage = handleLanguageSwitch,
+                        showSyncWarning = showSyncWarning,
+                        onDismissSyncWarning = { showSyncWarning = false },
+                        allEpisodes = allEpisodes,
+                        qaControls = qaControls,
+                        qaBrightness = qaBrightness,
+                        qaVolume = qaVolume,
+                        qaSeek = qaSeek
+                    )
                 }
-            )
+
+                if (effectiveFullscreen && showLandscapeComments) {
+                    LandscapeCommentsPanel(
+                        comments = comments,
+                        isPostingComment = isPostingComment,
+                        onPostComment = { content -> viewModel.postComment(slug, content) },
+                        onClose = { showLandscapeComments = false },
+                        modifier = Modifier
+                            .weight(0.35f)
+                            .fillMaxHeight()
+                    )
+                }
+            }
         }
 
-        // When fullscreen is active, hide the details
-        if (!isFullscreen) {
+        // ── Content Below Player (Only in Portrait) ───────────────────────
+        if (!effectiveFullscreen) {
             Box(modifier = Modifier.weight(1f)) {
                 when {
                     isLoading && movie == null -> LoadingView()
                     errorMessage != null && movie == null -> ErrorView(
-                        message = errorMessage ?: "Không thể tải danh sách tập phim",
+                        message = errorMessage ?: "Không thể tải thông tin phim",
                         onRetry = { viewModel.loadMovie(slug) }
                     )
                     movie != null -> {
                         val detail = movie!!
-                        val currentServer = detail.episodes.getOrNull(selectedServerIndex)
-                            ?: detail.episodes.firstOrNull()
-                        val allEpisodes = currentServer?.items ?: emptyList()
-
-                        // Episode chunks
-                        val totalChunks = if (allEpisodes.isNotEmpty()) (allEpisodes.size + CHUNK_SIZE - 1) / CHUNK_SIZE else 1
-                        val safeChunk = activeChunkIndex.coerceIn(0, (totalChunks - 1).coerceAtLeast(0))
-                        val displayedEpisodes = allEpisodes.drop(safeChunk * CHUNK_SIZE).take(CHUNK_SIZE)
 
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(bottom = 40.dp)
+                            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 40.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
+                            // 1. Movie Header & Expandable Information (Instant expand/collapse)
                             item {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(16.dp)
-                                ) {
-                                    Text(
-                                        text = detail.name,
-                                        color = CinepvqTextPrimary,
-                                        fontSize = 18.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    val currentEpData = allEpisodes.find { it.slug == currentEpisodeSlug }
-                                    if (currentEpData != null) {
-                                        Text(
-                                            text = "Đang xem: Tập ${currentEpData.name}",
-                                            color = CinepvqPrimaryLight,
-                                            fontSize = 14.sp,
-                                            modifier = Modifier.padding(top = 4.dp)
-                                        )
-                                    }
-                                }
+                                MovieHeader(
+                                    movie = detail,
+                                    currentEpisodeName = currentEpData?.name ?: ""
+                                )
                             }
 
-                            // ── Audio / Server Switcher Tabs ──
-                            if (detail.episodes.size > 1) {
-                                item {
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 16.dp, vertical = 8.dp)
-                                    ) {
-                                        Text(
-                                            text = "Máy chủ & Thuyết minh",
-                                            color = CinepvqTextPrimary,
-                                            fontSize = 15.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            modifier = Modifier.padding(bottom = 8.dp)
-                                        )
-
-                                        LazyRow(
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            itemsIndexed(detail.episodes) { index, server ->
-                                                val isSelected = index == selectedServerIndex
-                                                FilterChip(
-                                                    selected = isSelected,
-                                                    onClick = {
-                                                        viewModel.selectServer(index)
-                                                        activeChunkIndex = 0
-                                                    },
-                                                    label = {
-                                                        Text(
-                                                            text = server.serverName,
-                                                            fontSize = 12.sp,
-                                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-                                                        )
-                                                    },
-                                                    colors = FilterChipDefaults.filterChipColors(
-                                                        containerColor = CinepvqSurface,
-                                                        labelColor = CinepvqTextSecondary,
-                                                        selectedContainerColor = CinepvqPrimary,
-                                                        selectedLabelColor = Color.White
-                                                    ),
-                                                    border = FilterChipDefaults.filterChipBorder(
-                                                        enabled = true,
-                                                        selected = isSelected,
-                                                        borderColor = if (isSelected) CinepvqPrimary else CinepvqBorderSubtle
-                                                    ),
-                                                    shape = RoundedCornerShape(8.dp)
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
+                            // 2. Action Bar (Favorite, Watch Later, Share)
+                            item {
+                                MovieActionBar(
+                                    isFavorite = isFavorite,
+                                    onToggleFavorite = { viewModel.toggleFavorite() },
+                                    isWatchLater = isWatchLater,
+                                    onToggleWatchLater = { viewModel.toggleWatchLater() },
+                                    onShareClick = onShareMovie
+                                )
                             }
 
-                            // ── Episode List with Chunk Tabs ──
+                            // 3. Comments Preview Card
+                            item {
+                                CommentPreviewCard(
+                                    comments = comments,
+                                    onClick = { showCommentSheet = true }
+                                )
+                            }
+
+                            // 4. Horizontal Episode List with Pagination Navigator (< 01 02 ... 10 >)
                             if (allEpisodes.isNotEmpty()) {
                                 item {
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 16.dp, vertical = 8.dp)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = "Danh sách tập phim",
-                                                color = CinepvqTextPrimary,
-                                                fontSize = 15.sp,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                            Text(
-                                                text = "${allEpisodes.size} tập",
-                                                color = CinepvqTextMuted,
-                                                fontSize = 12.sp
-                                            )
-                                        }
-
-                                        // Chunk Tabs (if total episodes > 30)
-                                        if (totalChunks > 1) {
-                                            Spacer(modifier = Modifier.height(10.dp))
-                                            LazyRow(
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                            ) {
-                                                items(totalChunks) { chunkIdx ->
-                                                    val start = chunkIdx * CHUNK_SIZE + 1
-                                                    val end = ((chunkIdx + 1) * CHUNK_SIZE).coerceAtMost(allEpisodes.size)
-                                                    val isSelected = chunkIdx == safeChunk
-
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .clip(RoundedCornerShape(6.dp))
-                                                            .background(if (isSelected) CinepvqPrimary.copy(alpha = 0.2f) else CinepvqSurface)
-                                                            .border(
-                                                                1.dp,
-                                                                if (isSelected) CinepvqPrimary else CinepvqBorderSubtle,
-                                                                RoundedCornerShape(6.dp)
-                                                            )
-                                                            .clickable { activeChunkIndex = chunkIdx }
-                                                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                                                    ) {
-                                                        Text(
-                                                            text = "$start - $end",
-                                                            color = if (isSelected) CinepvqPrimaryLight else CinepvqTextSecondary,
-                                                            fontSize = 11.sp,
-                                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                                        )
-                                                    }
+                                    EpisodeHorizontalList(
+                                        servers = detail.episodes,
+                                        selectedServerIndex = selectedServerIndex,
+                                        onSelectServer = { idx ->
+                                            if (idx != selectedServerIndex) {
+                                                viewModel.selectServer(idx)
+                                                val newServer = detail.episodes.getOrNull(idx)
+                                                currentServerName = newServer?.serverName
+                                                val matchingEp = newServer?.items?.find { it.slug == currentEpisodeSlug } ?: newServer?.items?.firstOrNull()
+                                                if (matchingEp != null) {
+                                                    currentEpisodeSlug = matchingEp.slug
+                                                    currentEmbedUrl = matchingEp.embed
                                                 }
+                                                showSyncWarning = true
                                             }
+                                        },
+                                        allEpisodes = allEpisodes,
+                                        currentEpisodeSlug = currentEpisodeSlug,
+                                        onSelectEpisode = { ep ->
+                                            currentServerName = currentServer?.serverName
+                                            currentEmbedUrl = ep.embed
+                                            currentEpisodeSlug = ep.slug
                                         }
+                                    )
+                                }
+                            }
 
-                                        Spacer(modifier = Modifier.height(12.dp))
-
-                                        // Episode Pills Grid (5 columns)
-                                        val chunkedRows = displayedEpisodes.chunked(5)
-                                        chunkedRows.forEach { rowItems ->
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(vertical = 4.dp),
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
-                                                rowItems.forEach { ep ->
-                                                    val isCurrentPlay = currentEpisodeSlug == ep.slug
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .weight(1f)
-                                                            .height(38.dp)
-                                                            .clip(RoundedCornerShape(8.dp))
-                                                            .background(
-                                                                if (isCurrentPlay) CinepvqPrimary.copy(alpha = 0.2f) else CinepvqSurface
-                                                            )
-                                                            .border(
-                                                                1.dp,
-                                                                if (isCurrentPlay) CinepvqPrimary else CinepvqBorderSubtle,
-                                                                RoundedCornerShape(8.dp)
-                                                            )
-                                                            .clickable {
-                                                                currentServerName = currentServer?.serverName
-                                                                currentEmbedUrl = ep.embed
-                                                                currentEpisodeSlug = ep.slug
-                                                            },
-                                                        contentAlignment = Alignment.Center
-                                                    ) {
-                                                        Text(
-                                                            text = ep.name,
-                                                            color = if (isCurrentPlay) CinepvqPrimaryLight else CinepvqTextPrimary,
-                                                            fontSize = 12.sp,
-                                                            fontWeight = if (isCurrentPlay) FontWeight.Bold else FontWeight.Medium,
-                                                            maxLines = 1,
-                                                            overflow = TextOverflow.Ellipsis
-                                                        )
-                                                    }
-                                                }
-                                                repeat(5 - rowItems.size) {
-                                                    Spacer(modifier = Modifier.weight(1f))
-                                                }
-                                            }
-                                        }
-                                    }
+                            // 5. Recommended Movies Section
+                            if (similarMovies.isNotEmpty()) {
+                                item {
+                                    RecommendedMoviesSection(
+                                        movies = similarMovies,
+                                        onMovieClick = onNavigateToMovie
+                                    )
                                 }
                             }
                         }
@@ -322,5 +316,44 @@ fun WatchScreen(
                 }
             }
         }
+    }
+
+    // ── Interactive Comment Modal Bottom Sheet (in Portrait) ───────────────
+    if (showCommentSheet && !effectiveFullscreen) {
+        CommentBottomSheet(
+            comments = comments,
+            isPostingComment = isPostingComment,
+            onPostComment = { content ->
+                viewModel.postComment(slug, content)
+            },
+            onDismiss = { showCommentSheet = false }
+        )
+    }
+
+    // ── Audio / Language Server Bottom Sheet (When >= 3 servers) ───────────
+    if (showAudioLanguageSheet) {
+        PlayerAudioLanguageBottomSheet(
+            servers = servers,
+            selectedServerIndex = selectedServerIndex,
+            onSelectServer = { idx ->
+                if (idx != selectedServerIndex) {
+                    val newServer = servers.getOrNull(idx)
+                    currentServerName = newServer?.serverName
+                    viewModel.selectServer(idx)
+                    val targetDigits = currentEpData?.name?.filter { it.isDigit() } ?: ""
+                    val matchingEp = newServer?.items?.find { it.slug == currentEpisodeSlug }
+                        ?: if (targetDigits.isNotEmpty()) newServer?.items?.find { it.name.filter { c -> c.isDigit() } == targetDigits } else null
+                        ?: newServer?.items?.getOrNull(allEpisodes.indexOfFirst { it.slug == currentEpisodeSlug }.coerceAtLeast(0))
+                        ?: newServer?.items?.firstOrNull()
+                    if (matchingEp != null) {
+                        currentEpisodeSlug = matchingEp.slug
+                        currentEmbedUrl = matchingEp.embed
+                    }
+                    showSyncWarning = true
+                }
+                showAudioLanguageSheet = false
+            },
+            onDismiss = { showAudioLanguageSheet = false }
+        )
     }
 }

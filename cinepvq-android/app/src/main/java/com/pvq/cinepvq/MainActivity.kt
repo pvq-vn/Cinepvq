@@ -5,11 +5,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Scaffold
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -24,6 +23,7 @@ import com.pvq.cinepvq.features.history.HistoryScreen
 import com.pvq.cinepvq.features.home.HomeScreen
 import com.pvq.cinepvq.features.navigation.CinepvqBottomNavBar
 import com.pvq.cinepvq.features.navigation.Screen
+import com.pvq.cinepvq.features.navigation.navigateToTab
 import com.pvq.cinepvq.features.player.PlayerScreen
 import com.pvq.cinepvq.features.profile.ProfileScreen
 import com.pvq.cinepvq.features.search.SearchScreen
@@ -31,13 +31,22 @@ import com.pvq.cinepvq.ui.theme.CinepvqBackground
 import com.pvq.cinepvq.ui.theme.CinepvqTheme
 import java.net.URLDecoder
 
+import android.content.pm.ActivityInfo
 import android.os.Build
 import android.view.WindowManager
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         val startRoute = intent.getStringExtra("route") ?: Screen.Home.route
+        val qaFullscreen = intent.getBooleanExtra("qa_fullscreen", false)
+        val qaControls = intent.getBooleanExtra("qa_controls", false)
+        val qaComments = intent.getBooleanExtra("qa_comments", false)
+        val qaBrightness = intent.getFloatExtra("qa_brightness", -1f)
+        val qaVolume = intent.getFloatExtra("qa_volume", -1f)
+        val qaSeek = intent.getLongExtra("qa_seek", -1L)
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
@@ -46,39 +55,58 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             CinepvqTheme {
-                CinepvqAppRoot(startRoute = startRoute)
+                CinepvqAppRoot(
+                    startRoute = startRoute,
+                    qaFullscreen = qaFullscreen,
+                    qaControls = qaControls,
+                    qaComments = qaComments,
+                    qaBrightness = qaBrightness,
+                    qaVolume = qaVolume,
+                    qaSeek = qaSeek
+                )
             }
         }
     }
 }
 
 @Composable
-fun CinepvqAppRoot(startRoute: String = Screen.Home.route) {
+fun CinepvqAppRoot(
+    startRoute: String = Screen.Home.route,
+    qaFullscreen: Boolean = false,
+    qaControls: Boolean = false,
+    qaComments: Boolean = false,
+    qaBrightness: Float = -1f,
+    qaVolume: Float = -1f,
+    qaSeek: Long = -1L
+) {
     val navController = rememberNavController()
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = navBackStackEntry?.destination?.route
 
-    Scaffold(
+    val isBottomBarRoute = currentRoute in listOf(
+        Screen.Home.route,
+        Screen.Search.route,
+        Screen.Favorites.route,
+        Screen.History.route,
+        Screen.Profile.route
+    )
+
+    var isBarsVisible by remember { mutableStateOf(true) }
+
+    // When navigating between destinations, reset bars to visible
+    LaunchedEffect(currentRoute) {
+        isBarsVisible = true
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(CinepvqBackground),
-        bottomBar = {
-            val navBackStackEntry by navController.currentBackStackEntryAsState()
-            val currentRoute = navBackStackEntry?.destination?.route
-            val isBottomBarVisible = currentRoute in listOf(
-                Screen.Home.route,
-                Screen.Search.route,
-                Screen.Favorites.route,
-                Screen.History.route,
-                Screen.Profile.route
-            )
-            if (isBottomBarVisible) {
-                CinepvqBottomNavBar(navController = navController)
-            }
-        }
-    ) { innerPadding ->
+            .background(CinepvqBackground)
+    ) {
         NavHost(
             navController = navController,
             startDestination = startRoute,
-            modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())
+            modifier = Modifier.fillMaxSize()
         ) {
             // Home Tab
             composable(Screen.Home.route) {
@@ -90,17 +118,20 @@ fun CinepvqAppRoot(startRoute: String = Screen.Home.route) {
                         val ep = episodeSlug ?: "tap-1"
                         navController.navigate(Screen.Player.createRoute(slug, ep))
                     },
-                    onCategoryClick = { categorySlug ->
-                        // Example: "the-loai/hanh-dong", we can pass it to Search
-                        // For now we just navigate to Search
-                        navController.navigate(Screen.Search.route)
+                    onCategoryClick = { _ ->
+                        navController.navigateToTab(Screen.Search.route)
                     },
                     onSearchClick = {
-                        navController.navigate(Screen.Search.route)
+                        navController.navigateToTab(Screen.Search.route)
                     },
                     onProfileClick = {
-                        navController.navigate(Screen.Profile.route)
-                    }
+                        navController.navigateToTab(Screen.Profile.route)
+                    },
+                    onHistoryClick = {
+                        navController.navigateToTab(Screen.History.route)
+                    },
+                    isTopBarVisible = isBarsVisible,
+                    onBarsVisibilityChanged = { isBarsVisible = it }
                 )
             }
 
@@ -109,7 +140,8 @@ fun CinepvqAppRoot(startRoute: String = Screen.Home.route) {
                 SearchScreen(
                     onMovieClick = { slug ->
                         navController.navigate(Screen.Detail.createRoute(slug))
-                    }
+                    },
+                    onBarsVisibilityChanged = { isBarsVisible = it }
                 )
             }
 
@@ -120,8 +152,9 @@ fun CinepvqAppRoot(startRoute: String = Screen.Home.route) {
                         navController.navigate(Screen.Detail.createRoute(slug))
                     },
                     onExploreClick = {
-                        navController.navigate(Screen.Home.route)
-                    }
+                        navController.navigateToTab(Screen.Home.route)
+                    },
+                    onBarsVisibilityChanged = { isBarsVisible = it }
                 )
             }
 
@@ -133,8 +166,9 @@ fun CinepvqAppRoot(startRoute: String = Screen.Home.route) {
                         navController.navigate(Screen.Player.createRoute(slug, ep))
                     },
                     onExploreClick = {
-                        navController.navigate(Screen.Home.route)
-                    }
+                        navController.navigateToTab(Screen.Home.route)
+                    },
+                    onBarsVisibilityChanged = { isBarsVisible = it }
                 )
             }
 
@@ -143,7 +177,8 @@ fun CinepvqAppRoot(startRoute: String = Screen.Home.route) {
                 ProfileScreen(
                     onNavigateToAuth = {
                         navController.navigate(Screen.Auth.route)
-                    }
+                    },
+                    onBarsVisibilityChanged = { isBarsVisible = it }
                 )
             }
 
@@ -214,9 +249,23 @@ fun CinepvqAppRoot(startRoute: String = Screen.Home.route) {
                         navController.navigate(Screen.Detail.createRoute(newSlug)) {
                             popUpTo(Screen.Detail.route) { inclusive = false }
                         }
-                    }
+                    },
+                    qaFullscreen = qaFullscreen,
+                    qaControls = qaControls,
+                    qaComments = qaComments,
+                    qaBrightness = qaBrightness,
+                    qaVolume = qaVolume,
+                    qaSeek = qaSeek
                 )
             }
+        }
+
+        if (isBottomBarRoute) {
+            CinepvqBottomNavBar(
+                navController = navController,
+                isVisible = isBarsVisible,
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
         }
     }
 }

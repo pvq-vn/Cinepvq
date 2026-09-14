@@ -24,6 +24,9 @@ class DetailViewModel(
     private val _isFavorite = MutableStateFlow(false)
     val isFavorite: StateFlow<Boolean> = _isFavorite.asStateFlow()
 
+    private val _isWatchLater = MutableStateFlow(false)
+    val isWatchLater: StateFlow<Boolean> = _isWatchLater.asStateFlow()
+
     private val _selectedServerIndex = MutableStateFlow(0)
     val selectedServerIndex: StateFlow<Int> = _selectedServerIndex.asStateFlow()
 
@@ -53,6 +56,13 @@ class DetailViewModel(
             // Observe favorite status
             userSyncRepository.isFavorite(slug).collectLatest {
                 _isFavorite.value = it
+            }
+        }
+
+        viewModelScope.launch {
+            // Observe watch later status
+            userSyncRepository.isInWatchLater(slug).collectLatest {
+                _isWatchLater.value = it
             }
         }
 
@@ -136,6 +146,13 @@ class DetailViewModel(
         val detail = _movieDetail.value ?: return
         viewModelScope.launch {
             userSyncRepository.toggleFavorite(detail)
+        }
+    }
+
+    fun toggleWatchLater() {
+        val detail = _movieDetail.value ?: return
+        viewModelScope.launch {
+            userSyncRepository.toggleWatchLater(detail)
         }
     }
 }

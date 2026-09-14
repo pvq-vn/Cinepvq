@@ -13,6 +13,9 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.concurrent.TimeUnit
 
 class NetworkModule(private val secureStorageManager: SecureStorageManager) {
@@ -176,5 +179,24 @@ class NetworkModule(private val secureStorageManager: SecureStorageManager) {
             .addConverterFactory(json.asConverterFactory(contentType))
             .build()
             .create(SupabaseAuthApiService::class.java)
+    }
+
+    suspend fun testConnection(): Result<Long> = withContext(Dispatchers.IO) {
+        val startTime = System.currentTimeMillis()
+        try {
+            val response = cinepvqApi.getProfile()
+            val duration = System.currentTimeMillis() - startTime
+            // 200 OK or 401 Unauthorized (401 proves the Next.js server is up and rejecting unauthenticated requests via Supabase Auth guard)
+            if (response.isSuccessful || response.code() == 401) {
+                Result.success(duration)
+            } else {
+                val msg = "HTTP ${response.code()}: ${response.message().ifBlank { "Lỗi phản hồi" }}"
+                Log.w("CinepvqNetwork", "Connection test returned: $msg")
+                Result.failure(Exception(msg))
+            }
+        } catch (e: Exception) {
+            Log.e("CinepvqNetwork", "Connection test failed to $cinepvqBaseUrl: ${e.message}", e)
+            Result.failure(e)
+        }
     }
 }
