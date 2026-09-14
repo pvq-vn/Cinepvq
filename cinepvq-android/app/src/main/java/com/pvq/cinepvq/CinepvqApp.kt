@@ -60,7 +60,7 @@ class CinepvqApp : Application(), SingletonImageLoader.Factory {
         if (secureStorageManager.isLoggedIn) {
             appScope.launch(Dispatchers.IO) {
                 try {
-                    userSyncRepository.syncWithServer()
+                    userSyncRepository.syncAll()
                 } catch (_: Exception) {}
             }
         }

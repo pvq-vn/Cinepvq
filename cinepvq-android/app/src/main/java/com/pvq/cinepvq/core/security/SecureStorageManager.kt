@@ -26,9 +26,26 @@ class SecureStorageManager(context: Context) {
         context.getSharedPreferences(PREFS_FILENAME, Context.MODE_PRIVATE)
     }
 
+    @Volatile
+    private var inMemoryAccessToken: String? = null
+
     var accessToken: String?
-        get() = prefs.getString(KEY_ACCESS_TOKEN, null)
-        set(value) = prefs.edit().putString(KEY_ACCESS_TOKEN, value).apply()
+        get() {
+            val mem = inMemoryAccessToken
+            if (!mem.isNullOrBlank()) return mem
+            val disk = sanitizeToken(prefs.getString(KEY_ACCESS_TOKEN, null))
+            inMemoryAccessToken = disk
+            return disk
+        }
+        set(value) {
+            val clean = sanitizeToken(value)
+            inMemoryAccessToken = clean
+            try {
+                prefs.edit().putString(KEY_ACCESS_TOKEN, clean).commit()
+            } catch (e: Exception) {
+                prefs.edit().putString(KEY_ACCESS_TOKEN, clean).apply()
+            }
+        }
 
     var refreshToken: String?
         get() = prefs.getString(KEY_REFRESH_TOKEN, null)
@@ -101,14 +118,26 @@ class SecureStorageManager(context: Context) {
         get() = if (isLoggedIn && !userId.isNullOrBlank()) userId!! else GUEST_USER_ID
 
     fun clearAuth() {
-        prefs.edit()
-            .remove(KEY_ACCESS_TOKEN)
-            .remove(KEY_REFRESH_TOKEN)
-            .remove(KEY_USER_ID)
-            .remove(KEY_USER_EMAIL)
-            .remove(KEY_USER_NAME)
-            .remove(KEY_USER_AVATAR)
-            .apply()
+        inMemoryAccessToken = null
+        try {
+            prefs.edit()
+                .remove(KEY_ACCESS_TOKEN)
+                .remove(KEY_REFRESH_TOKEN)
+                .remove(KEY_USER_ID)
+                .remove(KEY_USER_EMAIL)
+                .remove(KEY_USER_NAME)
+                .remove(KEY_USER_AVATAR)
+                .commit()
+        } catch (e: Exception) {
+            prefs.edit()
+                .remove(KEY_ACCESS_TOKEN)
+                .remove(KEY_REFRESH_TOKEN)
+                .remove(KEY_USER_ID)
+                .remove(KEY_USER_EMAIL)
+                .remove(KEY_USER_NAME)
+                .remove(KEY_USER_AVATAR)
+                .apply()
+        }
     }
 
     companion object {
@@ -121,5 +150,23 @@ class SecureStorageManager(context: Context) {
         private const val KEY_USER_NAME = "user_name"
         private const val KEY_USER_AVATAR = "user_avatar"
         private const val KEY_BACKEND_URL = "backend_base_url"
+
+        fun sanitizeToken(raw: String?): String? {
+            if (raw.isNullOrBlank()) return null
+            var t = raw.trim()
+            while (t.startsWith("\"") && t.endsWith("\"") && t.length >= 2) {
+                t = t.substring(1, t.length - 1).trim()
+            }
+            if (t.equals("Bearer", ignoreCase = true)) {
+                return null
+            }
+            if (t.startsWith("Bearer ", ignoreCase = true)) {
+                t = t.substring(7).trim()
+            }
+            while (t.startsWith("\"") && t.endsWith("\"") && t.length >= 2) {
+                t = t.substring(1, t.length - 1).trim()
+            }
+            return t.ifBlank { null }
+        }
     }
 }

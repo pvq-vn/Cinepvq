@@ -50,8 +50,8 @@ class AuthViewModel(
             }
 
             if (res.isSuccess) {
-                // Sync data with server immediately upon successful authentication
-                userSyncRepository.syncWithServer()
+                // Ensure complete data sync (profile, favorites, history, watchlist) into Room DB
+                userSyncRepository.syncAll()
                 onSuccess()
             } else {
                 _errorMessage.value = res.exceptionOrNull()?.message ?: "Xác thực thất bại"

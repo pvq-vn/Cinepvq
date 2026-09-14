@@ -24,6 +24,11 @@ class AuthRepository(
     private val _isLoggedIn = MutableStateFlow(secureStorageManager.isLoggedIn)
     val isLoggedIn: StateFlow<Boolean> = _isLoggedIn.asStateFlow()
 
+    private val _authState = MutableStateFlow<AuthState>(
+        loadCachedUser()?.let { AuthState.Authenticated(it) } ?: AuthState.Unauthenticated
+    )
+    val authState: StateFlow<AuthState> = _authState.asStateFlow()
+
     private fun loadCachedUser(): User? {
         val uid = secureStorageManager.userId ?: return null
         val email = secureStorageManager.userEmail ?: return null
@@ -62,7 +67,8 @@ class AuthRepository(
         secureStorageManager.userName = rawUsername
         secureStorageManager.userAvatar = avatar
 
-        // Migrate local guest data to newly authenticated user
+        // Update active user in UserSyncRepository and migrate guest data
+        userSyncRepository.updateActiveUser(userDto.id)
         userSyncRepository.migrateGuestDataToUser(userDto.id)
 
         val user = User(
@@ -75,15 +81,15 @@ class AuthRepository(
 
         _currentUser.value = user
         _isLoggedIn.value = true
+        _authState.value = AuthState.Authenticated(user)
 
-        // Asynchronously sync identity with Cinepvq backend
+        // BẮT BUỘC: Ngay sau khi đăng nhập thành công (nhận JWT) và trạng thái chuyển thành
+        // AuthState.Authenticated, hệ thống BẮT BUỘC phải gọi UserSyncRepository.syncAll()
+        // để kéo dữ liệu mới nhất từ server về ghi vào Room DB.
         try {
-            val syncRes = networkModule.cinepvqApi.syncUser()
-            if (!syncRes.isSuccessful) {
-                Log.w("AuthRepository", "syncUser server error HTTP ${syncRes.code()}: ${syncRes.message()}")
-            }
+            userSyncRepository.syncAll()
         } catch (e: Exception) {
-            Log.e("AuthRepository", "syncUser network failed: ${e.message}", e)
+            Log.e("AuthRepository", "syncAll failed after login: ${e.message}", e)
         }
 
         user
@@ -116,7 +122,8 @@ class AuthRepository(
             secureStorageManager.userEmail = userDto.email ?: trimmedEmail
             secureStorageManager.userName = trimmedUsername
 
-            // Migrate local guest data to newly registered user
+            // Update active user in UserSyncRepository and migrate guest data
+            userSyncRepository.updateActiveUser(userDto.id)
             userSyncRepository.migrateGuestDataToUser(userDto.id)
 
             val user = User(
@@ -127,14 +134,12 @@ class AuthRepository(
             )
             _currentUser.value = user
             _isLoggedIn.value = true
+            _authState.value = AuthState.Authenticated(user)
 
             try {
-                val syncRes = networkModule.cinepvqApi.syncUser()
-                if (!syncRes.isSuccessful) {
-                    Log.w("AuthRepository", "syncUser server error HTTP ${syncRes.code()}: ${syncRes.message()}")
-                }
+                userSyncRepository.syncAll()
             } catch (e: Exception) {
-                Log.e("AuthRepository", "syncUser network failed: ${e.message}", e)
+                Log.e("AuthRepository", "syncAll failed after signUp: ${e.message}", e)
             }
 
             user
@@ -158,6 +163,7 @@ class AuthRepository(
         userSyncRepository.onUserLoggedOut()
         _currentUser.value = null
         _isLoggedIn.value = false
+        _authState.value = AuthState.Unauthenticated
     }
 
     suspend fun updateProfile(username: String?, avatarUrl: String?): Result<User> = runCatching {

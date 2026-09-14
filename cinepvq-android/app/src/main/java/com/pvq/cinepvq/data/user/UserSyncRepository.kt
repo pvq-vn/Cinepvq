@@ -22,7 +22,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
-import java.text.SimpleDateFormat
 import java.util.*
 
 data class SyncResultSummary(
@@ -48,9 +47,7 @@ class UserSyncRepository(
     private var progressSyncJob: Job? = null
     private var pendingProgress: HistoryActionRequest? = null
 
-    private val isoDateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
-        timeZone = TimeZone.getTimeZone("UTC")
-    }
+
 
     fun updateActiveUser(userId: String) {
         activeUserIdFlow.value = userId
@@ -82,7 +79,7 @@ class UserSyncRepository(
         val slug = movie.slug
         val currentUid = secureStorageManager.activeUserId
         val exists = favoriteDao.isFavoriteDirect(currentUid, slug)
-        val nowIso = isoDateFormat.format(Date())
+        val nowIso = IsoTimestampHelper.nowIso()
 
         if (exists) {
             favoriteDao.deleteBySlug(currentUid, slug)
@@ -195,7 +192,7 @@ class UserSyncRepository(
         duration: Long
     ) {
         val currentUid = secureStorageManager.activeUserId
-        val nowIso = isoDateFormat.format(Date())
+        val nowIso = IsoTimestampHelper.nowIso()
 
         // 1. Update local Room SQLite immediately with user namespace
         val entity = WatchHistoryEntity(
@@ -311,7 +308,7 @@ class UserSyncRepository(
         val slug = movie.slug
         val currentUid = secureStorageManager.activeUserId
         val exists = watchLaterDao.isInWatchLaterDirect(currentUid, slug)
-        val nowIso = isoDateFormat.format(Date())
+        val nowIso = IsoTimestampHelper.nowIso()
 
         if (exists) {
             watchLaterDao.deleteBySlug(currentUid, slug)
@@ -414,9 +411,13 @@ class UserSyncRepository(
         activeUserIdFlow.value = newUserId
     }
 
-    // ── Two-Way Synchronizer (Web <-> Android Conflict Handling) ──────────────
-
     suspend fun testConnection(): Result<Long> = networkModule.testConnection()
+
+    /**
+     * Complete synchronization of user identity (/api/user/sync) and two-way sync
+     * for Favorites, Watch History, and Watchlist into Room SQLite database.
+     */
+    suspend fun syncAll(): Result<SyncResultSummary> = syncWithServer()
 
     suspend fun syncWithServer(): Result<SyncResultSummary> = withContext(Dispatchers.IO) {
         if (!secureStorageManager.isLoggedIn) {
@@ -427,6 +428,25 @@ class UserSyncRepository(
             ?: return@withContext Result.failure(Exception("Không có User ID xác thực"))
 
         activeUserIdFlow.value = currentUid
+
+        // 0. Sync User Profile Identity with backend (/api/user/sync)
+        try {
+            val userSyncRes = networkModule.cinepvqApi.syncUser()
+            if (userSyncRes.isSuccessful && userSyncRes.body()?.user != null) {
+                val profile = userSyncRes.body()!!.user!!
+                secureStorageManager.userName = profile.username
+                if (!profile.avatarUrl.isNullOrBlank()) {
+                    secureStorageManager.userAvatar = profile.avatarUrl
+                }
+                Log.d("UserSyncRepo", "syncUser (/api/user/sync) succeeded for: ${profile.username}")
+            } else {
+                val code = userSyncRes.code()
+                val msg = userSyncRes.message().ifBlank { "Lỗi phản hồi" }
+                Log.w("UserSyncRepo", "syncUser (/api/user/sync) returned HTTP $code: $msg")
+            }
+        } catch (e: Exception) {
+            Log.e("UserSyncRepo", "syncUser (/api/user/sync) network failure: ${e.message}", e)
+        }
 
         val errors = mutableListOf<String>()
         var favCount = 0
@@ -451,7 +471,7 @@ class UserSyncRepository(
                         thumbUrl = r.thumb_url,
                         quality = r.quality,
                         currentEpisode = r.current_episode,
-                        addedAt = r.addedAt ?: ""
+                        addedAt = if (!r.addedAt.isNullOrBlank()) r.addedAt else IsoTimestampHelper.nowIso()
                     )
                 }
                 favoriteDao.insertAll(entities)
@@ -471,7 +491,7 @@ class UserSyncRepository(
                                     thumb_url = f.thumbUrl,
                                     quality = f.quality,
                                     current_episode = f.currentEpisode,
-                                    addedAt = f.addedAt
+                                    addedAt = f.addedAt.ifBlank { IsoTimestampHelper.nowIso() }
                                 )
                             }
                         )
@@ -518,7 +538,7 @@ class UserSyncRepository(
                                 episodeName = r.episodeName,
                                 currentTime = r.currentTime,
                                 duration = r.duration,
-                                updatedAt = r.updatedAt ?: ""
+                                updatedAt = if (!r.updatedAt.isNullOrBlank()) r.updatedAt else IsoTimestampHelper.nowIso()
                             )
                         )
                     } else {
@@ -533,7 +553,7 @@ class UserSyncRepository(
                                 episodeName = local.episodeName,
                                 currentTime = local.currentTime,
                                 duration = local.duration,
-                                updatedAt = local.updatedAt
+                                updatedAt = local.updatedAt.ifBlank { IsoTimestampHelper.nowIso() }
                             )
                         )
                     }
@@ -553,7 +573,7 @@ class UserSyncRepository(
                             episodeName = local.episodeName,
                             currentTime = local.currentTime,
                             duration = local.duration,
-                            updatedAt = local.updatedAt
+                            updatedAt = local.updatedAt.ifBlank { IsoTimestampHelper.nowIso() }
                         )
                     )
                 }
@@ -596,7 +616,7 @@ class UserSyncRepository(
                                 name = r.name,
                                 originalName = r.original_name,
                                 thumbUrl = r.thumb_url,
-                                addedAt = r.addedAt ?: ""
+                                addedAt = if (!r.addedAt.isNullOrBlank()) r.addedAt else IsoTimestampHelper.nowIso()
                             )
                         )
                     }
@@ -614,7 +634,7 @@ class UserSyncRepository(
                                     name = f.name,
                                     original_name = f.originalName,
                                     thumb_url = f.thumbUrl,
-                                    addedAt = f.addedAt
+                                    addedAt = f.addedAt.ifBlank { IsoTimestampHelper.nowIso() }
                                 )
                             }
                         )
@@ -648,14 +668,7 @@ class UserSyncRepository(
         }
     }
 
-    private fun parseTime(iso: String?): Long {
-        if (iso.isNullOrBlank()) return 0L
-        return try {
-            isoDateFormat.parse(iso)?.time ?: 0L
-        } catch (_: Exception) {
-            0L
-        }
-    }
+    private fun parseTime(iso: String?): Long = IsoTimestampHelper.parseIsoToEpochMillis(iso)
 
     private fun FavoriteMovieEntity.toDomain() = FavoriteMovie(
         slug = slug,

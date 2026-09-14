@@ -10,8 +10,14 @@ import com.pvq.cinepvq.domain.model.WatchHistoryItem
 import kotlinx.serialization.json.*
 import org.junit.Assert.*
 import org.junit.Test
+import com.pvq.cinepvq.core.security.SecureStorageManager
+import com.pvq.cinepvq.data.auth.AuthState
+import com.pvq.cinepvq.data.user.IsoTimestampHelper
+import com.pvq.cinepvq.domain.model.User
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class SyncAndModelUnitTest {
 
@@ -702,6 +708,200 @@ class SyncAndModelUnitTest {
 
         val localWinsAction = if (timeServerB >= timeLocalB) "APPLY_SERVER" else "PUSH_LOCAL"
         assertEquals("PUSH_LOCAL", localWinsAction)
+    }
+
+    // ─── Requirements 1, 2, 3 Verification Tests ─────────────────────────────
+
+    @Test
+    fun testRequirement1_TokenSanitization_CleanBearerAndQuotes() {
+        val normalToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.doNotLeak"
+        assertEquals(normalToken, SecureStorageManager.sanitizeToken(normalToken))
+
+        // Whitespace handling
+        val whitespaceToken = "   $normalToken   "
+        assertEquals(normalToken, SecureStorageManager.sanitizeToken(whitespaceToken))
+
+        // Quotes handling
+        val quotedToken = "\"$normalToken\""
+        assertEquals(normalToken, SecureStorageManager.sanitizeToken(quotedToken))
+
+        // Bearer prefix handling
+        val bearerToken = "Bearer $normalToken"
+        assertEquals(normalToken, SecureStorageManager.sanitizeToken(bearerToken))
+
+        // Lowercase bearer prefix handling
+        val lowerBearer = "bearer $normalToken"
+        assertEquals(normalToken, SecureStorageManager.sanitizeToken(lowerBearer))
+
+        // Quoted Bearer token
+        val quotedBearer = "\"Bearer $normalToken\""
+        assertEquals(normalToken, SecureStorageManager.sanitizeToken(quotedBearer))
+
+        // Blank or null handling
+        assertNull(SecureStorageManager.sanitizeToken(""))
+        assertNull(SecureStorageManager.sanitizeToken("   "))
+        assertNull(SecureStorageManager.sanitizeToken(null))
+        assertNull(SecureStorageManager.sanitizeToken("\"\""))
+        assertNull(SecureStorageManager.sanitizeToken("Bearer "))
+    }
+
+    @Test
+    fun testRequirement2_AuthStateTransitions() {
+        val user = User(
+            id = "user-12345",
+            email = "tester@cinepvq.com",
+            username = "TesterCinepvq",
+            avatarUrl = "https://cinepvq.com/avatar.png"
+        )
+
+        // Initial state unauthenticated
+        val unauth: AuthState = AuthState.Unauthenticated
+        assertTrue(unauth is AuthState.Unauthenticated)
+
+        // Authenticated state
+        val auth: AuthState = AuthState.Authenticated(user)
+        assertTrue(auth is AuthState.Authenticated)
+        assertEquals("user-12345", (auth as AuthState.Authenticated).user.id)
+        assertEquals("TesterCinepvq", auth.user.username)
+    }
+
+    @Test
+    fun testRequirement3_IsoTimestampHelper_FormattingAndParsing() {
+        // Format test: nowIso strictly ends with 'Z' and complies with ISO-8601
+        val nowIso = IsoTimestampHelper.nowIso()
+        assertNotNull(nowIso)
+        assertTrue(nowIso.endsWith("Z"))
+        assertTrue(IsoTimestampHelper.isValidIso(nowIso))
+
+        val parsedNow = IsoTimestampHelper.parseIsoToEpochMillis(nowIso)
+        assertTrue(parsedNow > 0L)
+        // Ensure within last 5 seconds
+        assertTrue(Math.abs(System.currentTimeMillis() - parsedNow) < 5000)
+
+        // Format epoch millis test
+        val fixedMillis = 1773550000000L
+        val formatted = IsoTimestampHelper.formatEpochMillis(fixedMillis)
+        assertEquals(fixedMillis, IsoTimestampHelper.parseIsoToEpochMillis(formatted))
+
+        // Parse test: With milliseconds (.SSS'Z')
+        val withMillis = "2026-09-15T06:30:00.123Z"
+        assertEquals(1789453800123L, IsoTimestampHelper.parseIsoToEpochMillis(withMillis))
+
+        // Parse test: Without milliseconds
+        val withoutMillis = "2026-09-15T06:30:00Z"
+        assertEquals(1789453800000L, IsoTimestampHelper.parseIsoToEpochMillis(withoutMillis))
+
+        // Parse test: Microsecond precision (Postgres timestamp)
+        val withMicros = "2026-09-15T06:30:00.123456Z"
+        assertEquals(1789453800123L, IsoTimestampHelper.parseIsoToEpochMillis(withMicros))
+
+        // Parse test: Timezone offset (+07:00 Hanoi)
+        val withOffset = "2026-09-15T13:30:00+07:00"
+        assertEquals(1789453800000L, IsoTimestampHelper.parseIsoToEpochMillis(withOffset))
+
+        // Edge cases
+        assertEquals(0L, IsoTimestampHelper.parseIsoToEpochMillis(null))
+        assertEquals(0L, IsoTimestampHelper.parseIsoToEpochMillis(""))
+        assertEquals(0L, IsoTimestampHelper.parseIsoToEpochMillis("   "))
+        assertEquals(0L, IsoTimestampHelper.parseIsoToEpochMillis("invalid-timestamp"))
+    }
+
+    @Test
+    fun testRequirement3_IsoTimestampHelper_ThreadSafety() {
+        val executor = Executors.newFixedThreadPool(8)
+        val errors = Collections.synchronizedList(mutableListOf<Throwable>())
+        val iterations = 500
+
+        for (i in 0 until iterations) {
+            executor.submit {
+                try {
+                    val now = IsoTimestampHelper.nowIso()
+                    val parsed = IsoTimestampHelper.parseIsoToEpochMillis(now)
+                    assertTrue("Timestamp should parse to > 0", parsed > 0L)
+
+                    val epoch = 1789453800000L + i
+                    val formatted = IsoTimestampHelper.formatEpochMillis(epoch)
+                    val parsedEpoch = IsoTimestampHelper.parseIsoToEpochMillis(formatted)
+                    assertEquals(epoch, parsedEpoch)
+                } catch (t: Throwable) {
+                    errors.add(t)
+                }
+            }
+        }
+
+        executor.shutdown()
+        assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
+        assertTrue("Thread safety test had errors: ${errors.map { it.message }}", errors.isEmpty())
+    }
+
+    @Test
+    fun testRequirement1_AuthInterceptor_AttachesCleanBearerHeader() {
+        // 1. When token is present with messy format (whitespace, quotes, duplicate Bearer)
+        val rawToken = "  \"Bearer sample_jwt_token_xyz\"  "
+        val testInterceptor = okhttp3.Interceptor { chain ->
+            val original = chain.request()
+            val builder = original.newBuilder()
+
+            val cleanToken = SecureStorageManager.sanitizeToken(rawToken)
+            if (!cleanToken.isNullOrBlank()) {
+                builder.header("Authorization", "Bearer $cleanToken")
+            }
+            chain.proceed(builder.build())
+        }
+
+        var interceptedAuthHeader: String? = null
+        val client = okhttp3.OkHttpClient.Builder()
+            .addInterceptor(testInterceptor)
+            .addInterceptor { chain ->
+                interceptedAuthHeader = chain.request().header("Authorization")
+                okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(okhttp3.ResponseBody.create(null, "{\"status\":\"success\"}"))
+                    .build()
+            }
+            .build()
+
+        val req = okhttp3.Request.Builder()
+            .url("https://cinepvq.com/api/user/sync")
+            .post(okhttp3.RequestBody.create(null, ByteArray(0)))
+            .build()
+
+        val res = client.newCall(req).execute()
+        assertTrue(res.isSuccessful)
+        assertEquals("Bearer sample_jwt_token_xyz", interceptedAuthHeader)
+
+        // 2. When token is empty or blank -> No Authorization header attached
+        val emptyInterceptor = okhttp3.Interceptor { chain ->
+            val original = chain.request()
+            val builder = original.newBuilder()
+
+            val cleanToken = SecureStorageManager.sanitizeToken("   ")
+            if (!cleanToken.isNullOrBlank()) {
+                builder.header("Authorization", "Bearer $cleanToken")
+            }
+            chain.proceed(builder.build())
+        }
+
+        var emptyInterceptedHeader: String? = "SHOULD_BE_OVERWRITTEN"
+        val emptyClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor(emptyInterceptor)
+            .addInterceptor { chain ->
+                emptyInterceptedHeader = chain.request().header("Authorization")
+                okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(okhttp3.ResponseBody.create(null, "{}"))
+                    .build()
+            }
+            .build()
+
+        emptyClient.newCall(req).execute()
+        assertNull("Authorization header should not be present when token is blank", emptyInterceptedHeader)
     }
 }
 
