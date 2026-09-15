@@ -81,22 +81,23 @@ class SecureStorageManager(context: Context) {
     }
 
     fun getDefaultBackendUrl(): String {
-        return if (BuildConfig.DEBUG) {
-            if (isEmulator()) {
-                BuildConfig.DEFAULT_EMULATOR_URL
-            } else {
-                BuildConfig.DEFAULT_DEV_LAN_URL
-            }
-        } else {
-            BuildConfig.DEFAULT_PROD_URL
-        }
+        return BuildConfig.DEFAULT_PROD_URL
     }
 
     var backendBaseUrl: String
         get() {
             val saved = prefs.getString(KEY_BACKEND_URL, null)
-            // Auto-heal legacy broken 127.0.0.1 on real devices
-            if (saved.isNullOrBlank() || (!isEmulator() && saved.contains("127.0.0.1"))) {
+            // Auto-heal legacy broken or unreachable URLs:
+            // 1. empty or blank
+            // 2. Contains 127.0.0.1 or localhost (unreachable on real devices)
+            // 3. Contains 10.0.2.2 on real devices
+            // 4. Contains 192.168.1.80 (old hardcoded LAN IP)
+            // 5. Contains cinepvq-web.vercel.app (old 404 domain)
+            if (saved.isNullOrBlank() ||
+                saved.contains("cinepvq-web.vercel.app") ||
+                saved.contains("192.168.1.80") ||
+                (!isEmulator() && (saved.contains("127.0.0.1") || saved.contains("localhost") || saved.contains("10.0.2.2")))
+            ) {
                 return getDefaultBackendUrl()
             }
             return if (saved.endsWith("/")) saved else "$saved/"

@@ -53,7 +53,7 @@ class NetworkModule(private val secureStorageManager: SecureStorageManager) {
         val cleanToken = SecureStorageManager.sanitizeToken(rawToken)
         if (!cleanToken.isNullOrBlank()) {
             builder.header("Authorization", "Bearer $cleanToken")
-            Log.d("NetworkModule", "AuthInterceptor: attached Bearer token to ${original.method} ${original.url.encodedPath}")
+            Log.d("NetworkModule", "AuthInterceptor: attached Bearer token (prefix=${cleanToken.take(8)}..., len=${cleanToken.length}) to ${original.method} ${original.url.encodedPath}")
         } else {
             Log.w("NetworkModule", "AuthInterceptor: NO token available for ${original.method} ${original.url.encodedPath}")
         }
@@ -90,7 +90,7 @@ class NetworkModule(private val secureStorageManager: SecureStorageManager) {
             if (refreshRes.isSuccessful) {
                 val bodyStr = refreshRes.body?.string() ?: return@Authenticator null
                 val authRes = json.decodeFromString<SupabaseAuthResponse>(bodyStr)
-                val newAccess = authRes.accessToken
+                val newAccess = SecureStorageManager.sanitizeToken(authRes.accessToken)
                 if (!newAccess.isNullOrBlank()) {
                     secureStorageManager.accessToken = newAccess
                     if (!authRes.refreshToken.isNullOrBlank()) {

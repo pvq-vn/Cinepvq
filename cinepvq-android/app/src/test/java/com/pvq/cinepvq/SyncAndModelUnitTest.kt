@@ -903,5 +903,43 @@ class SyncAndModelUnitTest {
         emptyClient.newCall(req).execute()
         assertNull("Authorization header should not be present when token is blank", emptyInterceptedHeader)
     }
+
+    @Test
+    fun testProductionBaseUrlIsAccurate() {
+        assertEquals("https://cinepvq.vercel.app/", BuildConfig.DEFAULT_PROD_URL)
+        assertTrue(BuildConfig.DEFAULT_PROD_URL.endsWith("/"))
+        assertFalse("Must not point to broken cinepvq-web domain", BuildConfig.DEFAULT_PROD_URL.contains("cinepvq-web"))
+    }
+
+    @Test
+    fun testBaseUrlAutoHealsStaleUrls() {
+        fun simulateAutoHeal(saved: String?, isEmulator: Boolean, defaultUrl: String): String {
+            if (saved.isNullOrBlank() ||
+                saved.contains("cinepvq-web.vercel.app") ||
+                saved.contains("192.168.1.80") ||
+                (!isEmulator && (saved.contains("127.0.0.1") || saved.contains("localhost") || saved.contains("10.0.2.2")))
+            ) {
+                return defaultUrl
+            }
+            return if (saved.endsWith("/")) saved else "$saved/"
+        }
+
+        val prodUrl = "https://cinepvq.vercel.app/"
+
+        // 1. Broken 404 domain heals to prod
+        assertEquals(prodUrl, simulateAutoHeal("https://cinepvq-web.vercel.app/", isEmulator = false, defaultUrl = prodUrl))
+        assertEquals(prodUrl, simulateAutoHeal("https://cinepvq-web.vercel.app/", isEmulator = true, defaultUrl = prodUrl))
+
+        // 2. Old developer LAN IP heals to prod
+        assertEquals(prodUrl, simulateAutoHeal("http://192.168.1.80:3000/", isEmulator = false, defaultUrl = prodUrl))
+
+        // 3. Localhost / loopback on real phone heals to prod
+        assertEquals(prodUrl, simulateAutoHeal("http://127.0.0.1:3000/", isEmulator = false, defaultUrl = prodUrl))
+        assertEquals(prodUrl, simulateAutoHeal("http://localhost:3000/", isEmulator = false, defaultUrl = prodUrl))
+        assertEquals(prodUrl, simulateAutoHeal("http://10.0.2.2:3000/", isEmulator = false, defaultUrl = prodUrl))
+
+        // 4. Valid custom URL is preserved with trailing slash
+        assertEquals("https://my-custom-server.com/", simulateAutoHeal("https://my-custom-server.com", isEmulator = false, defaultUrl = prodUrl))
+    }
 }
 

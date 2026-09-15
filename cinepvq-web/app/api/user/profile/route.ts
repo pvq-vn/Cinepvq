@@ -76,7 +76,7 @@ export async function PATCH(request: NextRequest) {
     }
 
     // 1. Update Supabase Auth user metadata
-    const supabase = await createServerSupabase();
+    const supabase = await createServerSupabase(request);
     if (supabase) {
       const metaUpdates: Record<string, unknown> = {};
       if (username) metaUpdates.username = username.trim();

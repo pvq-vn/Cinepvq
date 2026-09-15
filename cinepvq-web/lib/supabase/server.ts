@@ -16,12 +16,20 @@ export function isSupabaseAuthConfigured(): boolean {
   );
 }
 
-export async function createServerSupabase() {
+export async function createServerSupabase(request?: NextRequest) {
   if (!isSupabaseAuthConfigured()) {
     return null;
   }
 
   const cookieStore = await cookies();
+
+  let bearerToken: string | null = null;
+  if (request) {
+    const authHeader = request.headers.get("authorization");
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      bearerToken = authHeader.substring(7).trim() || null;
+    }
+  }
 
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -41,6 +49,15 @@ export async function createServerSupabase() {
           }
         },
       },
+      ...(bearerToken
+        ? {
+            global: {
+              headers: {
+                Authorization: `Bearer ${bearerToken}`,
+              },
+            },
+          }
+        : {}),
     }
   );
 }
@@ -51,7 +68,7 @@ export async function createServerSupabase() {
  * Never trusts any client-provided userId parameter.
  */
 export async function getAuthenticatedUser(request?: NextRequest): Promise<User | null> {
-  const supabase = await createServerSupabase();
+  const supabase = await createServerSupabase(request);
   if (!supabase) return null;
 
   // 1. Check Bearer token from Authorization header if present

@@ -20,13 +20,13 @@ android {
 
         // Backend URL Configurations
         buildConfigField("String", "DEFAULT_EMULATOR_URL", "\"http://10.0.2.2:3000/\"")
-        buildConfigField("String", "DEFAULT_DEV_LAN_URL", "\"http://192.168.1.80:3000/\"")
-        buildConfigField("String", "DEFAULT_PROD_URL", "\"https://cinepvq-web.vercel.app/\"")
+        buildConfigField("String", "DEFAULT_DEV_LAN_URL", "\"https://cinepvq.vercel.app/\"")
+        buildConfigField("String", "DEFAULT_PROD_URL", "\"https://cinepvq.vercel.app/\"")
     }
 
     buildTypes {
         debug {
-            buildConfigField("String", "BASE_BACKEND_URL", "\"http://192.168.1.80:3000/\"")
+            buildConfigField("String", "BASE_BACKEND_URL", "\"https://cinepvq.vercel.app/\"")
         }
         release {
             isMinifyEnabled = false
@@ -34,7 +34,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            buildConfigField("String", "BASE_BACKEND_URL", "\"https://cinepvq-web.vercel.app/\"")
+            buildConfigField("String", "BASE_BACKEND_URL", "\"https://cinepvq.vercel.app/\"")
         }
     }
     compileOptions {
