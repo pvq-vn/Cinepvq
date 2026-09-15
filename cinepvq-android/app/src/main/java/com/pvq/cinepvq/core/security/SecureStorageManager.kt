@@ -141,6 +141,73 @@ class SecureStorageManager(context: Context) {
         }
     }
 
+    // ── Episode Playback Progress (Prevents cross-episode overwrites) ───────
+
+    fun saveEpisodeProgress(userId: String, movieSlug: String, episodeSlug: String, currentTime: Long, duration: Long) {
+        if (movieSlug.isBlank() || episodeSlug.isBlank()) return
+        val keyPos = "ep_pos_${userId}_${movieSlug}_${episodeSlug}"
+        val keyDur = "ep_dur_${userId}_${movieSlug}_${episodeSlug}"
+        prefs.edit()
+            .putLong(keyPos, currentTime)
+            .putLong(keyDur, duration)
+            .apply()
+    }
+
+    fun getEpisodeProgress(userId: String, movieSlug: String, episodeSlug: String): Long {
+        if (movieSlug.isBlank() || episodeSlug.isBlank()) return 0L
+        val keyPos = "ep_pos_${userId}_${movieSlug}_${episodeSlug}"
+        return prefs.getLong(keyPos, 0L)
+    }
+
+    fun getEpisodeDuration(userId: String, movieSlug: String, episodeSlug: String): Long {
+        if (movieSlug.isBlank() || episodeSlug.isBlank()) return 0L
+        val keyDur = "ep_dur_${userId}_${movieSlug}_${episodeSlug}"
+        return prefs.getLong(keyDur, 0L)
+    }
+
+    fun migrateEpisodeProgress(fromUserId: String, toUserId: String) {
+        if (fromUserId == toUserId) return
+        val prefixPos = "ep_pos_${fromUserId}_"
+        val prefixDur = "ep_dur_${fromUserId}_"
+        val editor = prefs.edit()
+        val all = prefs.all
+        for ((k, v) in all) {
+            if (k.startsWith(prefixPos) && v is Long) {
+                val suffix = k.removePrefix(prefixPos)
+                editor.putLong("ep_pos_${toUserId}_$suffix", v)
+            } else if (k.startsWith(prefixDur) && v is Long) {
+                val suffix = k.removePrefix(prefixDur)
+                editor.putLong("ep_dur_${toUserId}_$suffix", v)
+            }
+        }
+        editor.apply()
+    }
+
+    fun removeEpisodeProgressForMovie(userId: String, movieSlug: String) {
+        val prefixPos = "ep_pos_${userId}_${movieSlug}_"
+        val prefixDur = "ep_dur_${userId}_${movieSlug}_"
+        val editor = prefs.edit()
+        for (k in prefs.all.keys) {
+            if (k.startsWith(prefixPos) || k.startsWith(prefixDur)) {
+                editor.remove(k)
+            }
+        }
+        editor.apply()
+    }
+
+    fun clearEpisodeProgress(userId: String) {
+        val prefixPos = "ep_pos_${userId}_"
+        val prefixDur = "ep_dur_${userId}_"
+        val editor = prefs.edit()
+        for (k in prefs.all.keys) {
+            if (k.startsWith(prefixPos) || k.startsWith(prefixDur)) {
+                editor.remove(k)
+            }
+        }
+        editor.apply()
+    }
+
+
     companion object {
         const val GUEST_USER_ID = "guest"
         private const val PREFS_FILENAME = "cinepvq_secure_prefs"

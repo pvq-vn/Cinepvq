@@ -941,5 +941,139 @@ class SyncAndModelUnitTest {
         // 4. Valid custom URL is preserved with trailing slash
         assertEquals("https://my-custom-server.com/", simulateAutoHeal("https://my-custom-server.com", isEmulator = false, defaultUrl = prodUrl))
     }
+
+    // ─── Per-Episode Playback & Resume Position Tests ─────────────────────────
+
+    @Test
+    fun testEpisodeResumePositionRules() {
+        // Model the stored progress:
+        // Ep 5: watched to 29:36 (1776s), duration 2400s
+        // Ep 6: watched to 18:25 (1105s), duration 2400s
+        // Ep 7: not watched (0s), duration 2400s
+        // Ep 8: completed near end (2390s of 2400s, <15s left)
+        val episodeProgressMap = mutableMapOf(
+            "tap-5" to (1776L to 2400L),
+            "tap-6" to (1105L to 2400L),
+            "tap-8" to (2390L to 2400L)
+        )
+
+        fun resolveResumePosition(
+            targetEpSlug: String,
+            isServerSwitchOnSameEp: Boolean,
+            currentPositionMs: Long
+        ): Long {
+            // Rule 1: Same episode + different server/translation => preserve current playback position
+            if (isServerSwitchOnSameEp && currentPositionMs > 0L) {
+                return currentPositionMs
+            }
+
+            // Rule 2: Different episode => query stored progress for THAT episode
+            val (posSec, durSec) = episodeProgressMap[targetEpSlug] ?: (0L to 0L)
+            if (posSec > 0L) {
+                val isNearEnd = durSec > 0L && (durSec - posSec < 15 || (posSec.toFloat() / durSec) >= 0.95f)
+                if (!isNearEnd) {
+                    return posSec * 1000L
+                }
+            }
+
+            // Rule 3: Episode never watched or near end => 0 ms
+            return 0L
+        }
+
+        // Scenario: Currently at Episode 6 (18:25 -> 1,105,000 ms)
+        val currentPositionMs = 1105 * 1000L
+
+        // Case A: User clicks Next -> Ep 7 (never watched)
+        // MUST NOT use 18:25! MUST start at 0:00!
+        val nextPos = resolveResumePosition(
+            targetEpSlug = "tap-7",
+            isServerSwitchOnSameEp = false,
+            currentPositionMs = currentPositionMs
+        )
+        assertEquals(0L, nextPos)
+
+        // Case B: User clicks Previous -> Ep 5 (watched to 29:36)
+        // MUST NOT use 18:25! MUST resume at 29:36 (1,776,000 ms)!
+        val prevPos = resolveResumePosition(
+            targetEpSlug = "tap-5",
+            isServerSwitchOnSameEp = false,
+            currentPositionMs = currentPositionMs
+        )
+        assertEquals(1776 * 1000L, prevPos)
+
+        // Case C: User switches server / translation for the SAME Episode 6
+        // MUST preserve current position at 18:25 (1,105,000 ms)!
+        val sameEpServerSwitchPos = resolveResumePosition(
+            targetEpSlug = "tap-6",
+            isServerSwitchOnSameEp = true,
+            currentPositionMs = currentPositionMs
+        )
+        assertEquals(1105 * 1000L, sameEpServerSwitchPos)
+
+        // Case D: User directly selects Ep 5 from episode selector sheet
+        val directSelectPos = resolveResumePosition(
+            targetEpSlug = "tap-5",
+            isServerSwitchOnSameEp = false,
+            currentPositionMs = currentPositionMs
+        )
+        assertEquals(1776 * 1000L, directSelectPos)
+
+        // Case E: User selects Ep 8 which was completed / near end (> 95% or < 15s remaining)
+        // MUST restart from 0:00
+        val completedEpPos = resolveResumePosition(
+            targetEpSlug = "tap-8",
+            isServerSwitchOnSameEp = false,
+            currentPositionMs = currentPositionMs
+        )
+        assertEquals(0L, completedEpPos)
+    }
+
+    @Test
+    fun testPerEpisodeProgressStorageUserIsolation() {
+        val memoryStore = mutableMapOf<String, Long>()
+
+        fun makeKey(userId: String, movieSlug: String, epSlug: String, isDuration: Boolean = false): String {
+            val prefix = if (isDuration) "ep_dur_" else "ep_pos_"
+            return "${prefix}${userId}_${movieSlug}_${epSlug}"
+        }
+
+        fun saveProgress(userId: String, movieSlug: String, epSlug: String, posSec: Long, durSec: Long) {
+            memoryStore[makeKey(userId, movieSlug, epSlug, isDuration = false)] = posSec
+            memoryStore[makeKey(userId, movieSlug, epSlug, isDuration = true)] = durSec
+        }
+
+        fun getProgress(userId: String, movieSlug: String, epSlug: String): Long {
+            return memoryStore[makeKey(userId, movieSlug, epSlug, isDuration = false)] ?: 0L
+        }
+
+        // Guest watches Ep 1 to 500s
+        saveProgress("guest", "movie-x", "tap-1", 500L, 2400L)
+        // User A watches Ep 1 to 1200s
+        saveProgress("user-a", "movie-x", "tap-1", 1200L, 2400L)
+        // User B has not watched Ep 1
+        assertEquals(500L, getProgress("guest", "movie-x", "tap-1"))
+        assertEquals(1200L, getProgress("user-a", "movie-x", "tap-1"))
+        assertEquals(0L, getProgress("user-b", "movie-x", "tap-1"))
+
+        // Guest migration to User C
+        val guestKeys = memoryStore.keys.filter { it.contains("_guest_") }.toList()
+        for (k in guestKeys) {
+            val v = memoryStore[k] ?: continue
+            val newKey = k.replace("_guest_", "_user-c_")
+            memoryStore[newKey] = v
+        }
+        assertEquals(500L, getProgress("user-c", "movie-x", "tap-1"))
+
+        // Clear history for User A only
+        val userAKeys = memoryStore.keys.filter { it.contains("_user-a_") }.toList()
+        for (k in userAKeys) {
+            memoryStore.remove(k)
+        }
+        assertEquals(0L, getProgress("user-a", "movie-x", "tap-1"))
+        // User C and Guest remain intact
+        assertEquals(500L, getProgress("guest", "movie-x", "tap-1"))
+        assertEquals(500L, getProgress("user-c", "movie-x", "tap-1"))
+    }
 }
+
 

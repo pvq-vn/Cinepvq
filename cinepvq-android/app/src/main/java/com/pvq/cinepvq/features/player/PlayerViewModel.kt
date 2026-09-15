@@ -10,6 +10,7 @@ import com.pvq.cinepvq.domain.model.EpisodeItem
 import com.pvq.cinepvq.domain.model.MovieDetail
 import com.pvq.cinepvq.domain.model.StreamSource
 import com.pvq.cinepvq.domain.model.StreamType
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,6 +40,8 @@ class PlayerViewModel(
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
+    private var playerInitJob: Job? = null
+
     var initialResumePositionMs: Long = 0L
         private set
 
@@ -49,9 +52,11 @@ class PlayerViewModel(
         initialEmbedUrl: String? = null,
         resumePositionMs: Long? = null
     ) {
-        viewModelScope.launch {
+        playerInitJob?.cancel()
+        playerInitJob = viewModelScope.launch {
             _isLoadingStream.value = true
             _errorMessage.value = null
+            _activeStream.value = null
 
             // 1. Fetch movie detail
             val movieRes = movieRepository.getMovieDetail(slug)
@@ -92,17 +97,29 @@ class PlayerViewModel(
             _currentEpisode.value = targetEp
 
             // 4. Resume position logic:
-            // If explicit resumePositionMs passed (e.g. user toggled Vietsub -> Thuyết Minh at 11:46), use it!
+            // Case A: If explicit resumePositionMs passed (e.g. user toggled Vietsub -> Thuyết Minh at 18:25), use it!
             if (resumePositionMs != null && resumePositionMs > 0L) {
                 initialResumePositionMs = resumePositionMs
             } else {
                 initialResumePositionMs = 0L
-                val history = userSyncRepository.getHistoryDirect(slug)
-                if (history != null && history.episodeSlug == episodeSlug && history.currentTime > 0) {
-                    val dur = history.duration
-                    val isNearEnd = dur > 0 && (dur - history.currentTime < 15 || (history.currentTime.toFloat() / dur) >= 0.95f)
+                val targetSlug = targetEp.slug
+                val epProgressSec = userSyncRepository.getEpisodeProgress(slug, targetSlug)
+                val epDurationSec = userSyncRepository.getEpisodeDuration(slug, targetSlug)
+
+                if (epProgressSec > 0) {
+                    val isNearEnd = epDurationSec > 0 && (epDurationSec - epProgressSec < 15 || (epProgressSec.toFloat() / epDurationSec) >= 0.95f)
                     if (!isNearEnd) {
-                        initialResumePositionMs = history.currentTime * 1000L
+                        initialResumePositionMs = epProgressSec * 1000L
+                    }
+                } else {
+                    // Fallback to movie watch history if episode matches
+                    val history = userSyncRepository.getHistoryDirect(slug)
+                    if (history != null && history.episodeSlug == targetSlug && history.currentTime > 0) {
+                        val dur = history.duration
+                        val isNearEnd = dur > 0 && (dur - history.currentTime < 15 || (history.currentTime.toFloat() / dur) >= 0.95f)
+                        if (!isNearEnd) {
+                            initialResumePositionMs = history.currentTime * 1000L
+                        }
                     }
                 }
             }

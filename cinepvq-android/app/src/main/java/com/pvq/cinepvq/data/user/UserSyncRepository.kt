@@ -181,6 +181,26 @@ class UserSyncRepository(
         return historyDao.getHistoryBySlug(secureStorageManager.activeUserId, slug)
     }
 
+    // ── Episode Playback Progress Cache (Per-Episode Resume) ──────────────────
+
+    fun saveEpisodeProgress(movieSlug: String, episodeSlug: String?, currentTime: Long, duration: Long) {
+        if (episodeSlug.isNullOrBlank()) return
+        val uid = secureStorageManager.activeUserId
+        secureStorageManager.saveEpisodeProgress(uid, movieSlug, episodeSlug, currentTime, duration)
+    }
+
+    fun getEpisodeProgress(movieSlug: String, episodeSlug: String?): Long {
+        if (episodeSlug.isNullOrBlank()) return 0L
+        val uid = secureStorageManager.activeUserId
+        return secureStorageManager.getEpisodeProgress(uid, movieSlug, episodeSlug)
+    }
+
+    fun getEpisodeDuration(movieSlug: String, episodeSlug: String?): Long {
+        if (episodeSlug.isNullOrBlank()) return 0L
+        val uid = secureStorageManager.activeUserId
+        return secureStorageManager.getEpisodeDuration(uid, movieSlug, episodeSlug)
+    }
+
     suspend fun recordWatchProgress(
         movieSlug: String,
         movieName: String,
@@ -193,6 +213,11 @@ class UserSyncRepository(
     ) {
         val currentUid = secureStorageManager.activeUserId
         val nowIso = IsoTimestampHelper.nowIso()
+
+        // 0. Update per-episode progress cache
+        if (!episodeSlug.isNullOrBlank()) {
+            saveEpisodeProgress(movieSlug, episodeSlug, currentTime, duration)
+        }
 
         // 1. Update local Room SQLite immediately with user namespace
         val entity = WatchHistoryEntity(
@@ -251,6 +276,7 @@ class UserSyncRepository(
     suspend fun removeHistory(slug: String) {
         val currentUid = secureStorageManager.activeUserId
         historyDao.deleteBySlug(currentUid, slug)
+        secureStorageManager.removeEpisodeProgressForMovie(currentUid, slug)
         if (secureStorageManager.isLoggedIn) {
             repositoryScope.launch {
                 try {
@@ -270,6 +296,7 @@ class UserSyncRepository(
     suspend fun clearHistory() {
         val currentUid = secureStorageManager.activeUserId
         historyDao.clearByUser(currentUid)
+        secureStorageManager.clearEpisodeProgress(currentUid)
         if (secureStorageManager.isLoggedIn) {
             repositoryScope.launch {
                 try {
@@ -394,6 +421,7 @@ class UserSyncRepository(
                 }
             }
             historyDao.clearByUser(SecureStorageManager.GUEST_USER_ID)
+            secureStorageManager.migrateEpisodeProgress(SecureStorageManager.GUEST_USER_ID, newUserId)
         }
 
         // 3. Migrate guest watch later
@@ -541,6 +569,9 @@ class UserSyncRepository(
                                 updatedAt = if (!r.updatedAt.isNullOrBlank()) r.updatedAt else IsoTimestampHelper.nowIso()
                             )
                         )
+                        if (!r.episodeSlug.isNullOrBlank()) {
+                            saveEpisodeProgress(r.slug, r.episodeSlug, r.currentTime, r.duration)
+                        }
                     } else {
                         // Case B (local newer), Case F (newer episode in local): push local to server
                         itemsToPush.add(

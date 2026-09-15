@@ -28,12 +28,16 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.MediaItem
@@ -123,16 +127,27 @@ fun PlayerScreen(
     var showSeekHud by remember { mutableStateOf(qaSeek >= 0L) }
     var isSpeedBoosting by remember { mutableStateOf(false) }
 
-    // When server changes, preserve current playback position across versions
-    var lastLoadedServer by remember { mutableStateOf(serverName) }
-    LaunchedEffect(slug, episodeSlug, serverName) {
-        val resumePos = if (serverName != lastLoadedServer && currentPositionMs > 0L) {
-            currentPositionMs
-        } else {
-            null
+    // Fullscreen System Bars (Immersive mode, YouTube-like transient swipe)
+    val view = LocalView.current
+    DisposableEffect(isFullscreen) {
+        val window = (view.context as? Activity)?.window
+        if (window != null) {
+            val insetsController = WindowCompat.getInsetsController(window, view)
+            insetsController.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            if (isFullscreen) {
+                insetsController.hide(WindowInsetsCompat.Type.systemBars())
+            } else {
+                insetsController.show(WindowInsetsCompat.Type.systemBars())
+            }
         }
-        lastLoadedServer = serverName
-        viewModel.initializePlayer(slug, episodeSlug, serverName, embedUrl, resumePositionMs = resumePos)
+        onDispose {
+            val window = (view.context as? Activity)?.window
+            if (window != null) {
+                val insetsController = WindowCompat.getInsetsController(window, view)
+                insetsController.show(WindowInsetsCompat.Type.systemBars())
+            }
+        }
     }
 
     val movie by viewModel.movie.collectAsStateWithLifecycle()
@@ -171,6 +186,9 @@ fun PlayerScreen(
                     if (playbackState == Player.STATE_READY) {
                         durationMs = duration.coerceAtLeast(0L)
                     } else if (playbackState == Player.STATE_ENDED) {
+                        if (activeStream?.type == StreamType.HLS_DIRECT && duration > 0) {
+                            viewModel.recordProgress(episodeSlug, duration, duration)
+                        }
                         val nextEp = viewModel.getNextEpisode()
                         if (nextEp != null) {
                             onSwitchEpisode(slug, nextEp.slug)
@@ -179,6 +197,39 @@ fun PlayerScreen(
                 }
             })
         }
+    }
+
+    // When server or episode changes, cleanly transition stream and manage resume position
+    var lastLoadedServer by remember { mutableStateOf(serverName) }
+    var lastLoadedEpisode by remember { mutableStateOf(episodeSlug) }
+
+    LaunchedEffect(slug, episodeSlug, serverName) {
+        val isEpisodeChanged = (episodeSlug != lastLoadedEpisode)
+        val isServerChanged = (serverName != lastLoadedServer)
+
+        if (isEpisodeChanged) {
+            // Flush progress for the episode we are leaving before switching
+            if (activeStream?.type == StreamType.HLS_DIRECT && exoPlayer.duration > 0) {
+                viewModel.recordProgress(lastLoadedEpisode, exoPlayer.currentPosition, exoPlayer.duration)
+            }
+            // Cleanly stop and reset media on the existing ExoPlayer instance
+            exoPlayer.stop()
+            exoPlayer.clearMediaItems()
+            currentPositionMs = 0L
+            durationMs = 0L
+        }
+
+        // Only preserve current playback position if switching server/translation for the SAME episode!
+        val resumePos = if (isServerChanged && !isEpisodeChanged && currentPositionMs > 0L) {
+            currentPositionMs
+        } else {
+            null
+        }
+
+        lastLoadedEpisode = episodeSlug
+        lastLoadedServer = serverName
+
+        viewModel.initializePlayer(slug, episodeSlug, serverName, embedUrl, resumePositionMs = resumePos)
     }
 
     // Load stream into ExoPlayer with clean state reset
@@ -231,8 +282,8 @@ fun PlayerScreen(
         }
     }
 
-    // Lifecycle cleanup
-    DisposableEffect(exoPlayer, episodeSlug) {
+    // Lifecycle cleanup - Keyed ONLY to exoPlayer so it is NOT released on episode switch
+    DisposableEffect(exoPlayer) {
         onDispose {
             if (activeStream?.type == StreamType.HLS_DIRECT && exoPlayer.duration > 0) {
                 viewModel.recordProgress(episodeSlug, exoPlayer.currentPosition, exoPlayer.duration)
@@ -294,7 +345,7 @@ fun PlayerScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .statusBarsPadding()
+                            .then(if (isFullscreen) Modifier else Modifier.statusBarsPadding())
                             .padding(horizontal = 16.dp, vertical = 12.dp)
                             .align(Alignment.TopCenter)
                             .background(Color.Black.copy(alpha = 0.65f)),
@@ -686,6 +737,7 @@ fun PlayerScreen(
                                 viewModel.recordProgress(episodeSlug, exoPlayer.currentPosition, exoPlayer.duration)
                             }
                             exoPlayer.stop()
+                            exoPlayer.clearMediaItems()
                             currentPositionMs = 0L
                             durationMs = 0L
                             onSwitchEpisode(slug, prevEpisode.slug)
@@ -697,6 +749,7 @@ fun PlayerScreen(
                                 viewModel.recordProgress(episodeSlug, exoPlayer.currentPosition, exoPlayer.duration)
                             }
                             exoPlayer.stop()
+                            exoPlayer.clearMediaItems()
                             currentPositionMs = 0L
                             durationMs = 0L
                             onSwitchEpisode(slug, nextEpisode.slug)
@@ -734,6 +787,7 @@ fun PlayerScreen(
                             viewModel.recordProgress(episodeSlug, exoPlayer.currentPosition, exoPlayer.duration)
                         }
                         exoPlayer.stop()
+                        exoPlayer.clearMediaItems()
                         currentPositionMs = 0L
                         durationMs = 0L
                         onSwitchEpisode(slug, ep.slug)
