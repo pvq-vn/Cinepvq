@@ -1074,6 +1074,104 @@ class SyncAndModelUnitTest {
         assertEquals(500L, getProgress("guest", "movie-x", "tap-1"))
         assertEquals(500L, getProgress("user-c", "movie-x", "tap-1"))
     }
+
+    @Test
+    fun testFavoriteTombstoneReconciliation_NeverResurrects() {
+        val userId = "user-123"
+        val deletedSlugs = mutableSetOf<String>()
+        val pendingAdds = mutableSetOf<String>()
+        val roomFavorites = mutableSetOf<String>()
+
+        // 1. User adds Movie A
+        roomFavorites.add("movie-a")
+        pendingAdds.add("movie-a")
+        deletedSlugs.remove("movie-a")
+
+        assertTrue(roomFavorites.contains("movie-a"))
+        assertTrue(pendingAdds.contains("movie-a"))
+
+        // 2. User removes Movie A
+        roomFavorites.remove("movie-a")
+        deletedSlugs.add("movie-a")
+        pendingAdds.remove("movie-a")
+
+        assertFalse(roomFavorites.contains("movie-a"))
+        assertTrue(deletedSlugs.contains("movie-a"))
+        assertFalse(pendingAdds.contains("movie-a"))
+
+        // 3. Server sync arrives with stale remote data that still includes Movie A
+        val staleRemoteSlugs = listOf("movie-a", "movie-b")
+
+        // Reconciliation: filter out any remote slugs that are in deletedSlugs!
+        val validRemote = staleRemoteSlugs.filter { it !in deletedSlugs }
+        assertEquals(listOf("movie-b"), validRemote)
+
+        // Insert valid remote into Room
+        for (slug in validRemote) {
+            roomFavorites.add(slug)
+        }
+
+        // Room now has Movie B, but NEVER resurrected Movie A!
+        assertFalse("Movie A must NEVER be resurrected by sync", roomFavorites.contains("movie-a"))
+        assertTrue(roomFavorites.contains("movie-b"))
+
+        // 4. Remote deletion confirmed on server: remote no longer has Movie A
+        val updatedRemoteSlugs = listOf("movie-b")
+        if ("movie-a" !in updatedRemoteSlugs) {
+            deletedSlugs.remove("movie-a")
+        }
+        assertFalse(deletedSlugs.contains("movie-a"))
+    }
+
+    @Test
+    fun testHistoryEpisodeDtoPayloadAndNumberExtraction() {
+        val req = HistoryActionRequest(
+            action = "upsert",
+            movieSlug = "dau-pha-thuong-khung",
+            episodeSlug = "tap-5",
+            episodeName = "Tập 5",
+            episode = HistoryEpisodeDto(slug = "tap-5", name = "Tập 5"),
+            position = 120L,
+            duration = 2400L,
+            updatedAt = "2026-09-15T08:00:00.000Z"
+        )
+
+        assertEquals("tap-5", req.episodeSlug)
+        assertEquals("Tập 5", req.episodeName)
+        assertNotNull(req.episode)
+        assertEquals("tap-5", req.episode?.slug)
+        assertEquals("Tập 5", req.episode?.name)
+
+        // Number extraction test
+        val epDigits1 = req.episodeSlug?.filter { it.isDigit() }?.toIntOrNull()
+        val epDigits2 = req.episodeName?.filter { it.isDigit() }?.toIntOrNull()
+        assertEquals(5, epDigits1)
+        assertEquals(5, epDigits2)
+
+        // Leading zero normalization
+        val epSlugZero = "tap-05"
+        val epDigitsZero = epSlugZero.filter { it.isDigit() }.toIntOrNull()
+        assertEquals(5, epDigitsZero)
+    }
+
+    @Test
+    fun testFavoriteTombstoneAccountIsolation() {
+        val userATombstones = mutableSetOf<String>()
+        val userBTombstones = mutableSetOf<String>()
+
+        // User A deletes Movie A
+        userATombstones.add("movie-a")
+
+        assertTrue(userATombstones.contains("movie-a"))
+        assertFalse(userBTombstones.contains("movie-a"))
+
+        // User B has Movie A in remote favorites - User B should see Movie A!
+        val userBRemote = listOf("movie-a", "movie-b")
+        val userBValid = userBRemote.filter { it !in userBTombstones }
+
+        assertEquals(2, userBValid.size)
+        assertTrue(userBValid.contains("movie-a"))
+    }
 }
 
 

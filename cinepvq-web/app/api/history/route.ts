@@ -116,7 +116,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const targetEpisode = episode || episodeSlug;
+    const epSlug =
+      body.episode?.slug ||
+      body.episodeSlug ||
+      body.movie?.episodeSlug ||
+      (typeof episode === "string" ? episode : undefined);
+
+    const epName =
+      body.episode?.name ||
+      body.episodeName ||
+      body.movie?.episodeName ||
+      epSlug;
+
+    const targetEpisode = epSlug ? { slug: epSlug, name: epName } : (episode || episodeSlug);
 
     const success = await historyRepository.upsertHistory(
       userId,

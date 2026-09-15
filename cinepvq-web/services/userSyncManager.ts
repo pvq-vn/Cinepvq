@@ -118,18 +118,19 @@ export const userSyncManager = {
 
       // Step 2: Mark migration flag so new users never inherit stale guest caches
       const migrationKey = `cinepvq_migrated_${currentUser.email.toLowerCase()}`;
-      if (localStorage.getItem(migrationKey) !== "true") {
+      const isFirstLogin = localStorage.getItem(migrationKey) !== "true";
+      if (isFirstLogin) {
         localStorage.setItem(migrationKey, "true");
       }
 
-      // Step 3: Two-way sync: Push local items (if any) and pull remote items
+      // Step 3: Two-way sync: Push local items (if first login migration) and pull remote items
       const localFavs = favoritesStore.getAll();
       const localHist = historyStore.getAll();
       const localWatchlist = watchlistStore.getAll();
 
       await Promise.allSettled([
-        // Sync favorites (push local if exists, else pull)
-        (localFavs.length > 0
+        // Sync favorites: only migrate guest favorites on first login; otherwise always pull authoritative list from server
+        (isFirstLogin && localFavs.length > 0
           ? fetch("/api/favorites", {
               method: "POST",
               headers: authHeaders,

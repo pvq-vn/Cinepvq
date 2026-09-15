@@ -44,10 +44,8 @@ class UserSyncRepository(
 
     val activeUserIdFlow = MutableStateFlow(secureStorageManager.activeUserId)
 
-    private var progressSyncJob: Job? = null
-    private var pendingProgress: HistoryActionRequest? = null
-
-
+    private val progressJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    private val pendingProgressMap = java.util.concurrent.ConcurrentHashMap<String, HistoryActionRequest>()
 
     fun updateActiveUser(userId: String) {
         activeUserIdFlow.value = userId
@@ -83,13 +81,17 @@ class UserSyncRepository(
 
         if (exists) {
             favoriteDao.deleteBySlug(currentUid, slug)
+            secureStorageManager.addDeletedFavoriteSlug(currentUid, slug)
+            secureStorageManager.removePendingAddFavoriteSlug(currentUid, slug)
             if (secureStorageManager.isLoggedIn) {
                 repositoryScope.launch {
                     try {
                         val res = networkModule.cinepvqApi.updateFavorites(
                             FavoriteActionRequest(action = "remove", movieSlug = slug)
                         )
-                        if (!res.isSuccessful) {
+                        if (res.isSuccessful) {
+                            secureStorageManager.removeDeletedFavoriteSlug(currentUid, slug)
+                        } else {
                             Log.w("UserSyncRepo", "removeFavorite server error HTTP ${res.code()}: ${res.message()}")
                         }
                     } catch (e: Exception) {
@@ -110,12 +112,15 @@ class UserSyncRepository(
                 addedAt = nowIso
             )
             favoriteDao.insert(entity)
+            secureStorageManager.removeDeletedFavoriteSlug(currentUid, slug)
+            secureStorageManager.addPendingAddFavoriteSlug(currentUid, slug)
 
             if (secureStorageManager.isLoggedIn) {
                 repositoryScope.launch {
                     try {
                         val res = networkModule.cinepvqApi.updateFavorites(
                             FavoriteActionRequest(
+                                action = "add",
                                 movieSlug = slug,
                                 movie = FavoriteMovieDto(
                                     slug = slug,
@@ -128,7 +133,9 @@ class UserSyncRepository(
                                 )
                             )
                         )
-                        if (!res.isSuccessful) {
+                        if (res.isSuccessful) {
+                            secureStorageManager.removePendingAddFavoriteSlug(currentUid, slug)
+                        } else {
                             Log.w("UserSyncRepo", "addFavorite server error HTTP ${res.code()}: ${res.message()}")
                         }
                     } catch (e: Exception) {
@@ -143,13 +150,17 @@ class UserSyncRepository(
     suspend fun removeFavorite(slug: String) {
         val currentUid = secureStorageManager.activeUserId
         favoriteDao.deleteBySlug(currentUid, slug)
+        secureStorageManager.addDeletedFavoriteSlug(currentUid, slug)
+        secureStorageManager.removePendingAddFavoriteSlug(currentUid, slug)
         if (secureStorageManager.isLoggedIn) {
             repositoryScope.launch {
                 try {
                     val res = networkModule.cinepvqApi.updateFavorites(
                         FavoriteActionRequest(action = "remove", movieSlug = slug)
                     )
-                    if (!res.isSuccessful) {
+                    if (res.isSuccessful) {
+                        secureStorageManager.removeDeletedFavoriteSlug(currentUid, slug)
+                    } else {
                         Log.w("UserSyncRepo", "removeFavorite server error HTTP ${res.code()}: ${res.message()}")
                     }
                 } catch (e: Exception) {
@@ -236,10 +247,17 @@ class UserSyncRepository(
 
         // 2. Debounce remote sync to Cinepvq API (1.5s) to avoid flooding
         if (secureStorageManager.isLoggedIn) {
-            pendingProgress = HistoryActionRequest(
+            val req = HistoryActionRequest(
                 action = "upsert",
                 movieSlug = movieSlug,
                 episodeSlug = episodeSlug,
+                episodeName = episodeName,
+                episode = if (!episodeSlug.isNullOrBlank()) {
+                    com.pvq.cinepvq.core.network.model.HistoryEpisodeDto(
+                        slug = episodeSlug,
+                        name = episodeName ?: episodeSlug
+                    )
+                } else null,
                 position = currentTime,
                 duration = duration,
                 updatedAt = nowIso,
@@ -256,11 +274,28 @@ class UserSyncRepository(
                 )
             )
 
-            progressSyncJob?.cancel()
-            progressSyncJob = repositoryScope.launch {
+            // If switching episode for the same movie, flush the previous episode's pending request immediately
+            val existing = pendingProgressMap[movieSlug]
+            if (existing != null && existing.episodeSlug != episodeSlug) {
+                progressJobs.remove(movieSlug)?.cancel()
+                val prevTarget = pendingProgressMap.remove(movieSlug)
+                if (prevTarget != null) {
+                    repositoryScope.launch {
+                        try {
+                            networkModule.cinepvqApi.updateHistory(prevTarget)
+                        } catch (e: Exception) {
+                            Log.e("UserSyncRepo", "Immediate flush previous episode failed: ${e.message}", e)
+                        }
+                    }
+                }
+            }
+
+            pendingProgressMap[movieSlug] = req
+            progressJobs[movieSlug]?.cancel()
+            val job = repositoryScope.launch {
                 delay(1500)
-                val target = pendingProgress ?: return@launch
-                pendingProgress = null
+                val target = pendingProgressMap.remove(movieSlug) ?: return@launch
+                progressJobs.remove(movieSlug)
                 try {
                     val res = networkModule.cinepvqApi.updateHistory(target)
                     if (!res.isSuccessful) {
@@ -269,6 +304,24 @@ class UserSyncRepository(
                 } catch (e: Exception) {
                     Log.e("UserSyncRepo", "recordWatchProgress network failed for $movieSlug: ${e.message}", e)
                 }
+            }
+            progressJobs[movieSlug] = job
+        }
+    }
+
+    suspend fun flushWatchProgress(movieSlug: String? = null) {
+        if (!secureStorageManager.isLoggedIn) return
+        val keys = if (movieSlug != null) listOf(movieSlug) else pendingProgressMap.keys().toList()
+        for (k in keys) {
+            progressJobs.remove(k)?.cancel()
+            val target = pendingProgressMap.remove(k) ?: continue
+            try {
+                val res = networkModule.cinepvqApi.updateHistory(target)
+                if (!res.isSuccessful) {
+                    Log.w("UserSyncRepo", "flushWatchProgress server error HTTP ${res.code()}: ${res.message()}")
+                }
+            } catch (e: Exception) {
+                Log.e("UserSyncRepo", "flushWatchProgress network failed for $k: ${e.message}", e)
             }
         }
     }
@@ -483,14 +536,32 @@ class UserSyncRepository(
 
         // 1. Sync Favorites
         try {
+            // First, process any pending deletions (tombstones) on the server
+            val deletedSlugs = secureStorageManager.getDeletedFavoriteSlugs(currentUid)
+            for (delSlug in deletedSlugs) {
+                try {
+                    val delRes = networkModule.cinepvqApi.updateFavorites(
+                        FavoriteActionRequest(action = "remove", movieSlug = delSlug)
+                    )
+                    if (delRes.isSuccessful) {
+                        secureStorageManager.removeDeletedFavoriteSlug(currentUid, delSlug)
+                    }
+                } catch (e: Exception) {
+                    Log.w("UserSyncRepo", "Retry remove favorite for $delSlug failed: ${e.message}")
+                }
+            }
+
             val favRes = networkModule.cinepvqApi.getFavorites()
             if (favRes.isSuccessful && favRes.body()?.favorites != null) {
                 val remoteFavs = favRes.body()!!.favorites
-                favCount = remoteFavs.size
-                val remoteFavSlugs = remoteFavs.map { it.slug }.toSet()
+                val activeDeletedSlugs = secureStorageManager.getDeletedFavoriteSlugs(currentUid)
+                // Filter out any favorites that were deleted locally
+                val validRemoteFavs = remoteFavs.filter { it.slug !in activeDeletedSlugs }
+                favCount = validRemoteFavs.size
+                val validRemoteSlugs = validRemoteFavs.map { it.slug }.toSet()
 
-                // Insert all remote favorites into local Room DB for current user
-                val entities = remoteFavs.map { r ->
+                // Insert valid remote favorites into local Room DB for current user
+                val entities = validRemoteFavs.map { r ->
                     FavoriteMovieEntity(
                         userId = currentUid,
                         slug = r.slug,
@@ -504,14 +575,28 @@ class UserSyncRepository(
                 }
                 favoriteDao.insertAll(entities)
 
-                // Push any local-only favorites belonging to current user
+                // Delete any local favorites that were marked as deleted locally
+                for (delSlug in activeDeletedSlugs) {
+                    favoriteDao.deleteBySlug(currentUid, delSlug)
+                }
+
                 val allLocalFavs = favoriteDao.getAllFavoritesDirect(currentUid)
-                val localOnlyFavs = allLocalFavs.filter { it.slug !in remoteFavSlugs }
-                if (localOnlyFavs.isNotEmpty()) {
+                val pendingAdds = secureStorageManager.getPendingAddFavoriteSlugs(currentUid)
+
+                // If an item in local Room is NOT in validRemoteSlugs and NOT in pendingAdds,
+                // it was deleted on Web! Remove it from Room to reflect Web deletion.
+                val deletedOnWeb = allLocalFavs.filter { it.slug !in validRemoteSlugs && it.slug !in pendingAdds }
+                for (delItem in deletedOnWeb) {
+                    favoriteDao.deleteBySlug(currentUid, delItem.slug)
+                }
+
+                // Push ONLY items that are truly pending local additions
+                val localOnlyToPush = allLocalFavs.filter { it.slug in pendingAdds }
+                if (localOnlyToPush.isNotEmpty()) {
                     val pushRes = networkModule.cinepvqApi.updateFavorites(
                         FavoriteActionRequest(
                             action = "sync",
-                            favorites = localOnlyFavs.map { f ->
+                            favorites = localOnlyToPush.map { f ->
                                 FavoriteMovieDto(
                                     slug = f.slug,
                                     name = f.name,
@@ -524,7 +609,11 @@ class UserSyncRepository(
                             }
                         )
                     )
-                    if (!pushRes.isSuccessful) {
+                    if (pushRes.isSuccessful) {
+                        for (p in localOnlyToPush) {
+                            secureStorageManager.removePendingAddFavoriteSlug(currentUid, p.slug)
+                        }
+                    } else {
                         Log.w("UserSyncRepo", "Push local favorites returned HTTP ${pushRes.code()}: ${pushRes.message()}")
                     }
                 }

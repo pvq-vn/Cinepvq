@@ -207,6 +207,48 @@ class SecureStorageManager(context: Context) {
         editor.apply()
     }
 
+    fun getDeletedFavoriteSlugs(userId: String): Set<String> {
+        return prefs.getStringSet("deleted_favs_$userId", emptySet()) ?: emptySet()
+    }
+
+    fun addDeletedFavoriteSlug(userId: String, slug: String) {
+        val current = getDeletedFavoriteSlugs(userId).toMutableSet()
+        current.add(slug)
+        prefs.edit().putStringSet("deleted_favs_$userId", current).apply()
+    }
+
+    fun removeDeletedFavoriteSlug(userId: String, slug: String) {
+        val current = getDeletedFavoriteSlugs(userId).toMutableSet()
+        if (current.remove(slug)) {
+            prefs.edit().putStringSet("deleted_favs_$userId", current).apply()
+        }
+    }
+
+    fun clearDeletedFavoriteSlugs(userId: String) {
+        prefs.edit().remove("deleted_favs_$userId").apply()
+    }
+
+    fun getPendingAddFavoriteSlugs(userId: String): Set<String> {
+        return prefs.getStringSet("pending_add_favs_$userId", emptySet()) ?: emptySet()
+    }
+
+    fun addPendingAddFavoriteSlug(userId: String, slug: String) {
+        val current = getPendingAddFavoriteSlugs(userId).toMutableSet()
+        current.add(slug)
+        prefs.edit().putStringSet("pending_add_favs_$userId", current).apply()
+    }
+
+    fun removePendingAddFavoriteSlug(userId: String, slug: String) {
+        val current = getPendingAddFavoriteSlugs(userId).toMutableSet()
+        if (current.remove(slug)) {
+            prefs.edit().putStringSet("pending_add_favs_$userId", current).apply()
+        }
+    }
+
+    fun clearPendingAddFavoriteSlugs(userId: String) {
+        prefs.edit().remove("pending_add_favs_$userId").apply()
+    }
+
 
     companion object {
         const val GUEST_USER_ID = "guest"

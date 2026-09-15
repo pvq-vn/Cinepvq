@@ -54,6 +54,7 @@ class PlayerViewModel(
     ) {
         playerInitJob?.cancel()
         playerInitJob = viewModelScope.launch {
+            userSyncRepository.flushWatchProgress(slug)
             _isLoadingStream.value = true
             _errorMessage.value = null
             _activeStream.value = null
@@ -204,5 +205,14 @@ class PlayerViewModel(
             return server.items[currentIndex - 1]
         }
         return null
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        playerInitJob?.cancel()
+        val currentSlug = _movie.value?.slug
+        viewModelScope.launch {
+            userSyncRepository.flushWatchProgress(currentSlug)
+        }
     }
 }

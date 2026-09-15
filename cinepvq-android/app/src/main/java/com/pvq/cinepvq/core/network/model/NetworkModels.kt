@@ -203,10 +203,18 @@ data class WatchHistoryDto(
 )
 
 @Serializable
+data class HistoryEpisodeDto(
+    val slug: String,
+    val name: String
+)
+
+@Serializable
 data class HistoryActionRequest(
     val action: String? = null, // "upsert", "sync", "remove", "clear"
     val movieSlug: String? = null,
     val episodeSlug: String? = null,
+    val episodeName: String? = null,
+    val episode: HistoryEpisodeDto? = null,
     val position: Long? = null,
     val duration: Long? = null,
     val updatedAt: String? = null,

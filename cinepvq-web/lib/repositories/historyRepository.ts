@@ -78,14 +78,40 @@ export const historyRepository = {
     const movieId = await ensureMovieStub(movieObj);
     if (!movieId) return false;
 
-    const epSlug = typeof episode === "string" ? episode : episode?.slug;
-    const epName = typeof episode === "string" ? episode : episode?.name;
+    const epSlug = (typeof episode === "string" ? episode : episode?.slug)?.trim();
+    let epName = (typeof episode === "string" ? episode : episode?.name)?.trim();
+
+    let epNumber: number | null = null;
+    const numMatch = (epName || epSlug || "").match(/\d+/);
+    if (numMatch) {
+      epNumber = parseInt(numMatch[0], 10);
+    }
+    if (!epName && epNumber !== null) {
+      epName = `Tập ${epNumber}`;
+    } else if (!epName && epSlug) {
+      epName = epSlug;
+    }
 
     let episodeId: string | null = null;
     if (epSlug) {
       const epRes = await query<{ id: string }>(
-        "SELECT id FROM episodes WHERE movie_id = $1 AND slug = $2 LIMIT 1",
-        [movieId, epSlug]
+        `SELECT id FROM episodes
+         WHERE movie_id = $1
+           AND (
+             slug = $2
+             OR LOWER(slug) = LOWER($2)
+             OR ($3::int IS NOT NULL AND episode_number = $3::int)
+             OR ($3::text IS NOT NULL AND (slug = ('tap-' || $3::text) OR slug = ('tap-0' || $3::text)))
+           )
+         ORDER BY
+           CASE
+             WHEN slug = $2 THEN 1
+             WHEN LOWER(slug) = LOWER($2) THEN 2
+             WHEN episode_number = $3::int THEN 3
+             ELSE 4
+           END
+         LIMIT 1`,
+        [movieId, epSlug, epNumber]
       );
       if (epRes?.rows[0]?.id) {
         episodeId = epRes.rows[0].id;
@@ -102,16 +128,18 @@ export const historyRepository = {
           const serverId = srvRes?.rows[0]?.id;
           if (serverId) {
             const newEp = await query<{ id: string }>(
-              `INSERT INTO episodes (movie_id, server_id, name, slug, embed_url)
-               VALUES ($1, $2, $3, $4, '')
-               ON CONFLICT (server_id, slug) DO UPDATE SET name = EXCLUDED.name
+              `INSERT INTO episodes (movie_id, server_id, name, slug, embed_url, episode_number)
+               VALUES ($1, $2, $3, $4, '', $5)
+               ON CONFLICT (server_id, slug) DO UPDATE SET
+                 name = EXCLUDED.name,
+                 episode_number = COALESCE(EXCLUDED.episode_number, episodes.episode_number)
                RETURNING id`,
-              [movieId, serverId, epName || epSlug, epSlug]
+              [movieId, serverId, epName || epSlug, epSlug, epNumber]
             );
             episodeId = newEp?.rows[0]?.id ?? null;
           }
-        } catch {
-          // Non-critical if episode creation fails
+        } catch (err) {
+          console.error("[historyRepository] Failed to create episode stub", err);
         }
       }
     }
@@ -132,17 +160,16 @@ export const historyRepository = {
        VALUES ($1, $2, $3, $4, $5, COALESCE($6, CURRENT_TIMESTAMP))
        ON CONFLICT (user_id, movie_id) DO UPDATE SET
          episode_id = CASE
-           WHEN EXCLUDED.updated_at >= watch_history.updated_at
-           THEN COALESCE(EXCLUDED.episode_id, watch_history.episode_id)
+           WHEN EXCLUDED.episode_id IS NOT NULL THEN EXCLUDED.episode_id
            ELSE watch_history.episode_id
          END,
          last_position_seconds = CASE
-           WHEN EXCLUDED.updated_at >= watch_history.updated_at
+           WHEN EXCLUDED.updated_at >= (watch_history.updated_at - INTERVAL '30 seconds')
            THEN EXCLUDED.last_position_seconds
            ELSE watch_history.last_position_seconds
          END,
          duration_seconds = CASE
-           WHEN EXCLUDED.updated_at >= watch_history.updated_at
+           WHEN EXCLUDED.updated_at >= (watch_history.updated_at - INTERVAL '30 seconds')
            THEN COALESCE(EXCLUDED.duration_seconds, watch_history.duration_seconds)
            ELSE watch_history.duration_seconds
          END,

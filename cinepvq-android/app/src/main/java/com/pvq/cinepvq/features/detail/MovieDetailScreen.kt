@@ -55,6 +55,7 @@ fun MovieDetailScreen(
 
     val movie by viewModel.movieDetail.collectAsStateWithLifecycle()
     val isFavorite by viewModel.isFavorite.collectAsStateWithLifecycle()
+    val isWatchLater by viewModel.isWatchLater.collectAsStateWithLifecycle()
     val resumeHistory by viewModel.resumeHistory.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
@@ -65,131 +66,64 @@ fun MovieDetailScreen(
     var commentText by remember { mutableStateOf("") }
     var isDescriptionExpanded by remember { mutableStateOf(false) }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(CinepvqBackground)
             .statusBarsPadding()
     ) {
-        Box(modifier = Modifier.weight(1f)) {
-            when {
-                isLoading && movie == null -> LoadingView()
-                errorMessage != null && movie == null -> ErrorView(
-                    message = errorMessage ?: "Không thể tải thông tin phim",
-                    onRetry = { viewModel.loadMovie(slug) }
-                )
-                movie != null -> {
-                    val detail = movie!!
-                    
-                    val hasResume = resumeHistory != null &&
-                            (resumeHistory?.currentTime ?: 0L) > 10L &&
-                            (resumeHistory?.duration == 0L || (resumeHistory?.currentTime ?: 0L) < (resumeHistory?.duration ?: 0L) * 0.95)
+        when {
+            isLoading && movie == null -> LoadingView()
+            errorMessage != null && movie == null -> ErrorView(
+                message = errorMessage ?: "Không thể tải thông tin phim",
+                onRetry = { viewModel.loadMovie(slug) }
+            )
+            movie != null -> {
+                val detail = movie!!
+                
+                val hasResume = resumeHistory != null &&
+                        (resumeHistory?.currentTime ?: 0L) > 10L &&
+                        (resumeHistory?.duration == 0L || (resumeHistory?.currentTime ?: 0L) < (resumeHistory?.duration ?: 0L) * 0.95)
 
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(bottom = 40.dp)
-                    ) {
-                        // ── 1. Hero Backdrop Section ──
-                        item {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 40.dp)
+                ) {
+                    // ── 1. Hero Backdrop Section ──
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(320.dp)
+                        ) {
+                            // Backdrop Image
+                            AsyncImage(
+                                model = ImageRequest.Builder(LocalContext.current)
+                                    .data(detail.posterUrl.ifBlank { detail.thumbUrl })
+                                    .crossfade(true)
+                                    .build(),
+                                contentDescription = detail.name,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+
+                            // Multi-layer dark cinematic gradient
                             Box(
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(320.dp)
-                            ) {
-                                // Backdrop Image
-                                AsyncImage(
-                                    model = ImageRequest.Builder(LocalContext.current)
-                                        .data(detail.posterUrl.ifBlank { detail.thumbUrl })
-                                        .crossfade(true)
-                                        .build(),
-                                    contentDescription = detail.name,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-
-                                // Multi-layer dark cinematic gradient
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .background(
-                                            Brush.verticalGradient(
-                                                listOf(
-                                                    Color.Black.copy(alpha = 0.65f),
-                                                    Color.Transparent,
-                                                    CinepvqBackground.copy(alpha = 0.75f),
-                                                    CinepvqBackground
-                                                )
+                                    .fillMaxSize()
+                                    .background(
+                                        Brush.verticalGradient(
+                                            listOf(
+                                                Color.Black.copy(alpha = 0.65f),
+                                                Color.Transparent,
+                                                CinepvqBackground.copy(alpha = 0.75f),
+                                                CinepvqBackground
                                             )
                                         )
-                                )
-
-                                // Top Header Bar
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    // Back Button
-                                    IconButton(
-                                        onClick = onBackClick,
-                                        modifier = Modifier
-                                            .size(38.dp)
-                                            .background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                                            .border(1.dp, CinepvqBorderSubtle, CircleShape)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                            contentDescription = "Quay lại",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
-
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        // Share button
-                                        IconButton(
-                                            onClick = {
-                                                val sendIntent = Intent().apply {
-                                                    action = Intent.ACTION_SEND
-                                                    putExtra(Intent.EXTRA_TEXT, "Xem phim ${detail.name} trên Cinepvq")
-                                                    type = "text/plain"
-                                                }
-                                                context.startActivity(Intent.createChooser(sendIntent, "Chia sẻ phim"))
-                                            },
-                                            modifier = Modifier
-                                                .size(38.dp)
-                                                .background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                                                .border(1.dp, CinepvqBorderSubtle, CircleShape)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Share,
-                                                contentDescription = "Chia sẻ",
-                                                tint = Color.White,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        }
-
-                                        // Favorite button
-                                        IconButton(
-                                            onClick = { viewModel.toggleFavorite() },
-                                            modifier = Modifier
-                                                .size(38.dp)
-                                                .background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                                                .border(1.dp, CinepvqBorderSubtle, CircleShape)
-                                        ) {
-                                            Icon(
-                                                imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                                                contentDescription = "Yêu thích",
-                                                tint = if (isFavorite) CinepvqRed else Color.White,
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
+                                    )
+                            )
                         }
+                    }
 
                         // ── 2. Poster + Title + Metadata Row ──
                         item {
@@ -356,7 +290,7 @@ fun MovieDetailScreen(
                                             onClick = { onPlayClick(slug, firstEpSlug) },
                                             colors = ButtonDefaults.buttonColors(containerColor = CinepvqPrimary),
                                             shape = RoundedCornerShape(12.dp),
-                                            modifier = Modifier.weight(1f),
+                                            modifier = Modifier.fillMaxWidth(),
                                             contentPadding = PaddingValues(vertical = 12.dp)
                                         ) {
                                             Icon(
@@ -374,32 +308,9 @@ fun MovieDetailScreen(
                                             )
                                         }
                                     }
-
-                                    // Favorite Toggle Button
-                                    OutlinedButton(
-                                        onClick = { viewModel.toggleFavorite() },
-                                        shape = RoundedCornerShape(12.dp),
-                                        border = ButtonDefaults.outlinedButtonBorder(enabled = true).copy(
-                                            brush = Brush.horizontalGradient(
-                                                listOf(
-                                                    if (isFavorite) CinepvqRed else CinepvqBorderSubtle,
-                                                    if (isFavorite) CinepvqRed else CinepvqBorderSubtle
-                                                )
-                                            )
-                                        ),
-                                        colors = ButtonDefaults.outlinedButtonColors(
-                                            containerColor = if (isFavorite) CinepvqRed.copy(alpha = 0.12f) else CinepvqSurface
-                                        ),
-                                        contentPadding = PaddingValues(vertical = 12.dp, horizontal = 14.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                                            contentDescription = null,
-                                            tint = if (isFavorite) CinepvqRed else CinepvqTextPrimary,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
                                 }
+
+                                Spacer(modifier = Modifier.height(16.dp))
                             }
                         }
 
@@ -627,8 +538,19 @@ fun MovieDetailScreen(
                                         onValueChange = { commentText = it },
                                         modifier = Modifier
                                             .weight(1f)
-                                            .height(50.dp),
-                                        placeholder = { Text("Viết bình luận...", fontSize = 13.sp) },
+                                            .heightIn(min = 52.dp),
+                                        textStyle = LocalTextStyle.current.copy(
+                                            fontSize = 13.sp,
+                                            lineHeight = 18.sp,
+                                            color = CinepvqTextPrimary
+                                        ),
+                                        placeholder = {
+                                            Text(
+                                                text = "Viết bình luận...",
+                                                fontSize = 13.sp,
+                                                color = CinepvqTextMuted
+                                            )
+                                        },
                                         colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                                             focusedContainerColor = CinepvqSurface,
                                             unfocusedContainerColor = CinepvqSurface,
@@ -652,7 +574,7 @@ fun MovieDetailScreen(
                                             containerColor = CinepvqPrimary,
                                             disabledContainerColor = CinepvqBorderSubtle
                                         ),
-                                        modifier = Modifier.height(50.dp)
+                                        modifier = Modifier.height(52.dp)
                                     ) {
                                         Text("Gửi", fontWeight = FontWeight.Bold)
                                     }
@@ -676,8 +598,111 @@ fun MovieDetailScreen(
                             }
                         }
                     }
+
+                    // ── Top Action Bar (Fixed Overlay) ──
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Back Button
+                        IconButton(
+                            onClick = onBackClick,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                                .border(1.dp, CinepvqBorderSubtle, CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Quay lại",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
+                        // Right actions: [Xem sau] [Yêu thích] [Chia sẻ]
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Xem sau
+                            IconButton(
+                                onClick = { viewModel.toggleWatchLater() },
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                                    .border(1.dp, CinepvqBorderSubtle, CircleShape)
+                            ) {
+                                Icon(
+                                    imageVector = if (isWatchLater) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                                    contentDescription = "Xem sau",
+                                    tint = if (isWatchLater) CinepvqPrimary else Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            // Yêu thích
+                            IconButton(
+                                onClick = { viewModel.toggleFavorite() },
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                                    .border(1.dp, CinepvqBorderSubtle, CircleShape)
+                            ) {
+                                Icon(
+                                    imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                                    contentDescription = "Yêu thích",
+                                    tint = if (isFavorite) CinepvqRed else Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            // Chia sẻ
+                            IconButton(
+                                onClick = {
+                                    val sendIntent = Intent().apply {
+                                        action = Intent.ACTION_SEND
+                                        putExtra(Intent.EXTRA_TEXT, "Xem phim ${detail.name} trên Cinepvq")
+                                        type = "text/plain"
+                                    }
+                                    context.startActivity(Intent.createChooser(sendIntent, "Chia sẻ phim"))
+                                },
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                                    .border(1.dp, CinepvqBorderSubtle, CircleShape)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Share,
+                                    contentDescription = "Chia sẻ",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
+
+            if (movie == null) {
+                IconButton(
+                    onClick = onBackClick,
+                    modifier = Modifier
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .size(40.dp)
+                        .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                        .border(1.dp, CinepvqBorderSubtle, CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Quay lại",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
         }
     }
 }

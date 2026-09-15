@@ -109,6 +109,23 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    // Explicit add action
+    if (action === "add") {
+      const targetMovie = movie || movieSlug || slug;
+      if (!targetMovie) {
+        return NextResponse.json(
+          { status: "error", message: "movie, movieSlug, or slug is required to add" },
+          { status: 400 }
+        );
+      }
+      await favoriteRepository.addFavorite(userId, targetMovie);
+      return NextResponse.json({
+        status: "success",
+        favorited: true,
+        message: "Added to favorites",
+      });
+    }
+
     // Default: toggle favorite
     const targetMovie = movie || movieSlug || slug;
     if (!targetMovie) {
