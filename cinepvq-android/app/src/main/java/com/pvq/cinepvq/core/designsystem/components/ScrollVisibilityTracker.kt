@@ -14,7 +14,7 @@ import androidx.compose.runtime.*
 @Composable
 fun TrackLazyListScroll(
     listState: LazyListState,
-    threshold: Int = 16,
+    threshold: Int = 32,
     onVisibilityChanged: ((Boolean) -> Unit)?
 ) {
     if (onVisibilityChanged == null) return
@@ -23,11 +23,16 @@ fun TrackLazyListScroll(
     var previousOffset by remember { mutableIntStateOf(listState.firstVisibleItemScrollOffset) }
 
     LaunchedEffect(listState) {
+        var lastReportedVisibility: Boolean? = null
+
         snapshotFlow {
             listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
         }.collect { (currentIndex, currentOffset) ->
             if (currentIndex == 0 && currentOffset <= 10) {
-                onVisibilityChanged(true)
+                if (lastReportedVisibility != true) {
+                    lastReportedVisibility = true
+                    onVisibilityChanged(true)
+                }
                 previousIndex = 0
                 previousOffset = currentOffset
                 return@collect
@@ -36,23 +41,21 @@ fun TrackLazyListScroll(
             val indexDiff = currentIndex - previousIndex
             val offsetDiff = currentOffset - previousOffset
 
-            if (indexDiff > 0) {
+            if (indexDiff > 0 || offsetDiff > threshold) {
                 // Swiped up -> moving down into content -> HIDE
-                onVisibilityChanged(false)
+                if (lastReportedVisibility != false) {
+                    lastReportedVisibility = false
+                    onVisibilityChanged(false)
+                }
                 previousIndex = currentIndex
                 previousOffset = currentOffset
-            } else if (indexDiff < 0) {
+            } else if (indexDiff < 0 || offsetDiff < -threshold) {
                 // Swiped down -> moving up towards top -> SHOW
-                onVisibilityChanged(true)
+                if (lastReportedVisibility != true) {
+                    lastReportedVisibility = true
+                    onVisibilityChanged(true)
+                }
                 previousIndex = currentIndex
-                previousOffset = currentOffset
-            } else if (offsetDiff > threshold) {
-                // Offset increased -> HIDE
-                onVisibilityChanged(false)
-                previousOffset = currentOffset
-            } else if (offsetDiff < -threshold) {
-                // Offset decreased -> SHOW
-                onVisibilityChanged(true)
                 previousOffset = currentOffset
             }
         }
@@ -65,7 +68,7 @@ fun TrackLazyListScroll(
 @Composable
 fun TrackLazyGridScroll(
     gridState: LazyGridState,
-    threshold: Int = 16,
+    threshold: Int = 32,
     onVisibilityChanged: ((Boolean) -> Unit)?
 ) {
     if (onVisibilityChanged == null) return
@@ -74,11 +77,16 @@ fun TrackLazyGridScroll(
     var previousOffset by remember { mutableIntStateOf(gridState.firstVisibleItemScrollOffset) }
 
     LaunchedEffect(gridState) {
+        var lastReportedVisibility: Boolean? = null
+
         snapshotFlow {
             gridState.firstVisibleItemIndex to gridState.firstVisibleItemScrollOffset
         }.collect { (currentIndex, currentOffset) ->
             if (currentIndex == 0 && currentOffset <= 10) {
-                onVisibilityChanged(true)
+                if (lastReportedVisibility != true) {
+                    lastReportedVisibility = true
+                    onVisibilityChanged(true)
+                }
                 previousIndex = 0
                 previousOffset = currentOffset
                 return@collect
@@ -87,19 +95,19 @@ fun TrackLazyGridScroll(
             val indexDiff = currentIndex - previousIndex
             val offsetDiff = currentOffset - previousOffset
 
-            if (indexDiff > 0) {
-                onVisibilityChanged(false)
+            if (indexDiff > 0 || offsetDiff > threshold) {
+                if (lastReportedVisibility != false) {
+                    lastReportedVisibility = false
+                    onVisibilityChanged(false)
+                }
                 previousIndex = currentIndex
                 previousOffset = currentOffset
-            } else if (indexDiff < 0) {
-                onVisibilityChanged(true)
+            } else if (indexDiff < 0 || offsetDiff < -threshold) {
+                if (lastReportedVisibility != true) {
+                    lastReportedVisibility = true
+                    onVisibilityChanged(true)
+                }
                 previousIndex = currentIndex
-                previousOffset = currentOffset
-            } else if (offsetDiff > threshold) {
-                onVisibilityChanged(false)
-                previousOffset = currentOffset
-            } else if (offsetDiff < -threshold) {
-                onVisibilityChanged(true)
                 previousOffset = currentOffset
             }
         }
@@ -112,7 +120,7 @@ fun TrackLazyGridScroll(
 @Composable
 fun TrackScrollState(
     scrollState: ScrollState,
-    threshold: Int = 16,
+    threshold: Int = 32,
     onVisibilityChanged: ((Boolean) -> Unit)?
 ) {
     if (onVisibilityChanged == null) return
@@ -120,19 +128,30 @@ fun TrackScrollState(
     var previousOffset by remember { mutableIntStateOf(scrollState.value) }
 
     LaunchedEffect(scrollState) {
+        var lastReportedVisibility: Boolean? = null
+
         snapshotFlow { scrollState.value }
             .collect { currentOffset ->
                 if (currentOffset <= 10) {
-                    onVisibilityChanged(true)
+                    if (lastReportedVisibility != true) {
+                        lastReportedVisibility = true
+                        onVisibilityChanged(true)
+                    }
                     previousOffset = currentOffset
                     return@collect
                 }
                 val diff = currentOffset - previousOffset
                 if (diff > threshold) {
-                    onVisibilityChanged(false)
+                    if (lastReportedVisibility != false) {
+                        lastReportedVisibility = false
+                        onVisibilityChanged(false)
+                    }
                     previousOffset = currentOffset
                 } else if (diff < -threshold) {
-                    onVisibilityChanged(true)
+                    if (lastReportedVisibility != true) {
+                        lastReportedVisibility = true
+                        onVisibilityChanged(true)
+                    }
                     previousOffset = currentOffset
                 }
             }

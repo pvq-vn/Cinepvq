@@ -283,7 +283,11 @@ fun WatchScreen(
                                                 viewModel.selectServer(idx)
                                                 val newServer = detail.episodes.getOrNull(idx)
                                                 currentServerName = newServer?.serverName
-                                                val matchingEp = newServer?.items?.find { it.slug == currentEpisodeSlug } ?: newServer?.items?.firstOrNull()
+                                                val targetDigits = currentEpData?.name?.filter { it.isDigit() } ?: ""
+                                                val matchingEp = newServer?.items?.find { it.slug == currentEpisodeSlug }
+                                                    ?: if (targetDigits.isNotEmpty()) newServer?.items?.find { it.name.filter { c -> c.isDigit() } == targetDigits } else null
+                                                    ?: newServer?.items?.getOrNull(allEpisodes.indexOfFirst { it.slug == currentEpisodeSlug }.coerceAtLeast(0))
+                                                    ?: newServer?.items?.firstOrNull()
                                                 if (matchingEp != null) {
                                                     currentEpisodeSlug = matchingEp.slug
                                                     currentEmbedUrl = matchingEp.embed

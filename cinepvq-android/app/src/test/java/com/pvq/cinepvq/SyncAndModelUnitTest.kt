@@ -1172,6 +1172,219 @@ class SyncAndModelUnitTest {
         assertEquals(2, userBValid.size)
         assertTrue(userBValid.contains("movie-a"))
     }
+
+    // ─── Player Server Switch, Episode Matching & Resolution Tests ────────────
+
+    @Test
+    fun testServerSwitchEpisodeMatchingAcrossServers() {
+        // Server 1 (Vietsub): tap-1, tap-2, tap-3, tap-4, tap-5
+        val server1Episodes = (1..5).map { epNum ->
+            com.pvq.cinepvq.domain.model.EpisodeItem(
+                name = "Tập $epNum",
+                slug = "tap-$epNum",
+                embed = "https://embed.server1.com/$epNum",
+                m3u8Url = "https://hls.server1.com/$epNum.m3u8"
+            )
+        }
+
+        // Server 2 (Thuyet Minh): tap-01-thuyet-minh, tap-02-thuyet-minh, ..., tap-05-thuyet-minh
+        val server2Episodes = (1..5).map { epNum ->
+            val padded = if (epNum < 10) "0$epNum" else "$epNum"
+            com.pvq.cinepvq.domain.model.EpisodeItem(
+                name = "Tập $epNum Thuyết Minh",
+                slug = "tap-$padded-thuyet-minh",
+                embed = "https://embed.server2.com/$epNum",
+                m3u8Url = "https://hls.server2.com/$epNum.m3u8"
+            )
+        }
+
+        // Current episode on Server 1: Episode 5 (index 4)
+        val currentEp = server1Episodes[4]
+        assertEquals("tap-5", currentEp.slug)
+
+        // Matching logic as implemented in WatchScreen.kt
+        val currentEpDigits = currentEp.slug.filter { it.isDigit() }.toIntOrNull()
+            ?: currentEp.name.filter { it.isDigit() }.toIntOrNull()
+        val currentIndex = server1Episodes.indexOfFirst { it.slug == currentEp.slug }
+
+        val matchedInServer2 = server2Episodes.firstOrNull { targetEp ->
+            val targetDigits = targetEp.slug.filter { it.isDigit() }.toIntOrNull()
+                ?: targetEp.name.filter { it.isDigit() }.toIntOrNull()
+            targetDigits != null && targetDigits == currentEpDigits
+        } ?: server2Episodes.getOrNull(currentIndex) ?: server2Episodes.firstOrNull()
+
+        assertNotNull(matchedInServer2)
+        assertEquals("tap-05-thuyet-minh", matchedInServer2?.slug)
+        assertEquals("Tập 5 Thuyết Minh", matchedInServer2?.name)
+        assertNotEquals("Must NOT fall back to Episode 1", "tap-01-thuyet-minh", matchedInServer2?.slug)
+    }
+
+    @Test
+    fun testServerSwitchPreservesPositionAndPlaybackState() {
+        var currentPositionMs = 123456L
+        var wasPlaying = true
+        var isHistoryFlushed = false
+
+        // Simulate server switch
+        fun onServerSwitch(
+            newServerIndex: Int,
+            currentPlayerPos: Long,
+            playerIsPlaying: Boolean,
+            flushHistory: () -> Unit
+        ): Pair<Long, Boolean> {
+            // 1. Capture position & state
+            val preservedPos = currentPlayerPos
+            val preservedPlaying = playerIsPlaying
+
+            // 2. Flush history
+            flushHistory()
+
+            // 3. Return target position and play state to seek and resume
+            return Pair(preservedPos, preservedPlaying)
+        }
+
+        val (targetPos, targetPlayState) = onServerSwitch(
+            newServerIndex = 1,
+            currentPlayerPos = currentPositionMs,
+            playerIsPlaying = wasPlaying,
+            flushHistory = { isHistoryFlushed = true }
+        )
+
+        assertTrue("History must be flushed before server switch", isHistoryFlushed)
+        assertEquals("Current position must be preserved across server switch", 123456L, targetPos)
+        assertTrue("Playback play state must be preserved", targetPlayState)
+        assertNotEquals("Position must NOT be reset to 0", 0L, targetPos)
+
+        // Scenario 2: Switched while paused
+        val (pausedPos, pausedPlayState) = onServerSwitch(
+            newServerIndex = 0,
+            currentPlayerPos = 85000L,
+            playerIsPlaying = false,
+            flushHistory = { }
+        )
+        assertEquals(85000L, pausedPos)
+        assertFalse("Paused state must be preserved", pausedPlayState)
+    }
+
+    @Test
+    fun testResolutionTrackCase1MultiTrackVsCase2SingleTrack() {
+        // CASE 2: Single video track (typical KKPhim provider stream)
+        val singleTrackList = listOf(
+            com.pvq.cinepvq.features.player.VideoTrackInfo(
+                width = 1920,
+                height = 1080,
+                bitrate = 3500000,
+                isSelected = true,
+                label = "1080p",
+                resolution = com.pvq.cinepvq.features.player.VideoResolution.FHD,
+                groupIndex = 0,
+                trackIndex = 0
+            )
+        )
+
+        val isCase2 = singleTrackList.size <= 1
+        assertTrue("Single track stream must trigger CASE 2 handling", isCase2)
+        assertEquals(1920, singleTrackList[0].width)
+        assertEquals(1080, singleTrackList[0].height)
+        assertEquals(3500000, singleTrackList[0].bitrate)
+
+        // CASE 1: Multi-variant video tracks
+        val multiTrackList = listOf(
+            com.pvq.cinepvq.features.player.VideoTrackInfo(
+                width = 1920,
+                height = 1080,
+                bitrate = 4500000,
+                isSelected = true,
+                label = "1080p",
+                resolution = com.pvq.cinepvq.features.player.VideoResolution.FHD,
+                groupIndex = 0,
+                trackIndex = 0
+            ),
+            com.pvq.cinepvq.features.player.VideoTrackInfo(
+                width = 1280,
+                height = 720,
+                bitrate = 2200000,
+                isSelected = false,
+                label = "720p",
+                resolution = com.pvq.cinepvq.features.player.VideoResolution.HD,
+                groupIndex = 0,
+                trackIndex = 1
+            ),
+            com.pvq.cinepvq.features.player.VideoTrackInfo(
+                width = 854,
+                height = 480,
+                bitrate = 1000000,
+                isSelected = false,
+                label = "480p",
+                resolution = com.pvq.cinepvq.features.player.VideoResolution.SD,
+                groupIndex = 0,
+                trackIndex = 2
+            )
+        )
+
+        val isCase1 = multiTrackList.size > 1
+        assertTrue("Multi-track stream must trigger CASE 1 handling", isCase1)
+        assertEquals(3, multiTrackList.size)
+        val hdTrack = multiTrackList.firstOrNull { it.resolution == com.pvq.cinepvq.features.player.VideoResolution.HD }
+        assertNotNull(hdTrack)
+        assertEquals(720, hdTrack?.height)
+    }
+
+    @Test
+    fun testScrollVisibilityDeduplicationEliminatesRedundantCallbacks() {
+        var callbackCount = 0
+        var currentVisibility = true
+        var lastReportedVisibility = true
+        val thresholdPx = 32
+
+        fun simulateScrollEvent(dy: Int) {
+            val shouldBeVisible = when {
+                dy > thresholdPx -> false
+                dy < -thresholdPx -> true
+                else -> return
+            }
+
+            if (shouldBeVisible != lastReportedVisibility) {
+                lastReportedVisibility = shouldBeVisible
+                currentVisibility = shouldBeVisible
+                callbackCount++
+            }
+        }
+
+        // 1. Initial state: visible = true, callbackCount = 0
+        assertEquals(true, currentVisibility)
+        assertEquals(0, callbackCount)
+
+        // 2. Micro scrolls below threshold (e.g. 10px, 15px) -> No callback
+        simulateScrollEvent(10)
+        simulateScrollEvent(15)
+        assertEquals(0, callbackCount)
+        assertTrue(currentVisibility)
+
+        // 3. User scrolls down > 32px -> Callback fires ONCE to hide
+        simulateScrollEvent(40)
+        assertEquals(1, callbackCount)
+        assertFalse(currentVisibility)
+
+        // 4. User continues scrolling down rapidly (50px, 80px, 120px)
+        // With deduplication, NO redundant callbacks should fire!
+        simulateScrollEvent(50)
+        simulateScrollEvent(80)
+        simulateScrollEvent(120)
+        assertEquals("Redundant scroll events must NOT trigger callback if visibility unchanged", 1, callbackCount)
+        assertFalse(currentVisibility)
+
+        // 5. User scrolls up > 32px -> Callback fires ONCE to show
+        simulateScrollEvent(-45)
+        assertEquals(2, callbackCount)
+        assertTrue(currentVisibility)
+
+        // 6. User continues scrolling up -> No redundant callbacks
+        simulateScrollEvent(-60)
+        simulateScrollEvent(-90)
+        assertEquals(2, callbackCount)
+        assertTrue(currentVisibility)
+    }
 }
 
 

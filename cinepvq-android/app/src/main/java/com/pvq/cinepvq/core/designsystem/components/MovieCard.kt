@@ -68,9 +68,7 @@ fun MovieCard(
                     .background(CinepvqSurfaceVariant)
             ) {
                 AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
-                        .data(movie.thumbUrl.ifBlank { movie.posterUrl })
-                        .build(),
+                    model = movie.thumbUrl.ifBlank { movie.posterUrl },
                     contentDescription = movie.name,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
@@ -156,9 +154,7 @@ fun MovieCard(
                 .background(CinepvqSurfaceVariant)
         ) {
             AsyncImage(
-                model = ImageRequest.Builder(LocalContext.current)
-                    .data(movie.thumbUrl.ifBlank { movie.posterUrl })
-                    .build(),
+                model = movie.thumbUrl.ifBlank { movie.posterUrl },
                 contentDescription = movie.name,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()

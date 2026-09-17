@@ -40,11 +40,16 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.PlayerView
 import com.pvq.cinepvq.core.designsystem.components.ErrorView
 import com.pvq.cinepvq.core.designsystem.components.LoadingView
@@ -117,6 +122,16 @@ fun PlayerScreen(
     var currentPlaybackSpeed by remember { mutableFloatStateOf(1.0f) }
     var currentResolution by remember { mutableStateOf(VideoResolution.AUTO) }
 
+    // Playback state restoration across server / stream source transitions
+    var pendingSeekPositionMs by remember { mutableStateOf<Long?>(null) }
+    var pendingPlayWhenReady by remember { mutableStateOf<Boolean?>(null) }
+
+    // Video tracks & resolution metadata
+    var activeVideoWidth by remember { mutableIntStateOf(0) }
+    var activeVideoHeight by remember { mutableIntStateOf(0) }
+    var activeVideoBitrate by remember { mutableIntStateOf(0) }
+    var availableVideoTracks by remember { mutableStateOf<List<VideoTrackInfo>>(emptyList()) }
+
     // Fullscreen Gesture HUD states
     var brightnessLevel by remember { mutableFloatStateOf(if (qaBrightness >= 0f) qaBrightness else 0.5f) }
     var showBrightnessHud by remember { mutableStateOf(qaBrightness >= 0f) }
@@ -173,30 +188,94 @@ fun PlayerScreen(
         }
     }
 
+    val trackSelector = remember(context) {
+        DefaultTrackSelector(context).apply {
+            parameters = buildUponParameters()
+                .setForceHighestSupportedBitrate(false)
+                .setExceedVideoConstraintsIfNecessary(true)
+                .build()
+        }
+    }
+
     // Initialize ExoPlayer
     val exoPlayer = remember(context) {
-        ExoPlayer.Builder(context).build().apply {
-            playWhenReady = true
-            addListener(object : Player.Listener {
-                override fun onIsPlayingChanged(playing: Boolean) {
-                    isPlaying = playing
-                }
+        ExoPlayer.Builder(context)
+            .setTrackSelector(trackSelector)
+            .build().apply {
+                playWhenReady = true
+                addListener(object : Player.Listener {
+                    override fun onIsPlayingChanged(playing: Boolean) {
+                        isPlaying = playing
+                    }
 
-                override fun onPlaybackStateChanged(playbackState: Int) {
-                    if (playbackState == Player.STATE_READY) {
-                        durationMs = duration.coerceAtLeast(0L)
-                    } else if (playbackState == Player.STATE_ENDED) {
-                        if (activeStream?.type == StreamType.HLS_DIRECT && duration > 0) {
-                            viewModel.recordProgress(episodeSlug, duration, duration)
+                    override fun onTracksChanged(tracks: Tracks) {
+                        val videoTracks = mutableListOf<VideoTrackInfo>()
+                        for (groupIndex in 0 until tracks.groups.size) {
+                            val group = tracks.groups[groupIndex]
+                            if (group.type == C.TRACK_TYPE_VIDEO) {
+                                val mediaTrackGroup = group.mediaTrackGroup
+                                for (trackIndex in 0 until mediaTrackGroup.length) {
+                                    val format = mediaTrackGroup.getFormat(trackIndex)
+                                    val isSelected = group.isTrackSelected(trackIndex)
+                                    val res = when {
+                                        format.height >= 1080 -> VideoResolution.FHD
+                                        format.height >= 720 -> VideoResolution.HD
+                                        format.height >= 480 -> VideoResolution.SD
+                                        format.height in 1..479 -> VideoResolution.LOW
+                                        else -> VideoResolution.AUTO
+                                    }
+                                    val label = when (res) {
+                                        VideoResolution.FHD -> "1080p (FHD)"
+                                        VideoResolution.HD -> "720p (HD)"
+                                        VideoResolution.SD -> "480p (SD)"
+                                        VideoResolution.LOW -> "360p (Tiết kiệm)"
+                                        VideoResolution.AUTO -> "Tự động"
+                                    }
+                                    videoTracks.add(
+                                        VideoTrackInfo(
+                                            width = format.width,
+                                            height = format.height,
+                                            bitrate = format.bitrate,
+                                            isSelected = isSelected,
+                                            label = label,
+                                            resolution = res,
+                                            groupIndex = groupIndex,
+                                            trackIndex = trackIndex
+                                        )
+                                    )
+                                    if (isSelected) {
+                                        activeVideoWidth = format.width
+                                        activeVideoHeight = format.height
+                                        activeVideoBitrate = format.bitrate
+                                    }
+                                }
+                            }
                         }
-                        val nextEp = viewModel.getNextEpisode()
-                        if (nextEp != null) {
-                            onSwitchEpisode(slug, nextEp.slug)
+                        availableVideoTracks = videoTracks
+                    }
+
+                    override fun onVideoSizeChanged(videoSize: VideoSize) {
+                        if (videoSize.width > 0 && videoSize.height > 0) {
+                            activeVideoWidth = videoSize.width
+                            activeVideoHeight = videoSize.height
                         }
                     }
-                }
-            })
-        }
+
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        if (playbackState == Player.STATE_READY) {
+                            durationMs = duration.coerceAtLeast(0L)
+                        } else if (playbackState == Player.STATE_ENDED) {
+                            if (activeStream?.type == StreamType.HLS_DIRECT && duration > 0) {
+                                viewModel.recordProgress(episodeSlug, duration, duration)
+                            }
+                            val nextEp = viewModel.getNextEpisode()
+                            if (nextEp != null) {
+                                onSwitchEpisode(slug, nextEp.slug)
+                            }
+                        }
+                    }
+                })
+            }
     }
 
     // When server or episode changes, cleanly transition stream and manage resume position
@@ -207,29 +286,45 @@ fun PlayerScreen(
         val isEpisodeChanged = (episodeSlug != lastLoadedEpisode)
         val isServerChanged = (serverName != lastLoadedServer)
 
-        if (isEpisodeChanged) {
-            // Flush progress for the episode we are leaving before switching
+        if (isServerChanged) {
+            // User switched server (e.g. Vietsub -> Thuyết minh, Server 1 -> Server 2)
+            // MUST preserve current playback position and play/pause state!
+            val capturedPos = if (exoPlayer.currentPosition > 0L) exoPlayer.currentPosition else currentPositionMs
+            val wasPlaying = exoPlayer.isPlaying
+
+            if (activeStream?.type == StreamType.HLS_DIRECT && exoPlayer.duration > 0 && capturedPos > 0) {
+                viewModel.recordProgress(lastLoadedEpisode, capturedPos, exoPlayer.duration)
+            }
+
+            pendingSeekPositionMs = capturedPos
+            pendingPlayWhenReady = wasPlaying
+            currentPositionMs = capturedPos
+
+            lastLoadedEpisode = episodeSlug
+            lastLoadedServer = serverName
+
+            viewModel.initializePlayer(slug, episodeSlug, serverName, embedUrl, resumePositionMs = capturedPos)
+        } else if (isEpisodeChanged) {
+            // Genuine navigation to a DIFFERENT episode (Next / Previous / direct pick)
             if (activeStream?.type == StreamType.HLS_DIRECT && exoPlayer.duration > 0) {
                 viewModel.recordProgress(lastLoadedEpisode, exoPlayer.currentPosition, exoPlayer.duration)
             }
-            // Cleanly stop and reset media on the existing ExoPlayer instance
             exoPlayer.stop()
             exoPlayer.clearMediaItems()
             currentPositionMs = 0L
             durationMs = 0L
-        }
+            pendingSeekPositionMs = null
+            pendingPlayWhenReady = null
 
-        // Only preserve current playback position if switching server/translation for the SAME episode!
-        val resumePos = if (isServerChanged && !isEpisodeChanged && currentPositionMs > 0L) {
-            currentPositionMs
+            lastLoadedEpisode = episodeSlug
+            lastLoadedServer = serverName
+
+            viewModel.initializePlayer(slug, episodeSlug, serverName, embedUrl, resumePositionMs = null)
         } else {
-            null
+            lastLoadedEpisode = episodeSlug
+            lastLoadedServer = serverName
+            viewModel.initializePlayer(slug, episodeSlug, serverName, embedUrl, resumePositionMs = null)
         }
-
-        lastLoadedEpisode = episodeSlug
-        lastLoadedServer = serverName
-
-        viewModel.initializePlayer(slug, episodeSlug, serverName, embedUrl, resumePositionMs = resumePos)
     }
 
     // Load stream into ExoPlayer with clean state reset
@@ -245,18 +340,28 @@ fun PlayerScreen(
                 }
                 .build()
 
-            // Reset position on media item change
-            exoPlayer.setMediaItem(mediaItem, /* resetPosition = */ true)
+            val targetPos = pendingSeekPositionMs
+                ?: if (viewModel.initialResumePositionMs > 0L) viewModel.initialResumePositionMs else 0L
+            val shouldPlay = pendingPlayWhenReady ?: true
+
+            pendingSeekPositionMs = null
+            pendingPlayWhenReady = null
+
+            exoPlayer.setMediaItem(mediaItem, /* resetPosition = */ false)
             exoPlayer.prepare()
 
-            val resumePos = viewModel.initialResumePositionMs
-            if (resumePos > 0L) {
-                exoPlayer.seekTo(resumePos)
-                currentPositionMs = resumePos
+            if (targetPos > 0L) {
+                exoPlayer.seekTo(targetPos)
+                currentPositionMs = targetPos
             } else {
                 currentPositionMs = 0L
             }
-            exoPlayer.play()
+
+            if (shouldPlay) {
+                exoPlayer.play()
+            } else {
+                exoPlayer.pause()
+            }
         } else {
             exoPlayer.pause()
         }
@@ -810,16 +915,38 @@ fun PlayerScreen(
                 currentResolution = currentResolution,
                 onResolutionChange = { res ->
                     currentResolution = res
-                    val params = exoPlayer.trackSelectionParameters.buildUpon()
-                    when (res) {
-                        VideoResolution.AUTO -> params.setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
-                        VideoResolution.FHD -> params.setMaxVideoSize(1920, 1080)
-                        VideoResolution.HD -> params.setMaxVideoSize(1280, 720)
-                        VideoResolution.SD -> params.setMaxVideoSize(854, 480)
-                        VideoResolution.LOW -> params.setMaxVideoSize(640, 360)
+                    if (res == VideoResolution.AUTO) {
+                        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                            .buildUpon()
+                            .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+                            .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
+                            .build()
+                    } else {
+                        val matchingTrack = availableVideoTracks.find { it.resolution == res }
+                        if (matchingTrack != null) {
+                            val group = exoPlayer.currentTracks.groups.getOrNull(matchingTrack.groupIndex)?.mediaTrackGroup
+                            if (group != null) {
+                                exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                                    .buildUpon()
+                                    .setOverrideForType(
+                                        TrackSelectionOverride(group, listOf(matchingTrack.trackIndex))
+                                    )
+                                    .build()
+                            }
+                        } else {
+                            val maxH = res.maxLines
+                            val maxW = if (maxH == Int.MAX_VALUE) Int.MAX_VALUE else (maxH * 16) / 9
+                            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                                .buildUpon()
+                                .setMaxVideoSize(maxW, maxH)
+                                .build()
+                        }
                     }
-                    exoPlayer.trackSelectionParameters = params.build()
                 },
+                availableVideoTracks = availableVideoTracks,
+                activeVideoWidth = activeVideoWidth,
+                activeVideoHeight = activeVideoHeight,
+                activeVideoBitrate = activeVideoBitrate,
                 onDismiss = { showSettingsSheet = false }
             )
         }
@@ -830,7 +957,16 @@ fun PlayerScreen(
                 sources = availableSources,
                 activeSource = activeStream,
                 onSelectSource = { source ->
-                    viewModel.switchStream(source)
+                    if (source.sourceId != activeStream?.sourceId) {
+                        val capturedPos = if (exoPlayer.currentPosition > 0L) exoPlayer.currentPosition else currentPositionMs
+                        val wasPlaying = exoPlayer.isPlaying
+                        if (activeStream?.type == StreamType.HLS_DIRECT && exoPlayer.duration > 0 && capturedPos > 0) {
+                            viewModel.recordProgress(episodeSlug, capturedPos, exoPlayer.duration)
+                        }
+                        pendingSeekPositionMs = capturedPos
+                        pendingPlayWhenReady = wasPlaying
+                        viewModel.switchStream(source)
+                    }
                 },
                 onDismiss = { showSourcesSheet = false }
             )

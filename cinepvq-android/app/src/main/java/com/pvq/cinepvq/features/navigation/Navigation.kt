@@ -92,6 +92,8 @@ fun NavController.navigateToTab(targetRoute: String) {
     }
 }
 
+val bottomNavRoutes = bottomNavItems.map { it.route }.toSet()
+
 @Composable
 fun CinepvqBottomNavBar(
     navController: NavController,
@@ -102,8 +104,7 @@ fun CinepvqBottomNavBar(
     val currentRoute = navBackStackEntry?.destination?.route
 
     // Only show on primary bottom nav screens
-    val visibleRoutes = bottomNavItems.map { it.route }
-    if (currentRoute !in visibleRoutes) return
+    if (currentRoute !in bottomNavRoutes) return
 
     val density = LocalDensity.current
     val navBarBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()

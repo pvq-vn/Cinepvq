@@ -40,6 +40,17 @@ enum class VideoResolution(val label: String, val shortLabel: String, val maxLin
     LOW("360p (Tiết kiệm data)", "360p", 360)
 }
 
+data class VideoTrackInfo(
+    val width: Int,
+    val height: Int,
+    val bitrate: Int,
+    val isSelected: Boolean,
+    val label: String,
+    val resolution: VideoResolution,
+    val groupIndex: Int,
+    val trackIndex: Int
+)
+
 enum class SettingsSubLevel {
     MAIN,
     SPEED,
@@ -58,6 +69,10 @@ fun PlayerSettingsBottomSheet(
     onSpeedChange: (Float) -> Unit,
     currentResolution: VideoResolution,
     onResolutionChange: (VideoResolution) -> Unit,
+    availableVideoTracks: List<VideoTrackInfo> = emptyList(),
+    activeVideoWidth: Int = 0,
+    activeVideoHeight: Int = 0,
+    activeVideoBitrate: Int = 0,
     onDismiss: () -> Unit
 ) {
     var currentLevel by remember { mutableStateOf(SettingsSubLevel.MAIN) }
@@ -194,7 +209,11 @@ fun PlayerSettingsBottomSheet(
                         SettingsNavigationItem(
                             icon = Icons.Default.HighQuality,
                             title = "Độ phân giải",
-                            currentValue = currentResolution.shortLabel,
+                            currentValue = if (availableVideoTracks.size <= 1 && activeVideoHeight > 0) {
+                                "${activeVideoHeight}p (Gốc)"
+                            } else {
+                                currentResolution.shortLabel
+                            },
                             onClick = { currentLevel = SettingsSubLevel.RESOLUTION }
                         )
                     }
@@ -212,16 +231,77 @@ fun PlayerSettingsBottomSheet(
                         }
                     }
                     SettingsSubLevel.RESOLUTION -> {
-                        VideoResolution.entries.forEach { res ->
-                            val isSelected = currentResolution == res
+                        if (availableVideoTracks.size <= 1) {
+                            // CASE 2: Provider provides a single video track (e.g. KKPhim Full HD 1080p)
+                            val displayHeight = if (activeVideoHeight > 0) activeVideoHeight else 1080
+                            val displayWidth = if (activeVideoWidth > 0) activeVideoWidth else 1920
+                            val displayBitrate = if (activeVideoBitrate > 0) "${activeVideoBitrate / 1000} kbps" else "~3.5 Mbps"
+
                             SettingOptionRow(
-                                label = res.label,
-                                isSelected = isSelected,
+                                label = "${displayHeight}p FHD (Nguồn gốc)",
+                                isSelected = true,
                                 onClick = {
-                                    onResolutionChange(res)
+                                    onDismiss()
+                                }
+                            )
+
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = CinepvqSurfaceVariant,
+                                border = androidx.compose.foundation.BorderStroke(1.dp, CinepvqBorderSubtle),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(14.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    verticalAlignment = Alignment.Top
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Info,
+                                        contentDescription = null,
+                                        tint = CinepvqPrimaryLight,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Text(
+                                            text = "Độ phân giải: ${displayWidth}x${displayHeight} • $displayBitrate",
+                                            color = CinepvqTextPrimary,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = "Máy chủ phim hiện chỉ cung cấp 1 luồng phát Full HD gốc. Không có luồng phân giải khác (720p/480p) để chuyển đổi.",
+                                            color = CinepvqTextMuted,
+                                            fontSize = 11.sp,
+                                            lineHeight = 16.sp
+                                        )
+                                    }
+                                }
+                            }
+                        } else {
+                            // CASE 1: Multi-variant HLS / adaptive streams
+                            SettingOptionRow(
+                                label = VideoResolution.AUTO.label,
+                                isSelected = currentResolution == VideoResolution.AUTO,
+                                onClick = {
+                                    onResolutionChange(VideoResolution.AUTO)
                                     currentLevel = SettingsSubLevel.MAIN
                                 }
                             )
+                            availableVideoTracks.forEach { track ->
+                                val isSelected = (currentResolution == track.resolution) || (currentResolution == VideoResolution.AUTO && track.isSelected)
+                                val bitrateText = if (track.bitrate > 0) " • ${track.bitrate / 1000} kbps" else ""
+                                SettingOptionRow(
+                                    label = "${track.label} (${track.width}x${track.height}$bitrateText)",
+                                    isSelected = isSelected,
+                                    onClick = {
+                                        onResolutionChange(track.resolution)
+                                        currentLevel = SettingsSubLevel.MAIN
+                                    }
+                                )
+                            }
                         }
                     }
                 }

@@ -41,6 +41,38 @@ import com.pvq.cinepvq.core.designsystem.components.LoadingView
 import com.pvq.cinepvq.core.designsystem.components.MovieCard
 import com.pvq.cinepvq.ui.theme.*
 
+private val SEARCH_CATEGORIES = listOf(
+    "phim-bo" to "Phim Bộ",
+    "phim-le" to "Phim Lẻ",
+    "hoat-hinh" to "Hoạt Hình",
+    "tv-shows" to "TV Show",
+    "dang-chieu" to "Đang Chiếu"
+)
+
+private val SEARCH_GENRES = listOf(
+    "hanh-dong" to "Hành Động",
+    "tinh-cam" to "Tình Cảm",
+    "kinh-di" to "Kinh Dị",
+    "hai-huoc" to "Hài Hước",
+    "vien-tuong" to "Viễn Tưởng",
+    "tam-ly" to "Tâm Lý"
+)
+
+private val SEARCH_COUNTRIES = listOf(
+    "han-quoc" to "Hàn Quốc",
+    "trung-quoc" to "Trung Quốc",
+    "nhat-ban" to "Nhật Bản",
+    "thai-lan" to "Thái Lan",
+    "au-my" to "Âu Mỹ",
+    "viet-nam" to "Việt Nam"
+)
+
+private val SEARCH_SORTS = listOf(
+    "latest" to "Mới cập nhật",
+    "name" to "Tên A-Z",
+    "year" to "Năm giảm dần"
+)
+
 @Composable
 fun SearchScreen(
     onMovieClick: (String) -> Unit,
@@ -57,9 +89,11 @@ fun SearchScreen(
     var isFilterVisible by remember { mutableStateOf(true) }
     com.pvq.cinepvq.core.designsystem.components.TrackLazyGridScroll(
         gridState = gridState,
-        threshold = 16,
+        threshold = 32,
         onVisibilityChanged = { visible ->
-            isFilterVisible = visible
+            if (isFilterVisible != visible) {
+                isFilterVisible = visible
+            }
             onBarsVisibilityChanged?.invoke(visible)
         }
     )
@@ -195,55 +229,23 @@ fun SearchScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.padding(bottom = 8.dp)
                 ) {
-                    val categories = listOf(
-                        "phim-bo" to "Phim Bộ",
-                        "phim-le" to "Phim Lẻ",
-                        "hoat-hinh" to "Hoạt Hình",
-                        "tv-shows" to "TV Show",
-                        "dang-chieu" to "Đang Chiếu"
-                    )
-                    
-                    val genres = listOf(
-                        "hanh-dong" to "Hành Động",
-                        "tinh-cam" to "Tình Cảm",
-                        "kinh-di" to "Kinh Dị",
-                        "hai-huoc" to "Hài Hước",
-                        "vien-tuong" to "Viễn Tưởng",
-                        "tam-ly" to "Tâm Lý"
-                    )
-
-                    val countries = listOf(
-                        "han-quoc" to "Hàn Quốc",
-                        "trung-quoc" to "Trung Quốc",
-                        "nhat-ban" to "Nhật Bản",
-                        "thai-lan" to "Thái Lan",
-                        "au-my" to "Âu Mỹ",
-                        "viet-nam" to "Việt Nam"
-                    )
-
-                    val sorts = listOf(
-                        "latest" to "Mới cập nhật",
-                        "name" to "Tên A-Z",
-                        "year" to "Năm giảm dần"
-                    )
-
                     item {
-                        FilterDropdownMenu("Danh mục", categories, activeCategory) { slug ->
+                        FilterDropdownMenu("Danh mục", SEARCH_CATEGORIES, activeCategory) { slug ->
                             viewModel.applyFilter("category", slug)
                         }
                     }
                     item {
-                        FilterDropdownMenu("Thể loại", genres, activeGenre) { slug ->
+                        FilterDropdownMenu("Thể loại", SEARCH_GENRES, activeGenre) { slug ->
                             viewModel.applyFilter("genre", slug)
                         }
                     }
                     item {
-                        FilterDropdownMenu("Quốc gia", countries, activeCountry) { slug ->
+                        FilterDropdownMenu("Quốc gia", SEARCH_COUNTRIES, activeCountry) { slug ->
                             viewModel.applyFilter("country", slug)
                         }
                     }
                     item {
-                        FilterDropdownMenu("Sắp xếp", sorts, activeSort, isSort = true) { slug ->
+                        FilterDropdownMenu("Sắp xếp", SEARCH_SORTS, activeSort, isSort = true) { slug ->
                             if (slug != null) viewModel.onSortChanged(slug)
                         }
                     }
