@@ -13,6 +13,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -28,20 +29,20 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.compose.AsyncImage
 import com.pvq.cinepvq.ui.theme.*
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProfileScreen(
     onNavigateToAuth: () -> Unit,
+    onNavigateToSettings: () -> Unit = {},
     onBarsVisibilityChanged: ((Boolean) -> Unit)? = null,
     viewModel: ProfileViewModel = viewModel()
 ) {
     val user by viewModel.currentUser.collectAsStateWithLifecycle()
     val isLoggedIn by viewModel.isLoggedIn.collectAsStateWithLifecycle()
     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
-    val syncMessage by viewModel.syncMessage.collectAsStateWithLifecycle()
     val favCount by viewModel.favoritesCount.collectAsStateWithLifecycle()
     val histCount by viewModel.historyCount.collectAsStateWithLifecycle()
     val backendUrl by viewModel.backendUrl.collectAsStateWithLifecycle()
-    val syncIsError by viewModel.syncIsError.collectAsStateWithLifecycle()
     val isTestingConnection by viewModel.isTestingConnection.collectAsStateWithLifecycle()
     val testConnectionMessage by viewModel.testConnectionMessage.collectAsStateWithLifecycle()
     val testConnectionIsError by viewModel.testConnectionIsError.collectAsStateWithLifecycle()
@@ -59,37 +60,44 @@ fun ProfileScreen(
         onVisibilityChanged = onBarsVisibilityChanged
     )
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(CinepvqBackground)
-            .statusBarsPadding()
-            .verticalScroll(scrollState)
-            .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 88.dp)
+    PullToRefreshBox(
+        isRefreshing = isSyncing,
+        onRefresh = { viewModel.syncNow() },
+        modifier = Modifier.fillMaxSize()
     ) {
-        // Header
-        Row(
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+                .fillMaxSize()
+                .background(CinepvqBackground)
+                .statusBarsPadding()
+                .verticalScroll(scrollState)
+                .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 88.dp)
         ) {
-            Text(
-                text = "Tài Khoản & Cài Đặt",
-                color = CinepvqTextPrimary,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Icon(
-                imageVector = Icons.Default.Settings,
-                contentDescription = null,
-                tint = CinepvqPrimary,
-                modifier = Modifier.size(24.dp)
-            )
-        }
+            // Header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "Tài Khoản & Cài Đặt",
+                    color = CinepvqTextPrimary,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                IconButton(onClick = onNavigateToSettings) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "Cài đặt",
+                        tint = CinepvqPrimary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
 
-        Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
         // ── User Card / Guest Card ──
         if (isLoggedIn && user != null) {
@@ -202,15 +210,6 @@ fun ProfileScreen(
                                 color = CinepvqTextSecondary,
                                 fontSize = 12.sp
                             )
-
-                            Spacer(modifier = Modifier.height(4.dp))
-
-                            Text(
-                                text = "✓ Đã đồng bộ với tài khoản Cinepvq Web",
-                                color = CinepvqGreen,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium
-                            )
                         }
                     }
 
@@ -273,67 +272,7 @@ fun ProfileScreen(
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // Sync button
-                    Button(
-                        onClick = { viewModel.syncNow() },
-                        enabled = !isSyncing,
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = CinepvqPrimary)
-                    ) {
-                        if (isSyncing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                color = Color.White,
-                                strokeWidth = 2.dp
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.Sync,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                        }
-                        Text(
-                            text = if (isSyncing) "Đang đồng bộ..." else "Đồng bộ dữ liệu với Web",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp,
-                            color = Color.White
-                        )
-                    }
 
-                    if (syncMessage != null) {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(if (syncIsError) CinepvqRed.copy(alpha = 0.15f) else CinepvqGreen.copy(alpha = 0.15f))
-                                .border(1.dp, if (syncIsError) CinepvqRed.copy(alpha = 0.4f) else CinepvqGreen.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
-                                .padding(horizontal = 12.dp, vertical = 8.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Icon(
-                                    imageVector = if (syncIsError) Icons.Default.Warning else Icons.Default.CheckCircle,
-                                    contentDescription = null,
-                                    tint = if (syncIsError) CinepvqRed else CinepvqGreen,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Text(
-                                    text = syncMessage!!,
-                                    color = if (syncIsError) CinepvqRed else CinepvqGreen,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium
-                                )
-                            }
-                        }
-                    }
                 }
             }
         } else {
@@ -406,7 +345,64 @@ fun ProfileScreen(
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // (Playback settings removed - not functional yet)
+        // ── Settings & Player Section ──
+        Text(
+            text = "Cài Đặt & Trình Phát",
+            color = CinepvqTextSecondary,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onNavigateToSettings),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = CinepvqSurface),
+            border = androidx.compose.foundation.BorderStroke(1.dp, CinepvqBorderSubtle)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = null,
+                        tint = CinepvqPrimary,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Column {
+                        Text(
+                            text = "Cài đặt trình phát & ứng dụng",
+                            color = CinepvqTextPrimary,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "Tốc độ phát, nguồn phát, độ phân giải, thời gian tua",
+                            color = CinepvqTextMuted,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = null,
+                    tint = CinepvqTextMuted,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
 
         // ── Server & Network Settings ──
         Text(
@@ -584,6 +580,7 @@ fun ProfileScreen(
         }
 
         Spacer(modifier = Modifier.height(80.dp))
+        }
     }
 
     // ── Edit Username Dialog ──

@@ -1385,6 +1385,41 @@ class SyncAndModelUnitTest {
         assertEquals(2, callbackCount)
         assertTrue(currentVisibility)
     }
+
+    @Test
+    fun testEpisodeDisplayFormatter_AllFormatsAndEdgeCases() {
+        val formatter = com.pvq.cinepvq.core.designsystem.utils.EpisodeDisplayFormatter
+
+        // Single digit / padded numbers
+        assertEquals("Tập 01", formatter.format("01"))
+        assertEquals("Tập 01", formatter.format("1"))
+        assertEquals("Tập 01", formatter.format("tap-1"))
+        assertEquals("Tập 01", formatter.format("tap-01"))
+        assertEquals("Tập 01", formatter.format("Tap 01"))
+        assertEquals("Tập 01", formatter.format("episode-1"))
+        assertEquals("Tập 01", formatter.format("Episode 01"))
+
+        // Two digits >= 10
+        assertEquals("Tập 33", formatter.format("33"))
+        assertEquals("Tập 33", formatter.format("tập 33"))
+        assertEquals("Tập 33", formatter.format("tap-33"))
+        assertEquals("Tập 100", formatter.format("tap-100"))
+
+        // Special labels
+        assertEquals("Full", formatter.format("Full"))
+        assertEquals("Full", formatter.format("full"))
+        assertEquals("Trọn bộ", formatter.format("Trọn bộ"))
+        assertEquals("Trailer", formatter.format("Trailer"))
+        assertEquals("Special", formatter.format("Special"))
+        assertEquals("Đặc biệt", formatter.format("Đặc biệt"))
+        assertEquals("Movie", formatter.format("Movie"))
+        assertEquals("OVA", formatter.format("OVA"))
+
+        // Blank or null
+        assertEquals("", formatter.format(""))
+        assertEquals("", formatter.format(null))
+        assertEquals("", formatter.format("   "))
+    }
 }
 
 

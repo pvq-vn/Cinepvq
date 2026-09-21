@@ -21,12 +21,16 @@ import com.pvq.cinepvq.features.detail.MovieDetailScreen
 import com.pvq.cinepvq.features.favorites.FavoritesScreen
 import com.pvq.cinepvq.features.history.HistoryScreen
 import com.pvq.cinepvq.features.home.HomeScreen
+import com.pvq.cinepvq.features.library.LibraryScreen
 import com.pvq.cinepvq.features.navigation.CinepvqBottomNavBar
 import com.pvq.cinepvq.features.navigation.Screen
 import com.pvq.cinepvq.features.navigation.navigateToTab
 import com.pvq.cinepvq.features.player.PlayerScreen
 import com.pvq.cinepvq.features.profile.ProfileScreen
 import com.pvq.cinepvq.features.search.SearchScreen
+import com.pvq.cinepvq.features.section.SectionDetailScreen
+import com.pvq.cinepvq.features.settings.SettingsScreen
+import com.pvq.cinepvq.features.trending.TrendingScreen
 import com.pvq.cinepvq.ui.theme.CinepvqBackground
 import com.pvq.cinepvq.ui.theme.CinepvqTheme
 import java.net.URLDecoder
@@ -85,10 +89,13 @@ fun CinepvqAppRoot(
 
     val isBottomBarRoute = currentRoute in listOf(
         Screen.Home.route,
+        Screen.Trending.route,
         Screen.Search.route,
+        Screen.Library.route,
+        Screen.Profile.route,
         Screen.Favorites.route,
         Screen.History.route,
-        Screen.Profile.route
+        Screen.SectionDetail.route
     )
 
     var isBarsVisible by remember { mutableStateOf(true) }
@@ -118,8 +125,29 @@ fun CinepvqAppRoot(
                         val ep = episodeSlug ?: "tap-1"
                         navController.navigate(Screen.Player.createRoute(slug, ep))
                     },
-                    onCategoryClick = { _ ->
-                        navController.navigateToTab(Screen.Search.route)
+                    onCategoryClick = { categorySlug ->
+                        if (categorySlug == "thinh-hanh") {
+                            navController.navigateToTab(Screen.Trending.route)
+                        } else {
+                            val title = when {
+                                categorySlug == "phim-bo" -> "Phim bộ"
+                                categorySlug == "phim-le" -> "Phim lẻ"
+                                categorySlug == "hoat-hinh" -> "Hoạt hình"
+                                categorySlug == "tv-shows" -> "TV Shows"
+                                categorySlug == "phim-moi" -> "Phim mới cập nhật"
+                                categorySlug == "the-loai/hanh-dong" -> "Phim Hành Động"
+                                categorySlug == "quoc-gia/au-my" -> "Phim Âu Mỹ"
+                                categorySlug == "quoc-gia/han-quoc" -> "Phim Hàn Quốc"
+                                categorySlug.startsWith("the-loai/") -> {
+                                    categorySlug.removePrefix("the-loai/").replace("-", " ").replaceFirstChar { it.uppercase() }
+                                }
+                                categorySlug.startsWith("quoc-gia/") -> {
+                                    categorySlug.removePrefix("quoc-gia/").replace("-", " ").replaceFirstChar { it.uppercase() }
+                                }
+                                else -> categorySlug.replace("-", " ").replaceFirstChar { it.uppercase() }
+                            }
+                            navController.navigate(Screen.SectionDetail.createRoute(categorySlug, title))
+                        }
                     },
                     onSearchClick = {
                         navController.navigateToTab(Screen.Search.route)
@@ -128,9 +156,19 @@ fun CinepvqAppRoot(
                         navController.navigateToTab(Screen.Profile.route)
                     },
                     onHistoryClick = {
-                        navController.navigateToTab(Screen.History.route)
+                        navController.navigateToTab(Screen.Library.route)
                     },
                     isTopBarVisible = isBarsVisible,
+                    onBarsVisibilityChanged = { isBarsVisible = it }
+                )
+            }
+
+            // Trending Tab
+            composable(Screen.Trending.route) {
+                TrendingScreen(
+                    onMovieClick = { slug ->
+                        navController.navigate(Screen.Detail.createRoute(slug))
+                    },
                     onBarsVisibilityChanged = { isBarsVisible = it }
                 )
             }
@@ -145,7 +183,62 @@ fun CinepvqAppRoot(
                 )
             }
 
-            // Favorites Tab
+            // Library Tab
+            composable(Screen.Library.route) {
+                LibraryScreen(
+                    onMovieClick = { slug ->
+                        navController.navigate(Screen.Detail.createRoute(slug))
+                    },
+                    onResumeMovie = { slug, episodeSlug ->
+                        val ep = episodeSlug ?: "tap-1"
+                        navController.navigate(Screen.Player.createRoute(slug, ep))
+                    },
+                    onExploreClick = {
+                        navController.navigateToTab(Screen.Home.route)
+                    },
+                    onBarsVisibilityChanged = { isBarsVisible = it }
+                )
+            }
+
+            // Section Detail Screen
+            composable(
+                route = Screen.SectionDetail.route,
+                arguments = listOf(
+                    navArgument("type") { type = NavType.StringType },
+                    navArgument("title") {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    }
+                )
+            ) { backStackEntry ->
+                val rawType = backStackEntry.arguments?.getString("type") ?: ""
+                val type = if (rawType.isNotBlank()) {
+                    try { URLDecoder.decode(rawType, "UTF-8") } catch (_: Exception) { rawType }
+                } else rawType
+                val rawTitle = backStackEntry.arguments?.getString("title")
+                val title = if (!rawTitle.isNullOrBlank()) {
+                    try { URLDecoder.decode(rawTitle, "UTF-8") } catch (_: Exception) { rawTitle }
+                } else type
+                SectionDetailScreen(
+                    type = type,
+                    title = title,
+                    onMovieClick = { slug ->
+                        navController.navigate(Screen.Detail.createRoute(slug))
+                    },
+                    onBackClick = { navController.popBackStack() },
+                    onBarsVisibilityChanged = { isBarsVisible = it }
+                )
+            }
+
+            // Settings Screen
+            composable(Screen.Settings.route) {
+                SettingsScreen(
+                    onNavigateBack = { navController.popBackStack() }
+                )
+            }
+
+            // Favorites Tab (Direct route preserved)
             composable(Screen.Favorites.route) {
                 FavoritesScreen(
                     onMovieClick = { slug ->
@@ -158,7 +251,7 @@ fun CinepvqAppRoot(
                 )
             }
 
-            // History Tab
+            // History Tab (Direct route preserved)
             composable(Screen.History.route) {
                 HistoryScreen(
                     onResumeMovie = { slug, episodeSlug ->
@@ -177,6 +270,9 @@ fun CinepvqAppRoot(
                 ProfileScreen(
                     onNavigateToAuth = {
                         navController.navigate(Screen.Auth.route)
+                    },
+                    onNavigateToSettings = {
+                        navController.navigate(Screen.Settings.route)
                     },
                     onBarsVisibilityChanged = { isBarsVisible = it }
                 )

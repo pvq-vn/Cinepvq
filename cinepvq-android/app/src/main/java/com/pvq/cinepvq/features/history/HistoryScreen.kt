@@ -28,6 +28,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.compose.AsyncImage
 import com.pvq.cinepvq.core.designsystem.components.EmptyView
+import com.pvq.cinepvq.core.designsystem.utils.EpisodeDisplayFormatter
 import com.pvq.cinepvq.domain.model.WatchHistoryItem
 import com.pvq.cinepvq.ui.theme.*
 
@@ -233,7 +234,7 @@ private fun HistoryRowCard(
                 Spacer(modifier = Modifier.height(2.dp))
 
                 Text(
-                    text = item.episodeName ?: "Tập 1",
+                    text = EpisodeDisplayFormatter.format(item.episodeName ?: "Tập 1"),
                     color = CinepvqPrimaryLight,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium

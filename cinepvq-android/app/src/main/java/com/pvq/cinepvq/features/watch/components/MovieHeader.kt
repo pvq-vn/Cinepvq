@@ -40,7 +40,7 @@ fun MovieHeader(
     val (baseTitle, partString) = movie.parsedTitleAndPart
     val cleanEp = currentEpisodeName.trim()
     val epLabel = if (cleanEp.isNotBlank()) {
-        if (cleanEp.startsWith("tập", ignoreCase = true)) cleanEp else "Tập $cleanEp"
+        com.pvq.cinepvq.core.designsystem.utils.EpisodeDisplayFormatter.format(cleanEp)
     } else ""
     val durationText = movie.time.trim()
 

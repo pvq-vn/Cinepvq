@@ -57,14 +57,21 @@ import com.pvq.cinepvq.domain.model.EpisodeItem
 import com.pvq.cinepvq.domain.model.EpisodeServer
 import com.pvq.cinepvq.domain.model.StreamSource
 import com.pvq.cinepvq.domain.model.StreamType
+import com.pvq.cinepvq.features.player.embed.EmbedPlayerView
 import com.pvq.cinepvq.ui.theme.*
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.abs
 
 private enum class GestureMode {
     SEEK,
     VERTICAL
+}
+
+private enum class SeekSide {
+    LEFT,
+    RIGHT
 }
 
 @OptIn(UnstableApi::class)
@@ -118,9 +125,51 @@ fun PlayerScreen(
     var showSourcesSheet by remember { mutableStateOf(false) }
     var showQuickEpisodeSelector by remember { mutableStateOf(false) }
 
+    val settingsRepository = remember { com.pvq.cinepvq.CinepvqApp.instance.settingsRepository }
+    val playerSettings by settingsRepository.playerSettings.collectAsStateWithLifecycle(initialValue = com.pvq.cinepvq.data.settings.PlayerSettings())
+    val coroutineScope = rememberCoroutineScope()
+
+    var currentSwitchGeneration by remember { mutableIntStateOf(0) }
+    var previousSpeedBeforeBoost by remember { mutableFloatStateOf(1.0f) }
+    var doubleTapSeekSide by remember { mutableStateOf<SeekSide?>(null) }
+    var doubleTapAccumulatedSec by remember { mutableIntStateOf(0) }
+    var doubleTapTriggerCounter by remember { mutableIntStateOf(0) }
+
+    var lastTapTime by remember { mutableLongStateOf(0L) }
+    var lastTapPos by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    var pendingSingleTapJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+
+    // Translation warning: tied to actual playback start of new source
+    var isPlaybackStartedWarningVisible by remember { mutableStateOf(false) }
+    var pendingWarningTrigger by remember { mutableStateOf(false) }
+
+    LaunchedEffect(showSyncWarning) {
+        if (showSyncWarning) {
+            pendingWarningTrigger = true
+        }
+    }
+
+    LaunchedEffect(isPlaybackStartedWarningVisible) {
+        if (isPlaybackStartedWarningVisible) {
+            delay(5000)
+            isPlaybackStartedWarningVisible = false
+            onDismissSyncWarning()
+        }
+    }
+
     // Playback Speed & Resolution state
     var currentPlaybackSpeed by remember { mutableFloatStateOf(1.0f) }
     var currentResolution by remember { mutableStateOf(VideoResolution.AUTO) }
+
+    LaunchedEffect(doubleTapTriggerCounter) {
+        if (doubleTapTriggerCounter > 0) {
+            delay(800)
+            doubleTapSeekSide = null
+            doubleTapAccumulatedSec = 0
+            doubleTapTriggerCounter = 0
+        }
+    }
+
 
     // Playback state restoration across server / stream source transitions
     var pendingSeekPositionMs by remember { mutableStateOf<Long?>(null) }
@@ -180,14 +229,6 @@ fun PlayerScreen(
         }
     }
 
-    // Auto-hide sync warning after 6 seconds
-    LaunchedEffect(showSyncWarning) {
-        if (showSyncWarning) {
-            delay(6000)
-            onDismissSyncWarning()
-        }
-    }
-
     val trackSelector = remember(context) {
         DefaultTrackSelector(context).apply {
             parameters = buildUponParameters()
@@ -206,6 +247,10 @@ fun PlayerScreen(
                 addListener(object : Player.Listener {
                     override fun onIsPlayingChanged(playing: Boolean) {
                         isPlaying = playing
+                        if (playing && pendingWarningTrigger && playbackState == Player.STATE_READY) {
+                            pendingWarningTrigger = false
+                            isPlaybackStartedWarningVisible = true
+                        }
                     }
 
                     override fun onTracksChanged(tracks: Tracks) {
@@ -264,6 +309,10 @@ fun PlayerScreen(
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         if (playbackState == Player.STATE_READY) {
                             durationMs = duration.coerceAtLeast(0L)
+                            if (pendingWarningTrigger && (isPlaying || playWhenReady)) {
+                                pendingWarningTrigger = false
+                                isPlaybackStartedWarningVisible = true
+                            }
                         } else if (playbackState == Player.STATE_ENDED) {
                             if (activeStream?.type == StreamType.HLS_DIRECT && duration > 0) {
                                 viewModel.recordProgress(episodeSlug, duration, duration)
@@ -276,6 +325,13 @@ fun PlayerScreen(
                     }
                 })
             }
+    }
+
+    LaunchedEffect(playerSettings.defaultPlaybackSpeed) {
+        if (currentPlaybackSpeed == 1.0f && playerSettings.defaultPlaybackSpeed != 1.0f) {
+            currentPlaybackSpeed = playerSettings.defaultPlaybackSpeed
+            exoPlayer.setPlaybackSpeed(playerSettings.defaultPlaybackSpeed)
+        }
     }
 
     // When server or episode changes, cleanly transition stream and manage resume position
@@ -303,7 +359,14 @@ fun PlayerScreen(
             lastLoadedEpisode = episodeSlug
             lastLoadedServer = serverName
 
-            viewModel.initializePlayer(slug, episodeSlug, serverName, embedUrl, resumePositionMs = capturedPos)
+            viewModel.initializePlayer(
+                slug,
+                episodeSlug,
+                serverName,
+                embedUrl,
+                resumePositionMs = capturedPos,
+                preferredSourceKey = playerSettings.defaultSource
+            )
         } else if (isEpisodeChanged) {
             // Genuine navigation to a DIFFERENT episode (Next / Previous / direct pick)
             if (activeStream?.type == StreamType.HLS_DIRECT && exoPlayer.duration > 0) {
@@ -319,17 +382,33 @@ fun PlayerScreen(
             lastLoadedEpisode = episodeSlug
             lastLoadedServer = serverName
 
-            viewModel.initializePlayer(slug, episodeSlug, serverName, embedUrl, resumePositionMs = null)
+            viewModel.initializePlayer(
+                slug,
+                episodeSlug,
+                serverName,
+                embedUrl,
+                resumePositionMs = null,
+                preferredSourceKey = playerSettings.defaultSource
+            )
         } else {
             lastLoadedEpisode = episodeSlug
             lastLoadedServer = serverName
-            viewModel.initializePlayer(slug, episodeSlug, serverName, embedUrl, resumePositionMs = null)
+            viewModel.initializePlayer(
+                slug,
+                episodeSlug,
+                serverName,
+                embedUrl,
+                resumePositionMs = null,
+                preferredSourceKey = playerSettings.defaultSource
+            )
         }
     }
 
-    // Load stream into ExoPlayer with clean state reset
+    // Load stream into ExoPlayer with clean state reset and lifecycle synchronization
     LaunchedEffect(activeStream) {
         val stream = activeStream ?: return@LaunchedEffect
+        val generation = ++currentSwitchGeneration
+
         if (stream.type == StreamType.HLS_DIRECT) {
             val mediaItem = MediaItem.Builder()
                 .setUri(stream.url)
@@ -347,23 +426,14 @@ fun PlayerScreen(
             pendingSeekPositionMs = null
             pendingPlayWhenReady = null
 
-            exoPlayer.setMediaItem(mediaItem, /* resetPosition = */ false)
+            // Direct Media3 startPositionMs seek: ExoPlayer fetches chunks directly at targetPos without double buffering
+            exoPlayer.setMediaItem(mediaItem, targetPos)
+            exoPlayer.playWhenReady = shouldPlay
             exoPlayer.prepare()
-
-            if (targetPos > 0L) {
-                exoPlayer.seekTo(targetPos)
-                currentPositionMs = targetPos
-            } else {
-                currentPositionMs = 0L
-            }
-
-            if (shouldPlay) {
-                exoPlayer.play()
-            } else {
-                exoPlayer.pause()
-            }
         } else {
-            exoPlayer.pause()
+            // EMBED active: stop ExoPlayer completely to release hardware video codecs and RAM for WebView
+            exoPlayer.stop()
+            exoPlayer.clearMediaItems()
         }
     }
 
@@ -426,25 +496,13 @@ fun PlayerScreen(
                 )
             }
             activeStream?.type == StreamType.EMBED -> {
-                // ── In-App Web View for Iframe Embed ────────────────────────
-                Box(modifier = Modifier.fillMaxSize()) {
-                    AndroidView(
-                        factory = { ctx ->
-                            android.webkit.WebView(ctx).apply {
-                                layoutParams = FrameLayout.LayoutParams(
-                                    ViewGroup.LayoutParams.MATCH_PARENT,
-                                    ViewGroup.LayoutParams.MATCH_PARENT
-                                )
-                                settings.javaScriptEnabled = true
-                                settings.domStorageEnabled = true
-                                settings.mediaPlaybackRequiresUserGesture = false
-                                webChromeClient = android.webkit.WebChromeClient()
-                                webViewClient = android.webkit.WebViewClient()
-                                loadUrl(activeStream!!.url)
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize()
-                    )
+                // ── In-App Web View for Iframe Embed (Configured for streaming hosts) ──
+                key(activeStream!!.url) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        EmbedPlayerView(
+                            url = activeStream!!.url,
+                            modifier = Modifier.fillMaxSize()
+                        )
 
                     // Overlay Top Bar for Embed
                     Row(
@@ -506,9 +564,10 @@ fun PlayerScreen(
                     }
                 }
             }
-            else -> {
-                // 1. Video Surface Layer (Pure ExoPlayer Surface)
-                Box(modifier = Modifier.fillMaxSize()) {
+        }
+        else -> {
+            // 1. Video Surface Layer (Pure ExoPlayer Surface)
+            Box(modifier = Modifier.fillMaxSize()) {
                     AndroidView(
                         factory = { ctx ->
                             PlayerView(ctx).apply {
@@ -530,9 +589,10 @@ fun PlayerScreen(
                         modifier = Modifier
                             .fillMaxSize()
                             .semantics { contentDescription = "Video Player Area" }
-                            .pointerInput(isFullscreen, currentPlaybackSpeed) {
+                            .pointerInput(isFullscreen) {
                                 val touchSlop = viewConfig.touchSlop
-                                val longPressTimeout = 500L
+                                val longPressTimeout = 400L
+                                val doubleTapTimeout = 320L
 
                                 awaitEachGesture {
                                     val down = awaitFirstDown(requireUnconsumed = false)
@@ -542,9 +602,9 @@ fun PlayerScreen(
                                     var totalDragX = 0f
                                     var totalDragY = 0f
                                     var hasMoved = false
-                                    var isSpeedBoosting = false
                                     var gestureMode: GestureMode? = null
 
+                                    val seekStep = playerSettings.defaultSeekDuration.coerceAtLeast(5)
                                     val initialBrightness = activity?.window?.attributes?.screenBrightness.let {
                                         if (it == null || it < 0f) 0.5f else it
                                     }
@@ -558,37 +618,74 @@ fun PlayerScreen(
                                             // Finger released / UP
                                             if (isSpeedBoosting) {
                                                 isSpeedBoosting = false
-                                                exoPlayer.setPlaybackSpeed(currentPlaybackSpeed)
-                                            }
-                                            if (showSeekHud) {
+                                                exoPlayer.setPlaybackSpeed(previousSpeedBeforeBoost)
+                                            } else if (showSeekHud) {
                                                 exoPlayer.seekTo(seekTargetPositionMs)
                                                 currentPositionMs = seekTargetPositionMs
                                                 showSeekHud = false
-                                            } else if (!hasMoved && !isSpeedBoosting && (System.currentTimeMillis() - startTime) < longPressTimeout) {
-                                                // Single tap on video: SHOW CONTROLS IMMEDIATELY!
-                                                isControlsVisible = true
+                                            } else if (!hasMoved) {
+                                                val elapsedSinceLast = startTime - lastTapTime
+                                                val wasLeftHalf = lastTapPos.x < size.width / 2f
+                                                val isSameSide = (isLeftHalf == wasLeftHalf)
+                                                val isDoubleTap = elapsedSinceLast in 40L..doubleTapTimeout && isSameSide
+
+                                                if (isDoubleTap) {
+                                                    pendingSingleTapJob?.cancel()
+                                                    pendingSingleTapJob = null
+                                                    lastTapTime = 0L
+
+                                                    val side = if (isLeftHalf) SeekSide.LEFT else SeekSide.RIGHT
+                                                    val delta = if (isLeftHalf) -seekStep else seekStep
+                                                    val newPos = (exoPlayer.currentPosition + delta * 1000L).coerceIn(0L, durationMs.coerceAtLeast(0L))
+                                                    exoPlayer.seekTo(newPos)
+                                                    currentPositionMs = newPos
+
+                                                    if (doubleTapSeekSide == side) {
+                                                        doubleTapAccumulatedSec += seekStep
+                                                    } else {
+                                                        doubleTapSeekSide = side
+                                                        doubleTapAccumulatedSec = seekStep
+                                                    }
+                                                    doubleTapTriggerCounter++
+                                                } else {
+                                                    lastTapTime = startTime
+                                                    lastTapPos = startPos
+                                                    pendingSingleTapJob?.cancel()
+                                                    pendingSingleTapJob = coroutineScope.launch {
+                                                        delay(doubleTapTimeout)
+                                                        isControlsVisible = true
+                                                    }
+                                                }
                                             }
                                             showBrightnessHud = false
                                             showVolumeHud = false
                                             break
                                         }
 
-                                        if (isFullscreen) {
-                                            val dragX = change.position.x - startPos.x
-                                            val dragY = change.position.y - startPos.y
-                                            totalDragX = dragX
-                                            totalDragY = dragY
+                                        val dragX = change.position.x - startPos.x
+                                        val dragY = change.position.y - startPos.y
+                                        totalDragX = dragX
+                                        totalDragY = dragY
 
-                                            if (!hasMoved) {
-                                                if (abs(dragX) > touchSlop || abs(dragY) > touchSlop) {
-                                                    hasMoved = true
+                                        if (!hasMoved) {
+                                            if (abs(dragX) > touchSlop || abs(dragY) > touchSlop) {
+                                                hasMoved = true
+                                                pendingSingleTapJob?.cancel()
+                                                lastTapTime = 0L
+                                                if (isFullscreen) {
                                                     gestureMode = if (abs(dragX) > abs(dragY)) GestureMode.SEEK else GestureMode.VERTICAL
-                                                } else if ((System.currentTimeMillis() - startTime) >= longPressTimeout && !isSpeedBoosting) {
-                                                    isSpeedBoosting = true
-                                                    exoPlayer.setPlaybackSpeed(2.0f)
                                                 }
+                                            } else if ((System.currentTimeMillis() - startTime) >= longPressTimeout && !isSpeedBoosting) {
+                                                // Long Press Triggered (Works in portrait and fullscreen!)
+                                                pendingSingleTapJob?.cancel()
+                                                lastTapTime = 0L
+                                                previousSpeedBeforeBoost = exoPlayer.playbackParameters.speed
+                                                exoPlayer.setPlaybackSpeed(2.0f)
+                                                isSpeedBoosting = true
                                             }
+                                        }
 
+                                        if (isFullscreen && gestureMode != null) {
                                             if (gestureMode == GestureMode.SEEK) {
                                                 change.consume()
                                                 val deltaSec = (totalDragX / (size.width * 0.55f) * 90f).toInt()
@@ -794,6 +891,43 @@ fun PlayerScreen(
                     }
                 }
 
+                // 5. Double Tap Seek HUD (Left / Right)
+                if (doubleTapSeekSide != null) {
+                    val isLeft = doubleTapSeekSide == SeekSide.LEFT
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 48.dp),
+                        contentAlignment = if (isLeft) Alignment.CenterStart else Alignment.CenterEnd
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color.Black.copy(alpha = 0.8f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, CinepvqPrimary.copy(alpha = 0.5f)),
+                            shadowElevation = 8.dp
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 22.dp, vertical = 14.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isLeft) Icons.Default.FastRewind else Icons.Default.FastForward,
+                                    contentDescription = null,
+                                    tint = CinepvqPrimaryLight,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                                Text(
+                                    text = if (isLeft) "↶ ${doubleTapAccumulatedSec}s" else "${doubleTapAccumulatedSec}s ↷",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+
                 // Next/Previous episode availability
                 val nextEpisode = viewModel.getNextEpisode()
                 val prevEpisode = viewModel.getPreviousEpisode()
@@ -821,7 +955,7 @@ fun PlayerScreen(
                     isWatchLater = isWatchLater,
                     isScreenLocked = isScreenLocked,
                     showLockHint = showLockHint,
-                    showSyncWarning = showSyncWarning,
+                    showSyncWarning = isPlaybackStartedWarningVisible,
                     showLanguageButton = effectiveServers.size > 1,
                     showQuickEpisodeSelector = showQuickEpisodeSelector,
                     allEpisodes = effectiveEpisodes,

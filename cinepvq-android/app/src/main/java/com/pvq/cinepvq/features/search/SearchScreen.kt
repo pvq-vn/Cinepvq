@@ -18,6 +18,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
@@ -32,6 +34,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -83,9 +86,25 @@ fun SearchScreen(
     val query by viewModel.query.collectAsStateWithLifecycle()
     val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
     val isSearching by viewModel.isSearching.collectAsStateWithLifecycle()
+    val isLoadingMore by viewModel.isLoadingMore.collectAsStateWithLifecycle()
+    val canLoadMore by viewModel.canLoadMore.collectAsStateWithLifecycle()
     val selectedTag by viewModel.selectedTag.collectAsStateWithLifecycle()
 
     val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+
+    // Viewport Sentinel: Load more results when scrolling near the end
+    androidx.compose.runtime.LaunchedEffect(gridState, isLoadingMore, canLoadMore) {
+        androidx.compose.runtime.snapshotFlow {
+            val total = gridState.layoutInfo.totalItemsCount
+            val lastVisible = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            lastVisible to total
+        }.collect { (lastVisible, total) ->
+            if (total > 0 && lastVisible >= total - 6) {
+                viewModel.loadMore()
+            }
+        }
+    }
+
     var isFilterVisible by remember { mutableStateOf(true) }
     com.pvq.cinepvq.core.designsystem.components.TrackLazyGridScroll(
         gridState = gridState,
@@ -105,58 +124,72 @@ fun SearchScreen(
             .statusBarsPadding()
             .imePadding()
     ) {
-        // Search Input Bar
-        OutlinedTextField(
-            value = query,
-            onValueChange = { viewModel.onQueryChange(it) },
-            placeholder = {
-                Text(
-                    text = "Tìm kiếm phim, diễn viên...",
-                    color = CinepvqTextMuted,
-                    fontSize = 14.sp
-                )
-            },
-            leadingIcon = {
-                Icon(
-                    imageVector = Icons.Default.Search,
-                    contentDescription = null,
-                    tint = CinepvqTextSecondary
-                )
-            },
-            trailingIcon = {
-                if (query.isNotBlank()) {
-                    IconButton(onClick = {
-                        viewModel.clearQuery()
-                        focusManager.clearFocus()
-                    }) {
-                        Icon(
-                            imageVector = Icons.Default.Clear,
-                            contentDescription = "Xóa",
-                            tint = CinepvqTextSecondary
-                        )
-                    }
-                }
-            },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = {
-                viewModel.saveSearchQuery(query)
-                focusManager.clearFocus()
-            }),
-            singleLine = true,
-            shape = RoundedCornerShape(14.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = CinepvqSurface,
-                unfocusedContainerColor = CinepvqSurface,
-                focusedBorderColor = CinepvqPrimary,
-                unfocusedBorderColor = CinepvqBorderSubtle,
-                focusedTextColor = CinepvqTextPrimary,
-                unfocusedTextColor = CinepvqTextPrimary,
-                cursorColor = CinepvqPrimary
-            ),
+        // Search Input Bar (Compact, single-line non-wrapping, clean touch target)
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-        )
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { viewModel.onQueryChange(it) },
+                placeholder = {
+                    Text(
+                        text = "Tìm kiếm phim, diễn viên...",
+                        color = CinepvqTextMuted,
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = CinepvqTextSecondary
+                    )
+                },
+                trailingIcon = {
+                    if (query.isNotBlank()) {
+                        IconButton(
+                            onClick = {
+                                viewModel.clearQuery()
+                                focusManager.clearFocus()
+                            },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Clear,
+                                contentDescription = "Xóa",
+                                modifier = Modifier.size(16.dp),
+                                tint = CinepvqTextSecondary
+                            )
+                        }
+                    }
+                },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = {
+                    viewModel.saveSearchQuery(query)
+                    focusManager.clearFocus()
+                }),
+                singleLine = true,
+                maxLines = 1,
+                shape = RoundedCornerShape(12.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = CinepvqSurface,
+                    unfocusedContainerColor = CinepvqSurface,
+                    focusedBorderColor = CinepvqPrimary,
+                    unfocusedBorderColor = CinepvqBorderSubtle,
+                    focusedTextColor = CinepvqTextPrimary,
+                    unfocusedTextColor = CinepvqTextPrimary,
+                    cursorColor = CinepvqPrimary
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
 
         val searchHistory by viewModel.searchHistory.collectAsStateWithLifecycle(emptyList())
 
@@ -325,9 +358,40 @@ fun SearchScreen(
                         items(searchResults, key = { it.slug }) { movie ->
                             MovieCard(
                                 movie = movie,
-                                width = 110.dp,
                                 onClick = { onMovieClick(movie.slug) }
                             )
+                        }
+
+                        if (isLoadingMore) {
+                            item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(28.dp),
+                                        color = CinepvqPrimary,
+                                        strokeWidth = 2.5.dp
+                                    )
+                                }
+                            }
+                        } else if (!canLoadMore && searchResults.size >= 12) {
+                            item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "Đã hiển thị tất cả kết quả",
+                                        color = CinepvqTextMuted,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -336,7 +400,6 @@ fun SearchScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FilterDropdownMenu(
     label: String,
@@ -345,7 +408,7 @@ fun FilterDropdownMenu(
     isSort: Boolean = false,
     onValueSelected: (String?) -> Unit
 ) {
-    var expanded by androidx.compose.runtime.mutableStateOf(false)
+    var expanded by remember { mutableStateOf(false) }
     val selectedText = if (isSort) {
         options.find { it.first == (selectedValue ?: "latest") }?.second ?: "Mới cập nhật"
     } else {
@@ -354,13 +417,10 @@ fun FilterDropdownMenu(
     
     val isSelected = if (isSort) selectedValue != "latest" && selectedValue != null else selectedValue != null
 
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = { expanded = !expanded }
-    ) {
+    Box {
         FilterChip(
             selected = isSelected,
-            onClick = { expanded = true },
+            onClick = { expanded = !expanded },
             label = {
                 Text(
                     text = if (isSelected) selectedText else label,
@@ -369,7 +429,11 @@ fun FilterDropdownMenu(
                 )
             },
             trailingIcon = {
-                ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
+                Icon(
+                    imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
             },
             colors = FilterChipDefaults.filterChipColors(
                 containerColor = CinepvqSurface,
@@ -382,14 +446,15 @@ fun FilterDropdownMenu(
                 selected = isSelected,
                 borderColor = if (isSelected) CinepvqPrimary else CinepvqBorderSubtle
             ),
-            shape = RoundedCornerShape(8.dp),
-            modifier = Modifier.menuAnchor()
+            shape = RoundedCornerShape(8.dp)
         )
 
-        ExposedDropdownMenu(
+        DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
-            modifier = Modifier.background(CinepvqSurface)
+            modifier = Modifier
+                .background(CinepvqSurface)
+                .heightIn(max = 280.dp)
         ) {
             DropdownMenuItem(
                 text = { Text(if (isSort) "Mới cập nhật (Mặc định)" else "Tất cả", color = CinepvqTextPrimary) },

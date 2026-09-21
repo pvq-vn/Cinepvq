@@ -44,6 +44,7 @@ fun MovieRow(
             itemsIndexed(movies, key = { _, it -> it.slug }) { index, movie ->
                 MovieCard(
                     movie = movie,
+                    width = 136.dp,
                     variant = variant,
                     rank = if (variant == MovieCardVariant.RANKING) index + 1 else null,
                     isFavorite = isFavorite?.invoke(movie.slug) ?: false,

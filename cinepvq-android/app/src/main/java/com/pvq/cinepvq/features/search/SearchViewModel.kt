@@ -28,11 +28,21 @@ class SearchViewModel(
     private val _isSearching = MutableStateFlow(false)
     val isSearching: StateFlow<Boolean> = _isSearching.asStateFlow()
 
-    val selectedTag = MutableStateFlow("Tất cả")
+    private val _isLoadingMore = MutableStateFlow(false)
+    val isLoadingMore: StateFlow<Boolean> = _isLoadingMore.asStateFlow()
 
+    private val _canLoadMore = MutableStateFlow(true)
+    val canLoadMore: StateFlow<Boolean> = _canLoadMore.asStateFlow()
+
+    val selectedTag = MutableStateFlow("Tất cả")
     val quickTags = listOf("Tất cả", "Phim bộ", "Phim lẻ", "Hoạt hình", "Hành động", "Tình cảm", "Kinh dị")
 
     private var searchJob: Job? = null
+    private var loadMoreJob: Job? = null
+
+    // Internal paging state
+    private var currentPage = 1
+    private var rawMovies = mutableListOf<Movie>()
 
     // Filter States
     val activeCategory = MutableStateFlow<String?>(null)
@@ -50,51 +60,103 @@ class SearchViewModel(
         loadInitialList()
     }
 
-    private fun loadInitialList() {
-        viewModelScope.launch {
+    private fun executeDiscovery() {
+        searchJob?.cancel()
+        loadMoreJob?.cancel()
+        searchJob = viewModelScope.launch {
             _isSearching.value = true
-            val res = movieRepository.getLatestMovies(1)
-            applySorting(res.getOrDefault(emptyList()))
+            currentPage = 1
+            _canLoadMore.value = true
+
+            val q = query.value.trim()
+            val cat = activeCategory.value
+            val gen = activeGenre.value
+            val cou = activeCountry.value
+
+            val res = when {
+                q.isNotBlank() -> movieRepository.searchMovies(q, 1)
+                cat != null -> movieRepository.getMoviesByCategory(cat, 1)
+                gen != null -> movieRepository.getMoviesByGenre(gen, 1)
+                cou != null -> movieRepository.getMoviesByCountry(cou, 1)
+                else -> movieRepository.getLatestMovies(1)
+            }
+
+            val list = res.getOrDefault(emptyList())
+            rawMovies = list.toMutableList()
+            _canLoadMore.value = list.size >= 10
+            applySorting(rawMovies)
             _isSearching.value = false
         }
     }
 
+    private fun loadInitialList() {
+        executeDiscovery()
+    }
+
     private fun applySorting(list: List<Movie>) {
         val sorted = when (activeSort.value) {
-            "name" -> list.sortedBy { it.name }
-            "year" -> list.sortedByDescending { it.year.toIntOrNull() ?: 0 }
+            "name" -> list.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
+            "year" -> list.sortedByDescending { it.year.filter { c -> c.isDigit() }.toIntOrNull() ?: 0 }
             else -> list
         }
         _searchResults.value = sorted
     }
 
     fun onSortChanged(sort: String) {
+        if (activeSort.value == sort) return
         activeSort.value = sort
-        applySorting(_searchResults.value)
+        // Reset to page 1 fresh and re-fetch discovery under the new sort
+        executeDiscovery()
     }
 
     fun applyFilter(type: String, value: String?) {
-        query.value = "" // clear keyword
-        activeCategory.value = if (type == "category") value else null
-        activeGenre.value = if (type == "genre") value else null
-        activeCountry.value = if (type == "country") value else null
-        
-        searchJob?.cancel()
-        if (value == null) {
-            loadInitialList()
-            return
+        when (type) {
+            "category" -> activeCategory.value = value
+            "genre" -> activeGenre.value = value
+            "country" -> activeCountry.value = value
         }
-        
-        searchJob = viewModelScope.launch {
-            _isSearching.value = true
-            val res = when (type) {
-                "category" -> movieRepository.getMoviesByCategory(value, 1)
-                "genre" -> movieRepository.getMoviesByGenre(value, 1)
-                "country" -> movieRepository.getMoviesByCountry(value, 1)
-                else -> movieRepository.getLatestMovies(1)
+        executeDiscovery()
+    }
+
+    fun loadMore() {
+        if (_isSearching.value || _isLoadingMore.value || !_canLoadMore.value) return
+
+        loadMoreJob?.cancel()
+        loadMoreJob = viewModelScope.launch {
+            _isLoadingMore.value = true
+            val nextPage = currentPage + 1
+
+            val q = query.value.trim()
+            val cat = activeCategory.value
+            val gen = activeGenre.value
+            val cou = activeCountry.value
+
+            val res = when {
+                q.isNotBlank() -> movieRepository.searchMovies(q, nextPage)
+                cat != null -> movieRepository.getMoviesByCategory(cat, nextPage)
+                gen != null -> movieRepository.getMoviesByGenre(gen, nextPage)
+                cou != null -> movieRepository.getMoviesByCountry(cou, nextPage)
+                else -> movieRepository.getLatestMovies(nextPage)
             }
-            applySorting(res.getOrDefault(emptyList()))
-            _isSearching.value = false
+
+            val newItems = res.getOrDefault(emptyList())
+            if (newItems.isEmpty()) {
+                _canLoadMore.value = false
+            } else {
+                val existingSlugs = rawMovies.map { it.slug }.toSet()
+                val uniqueNew = newItems.filter { it.slug !in existingSlugs }
+                if (uniqueNew.isEmpty()) {
+                    _canLoadMore.value = false
+                } else {
+                    currentPage = nextPage
+                    rawMovies.addAll(uniqueNew)
+                    applySorting(rawMovies)
+                    if (newItems.size < 10) {
+                        _canLoadMore.value = false
+                    }
+                }
+            }
+            _isLoadingMore.value = false
         }
     }
 
@@ -104,7 +166,7 @@ class SearchViewModel(
         activeGenre.value = null
         activeCountry.value = null
         activeSort.value = "latest"
-        loadInitialList()
+        executeDiscovery()
     }
 
     fun saveSearchQuery(query: String) {
@@ -133,29 +195,20 @@ class SearchViewModel(
 
     fun onQueryChange(newQuery: String) {
         query.value = newQuery
-        // When typing query, clear other filters
-        activeCategory.value = null
-        activeGenre.value = null
-        activeCountry.value = null
-        
-        searchJob?.cancel()
 
-        if (newQuery.isBlank()) {
-            loadInitialList()
-            return
-        }
+        searchJob?.cancel()
+        loadMoreJob?.cancel()
 
         searchJob = viewModelScope.launch {
-            delay(350)
-            _isSearching.value = true
-            val res = movieRepository.searchMovies(newQuery)
-            applySorting(res.getOrDefault(emptyList()))
-            _isSearching.value = false
+            if (newQuery.isNotBlank()) {
+                delay(350)
+            }
+            executeDiscovery()
         }
     }
 
     fun clearQuery() {
         query.value = ""
-        loadInitialList()
+        executeDiscovery()
     }
 }

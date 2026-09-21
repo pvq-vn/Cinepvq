@@ -14,6 +14,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -29,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import coil3.request.crossfade
+import com.pvq.cinepvq.core.designsystem.utils.EpisodeDisplayFormatter
 import com.pvq.cinepvq.domain.model.Movie
 import com.pvq.cinepvq.ui.theme.*
 
@@ -42,7 +44,7 @@ enum class MovieCardVariant {
 fun MovieCard(
     movie: Movie,
     modifier: Modifier = Modifier,
-    width: Dp = 140.dp,
+    width: Dp = Dp.Unspecified,
     variant: MovieCardVariant = MovieCardVariant.DEFAULT,
     rank: Int? = null,
     isFavorite: Boolean = false,
@@ -60,6 +62,13 @@ fun MovieCard(
                 .padding(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            val context = LocalContext.current
+            val imageRequest = remember(movie.thumbUrl, movie.posterUrl) {
+                ImageRequest.Builder(context)
+                    .data(movie.thumbUrl.ifBlank { movie.posterUrl })
+                    .crossfade(true)
+                    .build()
+            }
             Box(
                 modifier = Modifier
                     .width(56.dp)
@@ -68,7 +77,7 @@ fun MovieCard(
                     .background(CinepvqSurfaceVariant)
             ) {
                 AsyncImage(
-                    model = movie.thumbUrl.ifBlank { movie.posterUrl },
+                    model = imageRequest,
                     contentDescription = movie.name,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
@@ -137,14 +146,27 @@ fun MovieCard(
     }
 
     // Default & Ranking Variants (Grid / Carousel Card matching Web)
+    val cardModifier = if (width != Dp.Unspecified) {
+        modifier.width(width)
+    } else {
+        modifier.fillMaxWidth()
+    }
+
     Column(
-        modifier = modifier
-            .width(width)
+        modifier = cardModifier
             .background(CinepvqSurface, RoundedCornerShape(14.dp))
             .border(width = 1.dp, color = CinepvqCardBorder, shape = RoundedCornerShape(14.dp))
             .clip(RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
     ) {
+        val context = LocalContext.current
+        val imageRequest = remember(movie.thumbUrl, movie.posterUrl) {
+            ImageRequest.Builder(context)
+                .data(movie.thumbUrl.ifBlank { movie.posterUrl })
+                .crossfade(true)
+                .build()
+        }
+
         // Poster with 2:3 Aspect Ratio
         Box(
             modifier = Modifier
@@ -154,7 +176,7 @@ fun MovieCard(
                 .background(CinepvqSurfaceVariant)
         ) {
             AsyncImage(
-                model = movie.thumbUrl.ifBlank { movie.posterUrl },
+                model = imageRequest,
                 contentDescription = movie.name,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -228,91 +250,95 @@ fun MovieCard(
                 }
             }
 
-            // Bottom Overlay: Gradient with Year & Episode pills
+            // Bottom Overlay: Floating pills matching Web styling without covering 25% of poster
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(42.dp)
+                    .height(28.dp)
                     .align(Alignment.BottomCenter)
-                    .background(CinepvqCardOverlayGradient)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .align(Alignment.BottomCenter)
-                        .padding(horizontal = 6.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (movie.year.isNotBlank()) {
-                        Box(
-                            modifier = Modifier
-                                .background(
-                                    color = Color(0x99000000),
-                                    shape = RoundedCornerShape(4.dp)
-                                )
-                                .padding(horizontal = 4.dp, vertical = 1.dp)
-                        ) {
-                            Text(
-                                text = movie.year,
-                                color = CinepvqTextSecondary,
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                    } else {
-                        Spacer(modifier = Modifier.width(1.dp))
-                    }
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f))
+                        )
+                    )
+            )
 
-                    if (movie.episodeCurrent.isNotBlank()) {
-                        Box(
-                            modifier = Modifier
-                                .background(
-                                    color = Color(0xAA000000),
-                                    shape = RoundedCornerShape(4.dp)
-                                )
-                                .padding(horizontal = 5.dp, vertical = 1.dp)
-                        ) {
-                            Text(
-                                text = movie.episodeCurrent,
-                                color = Color.White,
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (movie.year.isNotBlank()) {
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                color = Color(0x99000000),
+                                shape = RoundedCornerShape(4.dp)
                             )
-                        }
+                            .padding(horizontal = 4.dp, vertical = 1.5.dp)
+                    ) {
+                        Text(
+                            text = movie.year,
+                            color = CinepvqTextSecondary,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                } else {
+                    Spacer(modifier = Modifier.width(1.dp))
+                }
+
+                if (movie.episodeCurrent.isNotBlank()) {
+                    val formattedEp = EpisodeDisplayFormatter.format(movie.episodeCurrent)
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                color = Color(0xAA000000),
+                                shape = RoundedCornerShape(4.dp)
+                            )
+                            .padding(horizontal = 5.dp, vertical = 1.5.dp)
+                    ) {
+                        Text(
+                            text = formattedEp,
+                            color = Color.White,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             }
         }
 
-        // Info Section below poster
+        // Info Section below poster: clean, proportional typography
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 8.dp)
+                .padding(horizontal = 8.dp, vertical = 7.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             Text(
                 text = movie.name,
                 color = CinepvqTextPrimary,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.SemiBold,
                 lineHeight = 16.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
 
-            if (!movie.originalName.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = movie.originalName,
-                    color = CinepvqTextMuted,
-                    fontSize = 10.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+            Text(
+                text = if (!movie.originalName.isNullOrBlank()) movie.originalName else " ",
+                color = CinepvqTextMuted,
+                fontSize = 10.5.sp,
+                lineHeight = 14.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }

@@ -13,11 +13,10 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.derivedStateOf
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,6 +41,7 @@ private val QUICK_GENRES = listOf(
     "Hình Sự" to "hinh-su"
 )
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     onMovieClick: (String) -> Unit,
@@ -54,12 +54,28 @@ fun HomeScreen(
     onBarsVisibilityChanged: ((Boolean) -> Unit)? = null,
     viewModel: HomeViewModel = viewModel()
 ) {
+    // ─── Batch 1 States ──────────────────────────────────────────────
     val latestMovies by viewModel.latestMovies.collectAsStateWithLifecycle()
     val seriesMovies by viewModel.seriesMovies.collectAsStateWithLifecycle()
+    val continueWatching by viewModel.continueWatching.collectAsStateWithLifecycle()
+
+    // ─── Batch 2 States ──────────────────────────────────────────────
     val singleMovies by viewModel.singleMovies.collectAsStateWithLifecycle()
     val animeMovies by viewModel.animeMovies.collectAsStateWithLifecycle()
-    val continueWatching by viewModel.continueWatching.collectAsStateWithLifecycle()
+    val tvShowsMovies by viewModel.tvShowsMovies.collectAsStateWithLifecycle()
+    val isBatch2Loaded by viewModel.isBatch2Loaded.collectAsStateWithLifecycle()
+    val isBatch2Loading by viewModel.isBatch2Loading.collectAsStateWithLifecycle()
+
+    // ─── Batch 3 States ──────────────────────────────────────────────
+    val actionMovies by viewModel.actionMovies.collectAsStateWithLifecycle()
+    val westernMovies by viewModel.westernMovies.collectAsStateWithLifecycle()
+    val koreanMovies by viewModel.koreanMovies.collectAsStateWithLifecycle()
+    val isBatch3Loaded by viewModel.isBatch3Loaded.collectAsStateWithLifecycle()
+    val isBatch3Loading by viewModel.isBatch3Loading.collectAsStateWithLifecycle()
+
+    // ─── Screen States ───────────────────────────────────────────────
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
     val isLoggedIn by viewModel.isLoggedIn.collectAsStateWithLifecycle()
 
@@ -68,6 +84,23 @@ fun HomeScreen(
 
     val listState = rememberLazyListState()
     val density = LocalDensity.current
+
+    // Viewport Sentinel: Trigger Batch 2 & Batch 3 when user scrolls near the bottom of loaded batches
+    LaunchedEffect(listState, isBatch2Loaded, isBatch2Loading, isBatch3Loaded, isBatch3Loading) {
+        snapshotFlow {
+            val total = listState.layoutInfo.totalItemsCount
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            lastVisible to total
+        }.collect { (lastVisible, total) ->
+            if (total > 0 && lastVisible >= total - 3) {
+                if (!isBatch2Loaded && !isBatch2Loading) {
+                    viewModel.loadBatch2()
+                } else if (isBatch2Loaded && !isBatch3Loaded && !isBatch3Loading) {
+                    viewModel.loadBatch3()
+                }
+            }
+        }
+    }
 
     // Active scroll tracking via snapshotFlow
     TrackLazyListScroll(
@@ -120,160 +153,229 @@ fun HomeScreen(
                 )
             }
             else -> {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(bottom = 88.dp)
-                    ) {
-                        // 1. Hero Cinematic Carousel (Top 6 movies from latest)
-                        item(contentType = "HeroCarousel") {
-                            HeroCarousel(
-                                movies = heroMovies,
-                                onMovieClick = { m -> onMovieClick(m.slug) }
-                            )
-                        }
+                PullToRefreshBox(
+                    isRefreshing = isRefreshing,
+                    onRefresh = { viewModel.loadHomeData(isRefresh = true) },
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(bottom = 88.dp)
+                        ) {
+                            // ─── BATCH 1: MOUNTED IMMEDIATELY ─────────────────────────
+                            // 1. Hero Cinematic Carousel (Top 6 movies from latest)
+                            item(contentType = "HeroCarousel") {
+                                HeroCarousel(
+                                    movies = heroMovies,
+                                    onMovieClick = { m -> onMovieClick(m.slug) }
+                                )
+                            }
 
-                        // 2. Continue Watching Shelf (Auto-hides if empty or not logged in)
-                        if (isLoggedIn && continueWatching.isNotEmpty()) {
-                            item(contentType = "ContinueWatching") {
+                            // 2. Continue Watching Shelf (Auto-hides if empty or not logged in)
+                            if (isLoggedIn && continueWatching.isNotEmpty()) {
+                                item(contentType = "ContinueWatching") {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 10.dp)
+                                    ) {
+                                        CinepvqSectionHeader(
+                                            title = "Tiếp tục xem ⏳",
+                                            subtitle = null,
+                                            onSeeAllClick = { onHistoryClick?.invoke() }
+                                        )
+
+                                        Spacer(modifier = Modifier.height(8.dp))
+
+                                        LazyRow(
+                                            contentPadding = PaddingValues(horizontal = 16.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            items(continueWatching, key = { it.slug }) { item ->
+                                                ContinueWatchingCard(
+                                                    item = item,
+                                                    onClick = { onContinueWatchingClick(item.slug, item.episodeSlug) }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 3. Trending Shelf: 🔥 Top Phim Hôm Nay (Ranking Variant with rank badge 1..10)
+                            item(contentType = "TrendingMovies") {
+                                MovieRow(
+                                    title = "🔥 Top Phim Hôm Nay",
+                                    subtitle = "Các bộ phim nổi bật được khán giả theo dõi nhiều nhất",
+                                    movies = trendingMovies,
+                                    variant = MovieCardVariant.RANKING,
+                                    onMovieClick = { m -> onMovieClick(m.slug) },
+                                    onSeeAllClick = { onCategoryClick?.invoke("thinh-hanh") }
+                                )
+                            }
+
+                            // 4. Quick Genre Tags Banner (Matching Web)
+                            item(contentType = "QuickGenres") {
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(vertical = 10.dp)
+                                        .padding(vertical = 6.dp)
                                 ) {
-                                    CinepvqSectionHeader(
-                                        title = "Tiếp tục xem ⏳",
-                                        subtitle = null,
-                                        onSeeAllClick = { onHistoryClick?.invoke() }
-                                    )
-
-                                    Spacer(modifier = Modifier.height(8.dp))
-
                                     LazyRow(
                                         contentPadding = PaddingValues(horizontal = 16.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        items(continueWatching, key = { it.slug }) { item ->
-                                            ContinueWatchingCard(
-                                                item = item,
-                                                onClick = { onContinueWatchingClick(item.slug, item.episodeSlug) }
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // 3. Trending Shelf: 🔥 Top Phim Hôm Nay (Ranking Variant with rank badge 1..10)
-                        item(contentType = "TrendingMovies") {
-                            MovieRow(
-                                title = "🔥 Top Phim Hôm Nay",
-                                subtitle = "Các bộ phim nổi bật được khán giả theo dõi nhiều nhất",
-                                movies = trendingMovies,
-                                variant = MovieCardVariant.RANKING,
-                                onMovieClick = { m -> onMovieClick(m.slug) },
-                                onSeeAllClick = { onCategoryClick?.invoke("thinh-hanh") }
-                            )
-                        }
-
-                        // 4. Quick Genre Tags Banner (Matching Web)
-                        item(contentType = "QuickGenres") {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 6.dp)
-                            ) {
-                                LazyRow(
-                                    contentPadding = PaddingValues(horizontal = 16.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    item {
-                                        Text(
-                                            text = "✨ Thể loại:",
-                                            color = CinepvqTextMuted,
-                                            fontSize = 12.sp,
-                                            modifier = Modifier.padding(end = 4.dp)
-                                        )
-                                    }
-                                    items(QUICK_GENRES, key = { it.second }) { (label, slug) ->
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(20.dp))
-                                                .background(CinepvqSurfaceVariant)
-                                                .border(width = 1.dp, color = CinepvqBorderSubtle, shape = RoundedCornerShape(20.dp))
-                                                .clickable { onCategoryClick?.invoke("the-loai/$slug") }
-                                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
+                                        item {
                                             Text(
-                                                text = label,
-                                                color = CinepvqTextSecondary,
-                                                fontSize = 12.sp
+                                                text = "✨ Thể loại:",
+                                                color = CinepvqTextMuted,
+                                                fontSize = 12.sp,
+                                                modifier = Modifier.padding(end = 4.dp)
                                             )
                                         }
+                                        items(QUICK_GENRES, key = { it.second }) { (label, slug) ->
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(20.dp))
+                                                    .background(CinepvqSurfaceVariant)
+                                                    .border(width = 1.dp, color = CinepvqBorderSubtle, shape = RoundedCornerShape(20.dp))
+                                                    .clickable { onCategoryClick?.invoke("the-loai/$slug") }
+                                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = label,
+                                                    color = CinepvqTextSecondary,
+                                                    fontSize = 12.sp
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 5. Phim Mới Cập Nhật
+                            item(contentType = "LatestMovies") {
+                                MovieRow(
+                                    title = "Phim Mới Cập Nhật",
+                                    subtitle = "Những tác phẩm vừa được cập nhật tập mới",
+                                    movies = latestMovies,
+                                    onMovieClick = { m -> onMovieClick(m.slug) },
+                                    onSeeAllClick = { onCategoryClick?.invoke("phim-moi") }
+                                )
+                            }
+
+                            // 6. Phim Bộ Đặc Sắc
+                            item(contentType = "SeriesMovies") {
+                                MovieRow(
+                                    title = "Phim Bộ Đặc Sắc",
+                                    subtitle = "Series dài tập lôi cuốn, trọn bộ vietsub chất lượng cao",
+                                    movies = seriesMovies,
+                                    onMovieClick = { m -> onMovieClick(m.slug) },
+                                    onSeeAllClick = { onCategoryClick?.invoke("phim-bo") }
+                                )
+                            }
+
+                            // ─── BATCH 2: LAZY LOADED WHEN SCROLLING NEAR BOTTOM ─────
+                            if (isBatch2Loaded) {
+                                // 7. Phim Lẻ Chiếu Rạp
+                                item(contentType = "SingleMovies") {
+                                    MovieRow(
+                                        title = "Phim Lẻ Chiếu Rạp",
+                                        subtitle = "Bom tấn điện ảnh màn ảnh rộng không thể bỏ lỡ",
+                                        movies = singleMovies,
+                                        onMovieClick = { m -> onMovieClick(m.slug) },
+                                        onSeeAllClick = { onCategoryClick?.invoke("phim-le") }
+                                    )
+                                }
+
+                                // 8. Thế Giới Hoạt Hình & Anime
+                                item(contentType = "AnimeMovies") {
+                                    MovieRow(
+                                        title = "Thế Giới Hoạt Hình & Anime",
+                                        subtitle = "Các bộ phim hoạt hình kinh điển và anime hot nhất",
+                                        movies = animeMovies,
+                                        onMovieClick = { m -> onMovieClick(m.slug) },
+                                        onSeeAllClick = { onCategoryClick?.invoke("hoat-hinh") }
+                                    )
+                                }
+
+                                // 9. Chương Trình TV Show
+                                item(contentType = "TvShowsMovies") {
+                                    MovieRow(
+                                        title = "Chương Trình TV Show",
+                                        subtitle = "Gameshow truyền hình và các chương trình thực tế thú vị",
+                                        movies = tvShowsMovies,
+                                        onMovieClick = { m -> onMovieClick(m.slug) },
+                                        onSeeAllClick = { onCategoryClick?.invoke("tv-shows") }
+                                    )
+                                }
+                            } else if (isBatch2Loading) {
+                                item(contentType = "Batch2Skeleton") {
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        MovieRowSkeleton(itemCount = 3)
+                                    }
+                                }
+                            }
+
+                            // ─── BATCH 3: LAZY LOADED WHEN SCROLLING TO BATCH 2 ───────
+                            if (isBatch3Loaded) {
+                                // 10. Phim Hành Động Kịch Tính
+                                item(contentType = "ActionMovies") {
+                                    MovieRow(
+                                        title = "Hành Động Kịch Tính",
+                                        subtitle = "Nghẹt thở với những pha rượt đuổi và cận chiến mãn nhãn",
+                                        movies = actionMovies,
+                                        onMovieClick = { m -> onMovieClick(m.slug) },
+                                        onSeeAllClick = { onCategoryClick?.invoke("the-loai/hanh-dong") }
+                                    )
+                                }
+
+                                // 11. Điện Ảnh Âu Mỹ
+                                item(contentType = "WesternMovies") {
+                                    MovieRow(
+                                        title = "Điện Ảnh Âu Mỹ",
+                                        subtitle = "Hollywood đỉnh cao với kỹ xảo và âm thanh sống động",
+                                        movies = westernMovies,
+                                        onMovieClick = { m -> onMovieClick(m.slug) },
+                                        onSeeAllClick = { onCategoryClick?.invoke("quoc-gia/au-my") }
+                                    )
+                                }
+
+                                // 12. K-Drama Hàn Quốc
+                                item(contentType = "KoreanMovies") {
+                                    MovieRow(
+                                        title = "K-Drama Hàn Quốc",
+                                        subtitle = "Những câu chuyện tình cảm lãng mạn và gia đình sâu sắc",
+                                        movies = koreanMovies,
+                                        onMovieClick = { m -> onMovieClick(m.slug) },
+                                        onSeeAllClick = { onCategoryClick?.invoke("quoc-gia/han-quoc") }
+                                    )
+                                }
+                            } else if (isBatch3Loading) {
+                                item(contentType = "Batch3Skeleton") {
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        MovieRowSkeleton(itemCount = 3)
                                     }
                                 }
                             }
                         }
 
-                        // 5. Phim Mới Cập Nhật
-                        item(contentType = "LatestMovies") {
-                            MovieRow(
-                                title = "Phim Mới Cập Nhật",
-                                subtitle = "Những tác phẩm vừa được cập nhật tập mới",
-                                movies = latestMovies,
-                                onMovieClick = { m -> onMovieClick(m.slug) },
-                                onSeeAllClick = { onCategoryClick?.invoke("phim-moi") }
-                            )
-                        }
-
-                        // 6. Phim Bộ Đặc Sắc
-                        item(contentType = "SeriesMovies") {
-                            MovieRow(
-                                title = "Phim Bộ Đặc Sắc",
-                                subtitle = "Series dài tập lôi cuốn, trọn bộ vietsub chất lượng cao",
-                                movies = seriesMovies,
-                                onMovieClick = { m -> onMovieClick(m.slug) },
-                                onSeeAllClick = { onCategoryClick?.invoke("phim-bo") }
-                            )
-                        }
-
-                        // 7. Phim Lẻ Chọn Lọc
-                        item(contentType = "SingleMovies") {
-                            MovieRow(
-                                title = "Phim Điện Ảnh Chọn Lọc",
-                                subtitle = "Bom tấn chiếu rạp và phim lẻ đỉnh cao",
-                                movies = singleMovies,
-                                onMovieClick = { m -> onMovieClick(m.slug) },
-                                onSeeAllClick = { onCategoryClick?.invoke("phim-le") }
-                            )
-                        }
-
-                        // 8. Hoạt Hình & Anime
-                        item(contentType = "AnimeMovies") {
-                            MovieRow(
-                                title = "Hoạt Hình & Anime",
-                                subtitle = "Thế giới anime phong phú vietsub mới nhất",
-                                movies = animeMovies,
-                                onMovieClick = { m -> onMovieClick(m.slug) },
-                                onSeeAllClick = { onCategoryClick?.invoke("hoat-hinh") }
-                            )
-                        }
+                        // Floating Top App Bar with auto-hide animation
+                        CinepvqTopBar(
+                            onSearchClick = { onSearchClick?.invoke() },
+                            onProfileClick = { onProfileClick?.invoke() },
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .graphicsLayer {
+                                    translationY = with(density) { animatedTopBarOffsetY.toPx() }
+                                    alpha = animatedTopBarAlpha
+                                }
+                        )
                     }
-
-                    // Floating Top App Bar with auto-hide animation
-                    CinepvqTopBar(
-                        onSearchClick = { onSearchClick?.invoke() },
-                        onProfileClick = { onProfileClick?.invoke() },
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .graphicsLayer {
-                                translationY = with(density) { animatedTopBarOffsetY.toPx() }
-                                alpha = animatedTopBarAlpha
-                            }
-                    )
                 }
             }
         }

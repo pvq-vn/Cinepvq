@@ -249,6 +249,94 @@ class SecureStorageManager(context: Context) {
         prefs.edit().remove("pending_add_favs_$userId").apply()
     }
 
+    // ── Watch Later Tombstones & Pending Additions (Two-way sync reconciliation) ──
+
+    fun getDeletedWatchLaterSlugs(userId: String): Set<String> {
+        return prefs.getStringSet("deleted_wl_$userId", emptySet()) ?: emptySet()
+    }
+
+    fun addDeletedWatchLaterSlug(userId: String, slug: String) {
+        val current = getDeletedWatchLaterSlugs(userId).toMutableSet()
+        current.add(slug)
+        prefs.edit().putStringSet("deleted_wl_$userId", current).apply()
+    }
+
+    fun removeDeletedWatchLaterSlug(userId: String, slug: String) {
+        val current = getDeletedWatchLaterSlugs(userId).toMutableSet()
+        if (current.remove(slug)) {
+            prefs.edit().putStringSet("deleted_wl_$userId", current).apply()
+        }
+    }
+
+    fun clearDeletedWatchLaterSlugs(userId: String) {
+        prefs.edit().remove("deleted_wl_$userId").apply()
+    }
+
+    fun getPendingAddWatchLaterSlugs(userId: String): Set<String> {
+        return prefs.getStringSet("pending_add_wl_$userId", emptySet()) ?: emptySet()
+    }
+
+    fun addPendingAddWatchLaterSlug(userId: String, slug: String) {
+        val current = getPendingAddWatchLaterSlugs(userId).toMutableSet()
+        current.add(slug)
+        prefs.edit().putStringSet("pending_add_wl_$userId", current).apply()
+    }
+
+    fun removePendingAddWatchLaterSlug(userId: String, slug: String) {
+        val current = getPendingAddWatchLaterSlugs(userId).toMutableSet()
+        if (current.remove(slug)) {
+            prefs.edit().putStringSet("pending_add_wl_$userId", current).apply()
+        }
+    }
+
+    fun clearPendingAddWatchLaterSlugs(userId: String) {
+        prefs.edit().remove("pending_add_wl_$userId").apply()
+    }
+
+    // ── Watch History Tombstones & Pending Sync (Two-way sync reconciliation) ──
+
+    fun getDeletedHistorySlugs(userId: String): Set<String> {
+        return prefs.getStringSet("deleted_hist_$userId", emptySet()) ?: emptySet()
+    }
+
+    fun addDeletedHistorySlug(userId: String, slug: String) {
+        val current = getDeletedHistorySlugs(userId).toMutableSet()
+        current.add(slug)
+        prefs.edit().putStringSet("deleted_hist_$userId", current).apply()
+    }
+
+    fun removeDeletedHistorySlug(userId: String, slug: String) {
+        val current = getDeletedHistorySlugs(userId).toMutableSet()
+        if (current.remove(slug)) {
+            prefs.edit().putStringSet("deleted_hist_$userId", current).apply()
+        }
+    }
+
+    fun clearDeletedHistorySlugs(userId: String) {
+        prefs.edit().remove("deleted_hist_$userId").apply()
+    }
+
+    fun getPendingSyncHistorySlugs(userId: String): Set<String> {
+        return prefs.getStringSet("pending_sync_hist_$userId", emptySet()) ?: emptySet()
+    }
+
+    fun addPendingSyncHistorySlug(userId: String, slug: String) {
+        val current = getPendingSyncHistorySlugs(userId).toMutableSet()
+        current.add(slug)
+        prefs.edit().putStringSet("pending_sync_hist_$userId", current).apply()
+    }
+
+    fun removePendingSyncHistorySlug(userId: String, slug: String) {
+        val current = getPendingSyncHistorySlugs(userId).toMutableSet()
+        if (current.remove(slug)) {
+            prefs.edit().putStringSet("pending_sync_hist_$userId", current).apply()
+        }
+    }
+
+    fun clearPendingSyncHistorySlugs(userId: String) {
+        prefs.edit().remove("pending_sync_hist_$userId").apply()
+    }
+
 
     companion object {
         const val GUEST_USER_ID = "guest"

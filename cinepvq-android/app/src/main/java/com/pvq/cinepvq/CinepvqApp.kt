@@ -18,6 +18,7 @@ import com.pvq.cinepvq.data.user.UserSyncRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class CinepvqApp : Application(), SingletonImageLoader.Factory {
@@ -52,17 +53,23 @@ class CinepvqApp : Application(), SingletonImageLoader.Factory {
         VideoSourceRepository(networkModule)
     }
 
+    val settingsRepository: com.pvq.cinepvq.data.settings.SettingsRepository by lazy {
+        com.pvq.cinepvq.data.settings.SettingsRepository(this)
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
 
-        // Trigger initial background sync if user is logged in
-        if (secureStorageManager.isLoggedIn) {
-            appScope.launch(Dispatchers.IO) {
-                try {
+        // Trigger initial background sync non-blockingly after initial UI composition and first frame render
+        appScope.launch(Dispatchers.IO) {
+            try {
+                // Yield to allow UI first frame, layout, and image cache warmup
+                delay(1200)
+                if (secureStorageManager.isLoggedIn) {
                     userSyncRepository.syncAll()
-                } catch (_: Exception) {}
-            }
+                }
+            } catch (_: Exception) {}
         }
     }
 

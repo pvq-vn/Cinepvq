@@ -50,7 +50,8 @@ class PlayerViewModel(
         episodeSlug: String,
         serverName: String? = null,
         initialEmbedUrl: String? = null,
-        resumePositionMs: Long? = null
+        resumePositionMs: Long? = null,
+        preferredSourceKey: String? = null
     ) {
         playerInitJob?.cancel()
         playerInitJob = viewModelScope.launch {
@@ -143,7 +144,12 @@ class PlayerViewModel(
             )
 
             _availableSources.value = sources
-            val chosen = sources.firstOrNull { it.isAvailable }
+            val chosen = if (!preferredSourceKey.isNullOrBlank() && preferredSourceKey != "auto") {
+                sources.firstOrNull { it.isAvailable && it.sourceId.contains(preferredSourceKey, ignoreCase = true) }
+                    ?: sources.firstOrNull { it.isAvailable }
+            } else {
+                sources.firstOrNull { it.isAvailable }
+            }
             if (chosen != null) {
                 _activeStream.value = chosen
             } else {

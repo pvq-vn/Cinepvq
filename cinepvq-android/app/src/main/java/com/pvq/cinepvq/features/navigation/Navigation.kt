@@ -29,11 +29,21 @@ import com.pvq.cinepvq.ui.theme.*
 
 sealed class Screen(val route: String) {
     object Home : Screen("home")
+    object Trending : Screen("trending")
     object Search : Screen("search")
+    object Library : Screen("library")
+    object Profile : Screen("profile")
     object Favorites : Screen("favorites")
     object History : Screen("history")
-    object Profile : Screen("profile")
     object Auth : Screen("auth")
+    object Settings : Screen("settings")
+    object SectionDetail : Screen("section/{type}?title={title}") {
+        fun createRoute(type: String, title: String? = null): String {
+            val encodedType = java.net.URLEncoder.encode(type, "UTF-8")
+            val encodedTitle = java.net.URLEncoder.encode(title ?: "", "UTF-8")
+            return "section/$encodedType?title=$encodedTitle"
+        }
+    }
     object Detail : Screen("detail/{slug}") {
         fun createRoute(slug: String) = "detail/$slug"
     }
@@ -55,9 +65,9 @@ data class BottomNavItem(
 
 val bottomNavItems = listOf(
     BottomNavItem("Khám phá", Screen.Home.route, Icons.Filled.Home, Icons.Outlined.Home),
+    BottomNavItem("Thịnh hành", Screen.Trending.route, Icons.Filled.Whatshot, Icons.Outlined.Whatshot),
     BottomNavItem("Tìm kiếm", Screen.Search.route, Icons.Filled.Search, Icons.Outlined.Search),
-    BottomNavItem("Yêu thích", Screen.Favorites.route, Icons.Filled.Favorite, Icons.Outlined.FavoriteBorder),
-    BottomNavItem("Lịch sử", Screen.History.route, Icons.Filled.History, Icons.Outlined.History),
+    BottomNavItem("Thư viện", Screen.Library.route, Icons.Filled.VideoLibrary, Icons.Outlined.VideoLibrary),
     BottomNavItem("Cá nhân", Screen.Profile.route, Icons.Filled.Person, Icons.Outlined.Person)
 )
 

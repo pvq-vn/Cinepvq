@@ -170,6 +170,25 @@ class UserSyncRepository(
         }
     }
 
+    suspend fun clearFavorites() {
+        val currentUid = secureStorageManager.activeUserId
+        favoriteDao.clearByUser(currentUid)
+        if (secureStorageManager.isLoggedIn) {
+            repositoryScope.launch {
+                try {
+                    val res = networkModule.cinepvqApi.updateFavorites(
+                        FavoriteActionRequest(action = "clear")
+                    )
+                    if (!res.isSuccessful) {
+                        Log.w("UserSyncRepo", "clearFavorites server error HTTP ${res.code()}: ${res.message()}")
+                    }
+                } catch (e: Exception) {
+                    Log.e("UserSyncRepo", "clearFavorites network failed: ${e.message}", e)
+                }
+            }
+        }
+    }
+
     // ── Watch History & Playback Progress ──────────────────────────────────────
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -247,6 +266,9 @@ class UserSyncRepository(
 
         // 2. Debounce remote sync to Cinepvq API (1.5s) to avoid flooding
         if (secureStorageManager.isLoggedIn) {
+            secureStorageManager.addPendingSyncHistorySlug(currentUid, movieSlug)
+            secureStorageManager.removeDeletedHistorySlug(currentUid, movieSlug)
+
             val req = HistoryActionRequest(
                 action = "upsert",
                 movieSlug = movieSlug,
@@ -282,7 +304,10 @@ class UserSyncRepository(
                 if (prevTarget != null) {
                     repositoryScope.launch {
                         try {
-                            networkModule.cinepvqApi.updateHistory(prevTarget)
+                            val res = networkModule.cinepvqApi.updateHistory(prevTarget)
+                            if (res.isSuccessful) {
+                                secureStorageManager.removePendingSyncHistorySlug(currentUid, movieSlug)
+                            }
                         } catch (e: Exception) {
                             Log.e("UserSyncRepo", "Immediate flush previous episode failed: ${e.message}", e)
                         }
@@ -298,7 +323,9 @@ class UserSyncRepository(
                 progressJobs.remove(movieSlug)
                 try {
                     val res = networkModule.cinepvqApi.updateHistory(target)
-                    if (!res.isSuccessful) {
+                    if (res.isSuccessful) {
+                        secureStorageManager.removePendingSyncHistorySlug(currentUid, movieSlug)
+                    } else {
                         Log.w("UserSyncRepo", "recordWatchProgress server error HTTP ${res.code()}: ${res.message()}")
                     }
                 } catch (e: Exception) {
@@ -311,13 +338,16 @@ class UserSyncRepository(
 
     suspend fun flushWatchProgress(movieSlug: String? = null) {
         if (!secureStorageManager.isLoggedIn) return
+        val currentUid = secureStorageManager.activeUserId
         val keys = if (movieSlug != null) listOf(movieSlug) else pendingProgressMap.keys().toList()
         for (k in keys) {
             progressJobs.remove(k)?.cancel()
             val target = pendingProgressMap.remove(k) ?: continue
             try {
                 val res = networkModule.cinepvqApi.updateHistory(target)
-                if (!res.isSuccessful) {
+                if (res.isSuccessful) {
+                    secureStorageManager.removePendingSyncHistorySlug(currentUid, k)
+                } else {
                     Log.w("UserSyncRepo", "flushWatchProgress server error HTTP ${res.code()}: ${res.message()}")
                 }
             } catch (e: Exception) {
@@ -331,12 +361,16 @@ class UserSyncRepository(
         historyDao.deleteBySlug(currentUid, slug)
         secureStorageManager.removeEpisodeProgressForMovie(currentUid, slug)
         if (secureStorageManager.isLoggedIn) {
+            secureStorageManager.addDeletedHistorySlug(currentUid, slug)
+            secureStorageManager.removePendingSyncHistorySlug(currentUid, slug)
             repositoryScope.launch {
                 try {
                     val res = networkModule.cinepvqApi.updateHistory(
                         HistoryActionRequest(action = "remove", movieSlug = slug)
                     )
-                    if (!res.isSuccessful) {
+                    if (res.isSuccessful) {
+                        secureStorageManager.removeDeletedHistorySlug(currentUid, slug)
+                    } else {
                         Log.w("UserSyncRepo", "removeHistory server error HTTP ${res.code()}: ${res.message()}")
                     }
                 } catch (e: Exception) {
@@ -351,6 +385,7 @@ class UserSyncRepository(
         historyDao.clearByUser(currentUid)
         secureStorageManager.clearEpisodeProgress(currentUid)
         if (secureStorageManager.isLoggedIn) {
+            secureStorageManager.clearPendingSyncHistorySlugs(currentUid)
             repositoryScope.launch {
                 try {
                     val res = networkModule.cinepvqApi.updateHistory(
@@ -393,9 +428,14 @@ class UserSyncRepository(
         if (exists) {
             watchLaterDao.deleteBySlug(currentUid, slug)
             if (secureStorageManager.isLoggedIn) {
+                secureStorageManager.addDeletedWatchLaterSlug(currentUid, slug)
+                secureStorageManager.removePendingAddWatchLaterSlug(currentUid, slug)
                 repositoryScope.launch {
                     try {
-                        networkModule.cinepvqApi.deleteWatchlist(slug = slug)
+                        val res = networkModule.cinepvqApi.deleteWatchlist(slug = slug)
+                        if (res.isSuccessful) {
+                            secureStorageManager.removeDeletedWatchLaterSlug(currentUid, slug)
+                        }
                     } catch (_: Exception) {}
                 }
             }
@@ -412,9 +452,11 @@ class UserSyncRepository(
             watchLaterDao.insert(entity)
 
             if (secureStorageManager.isLoggedIn) {
+                secureStorageManager.addPendingAddWatchLaterSlug(currentUid, slug)
+                secureStorageManager.removeDeletedWatchLaterSlug(currentUid, slug)
                 repositoryScope.launch {
                     try {
-                        networkModule.cinepvqApi.updateWatchlist(
+                        val res = networkModule.cinepvqApi.updateWatchlist(
                             WatchlistActionRequest(
                                 action = "add",
                                 movie = WatchlistDto(
@@ -429,6 +471,9 @@ class UserSyncRepository(
                                 )
                             )
                         )
+                        if (res.isSuccessful) {
+                            secureStorageManager.removePendingAddWatchLaterSlug(currentUid, slug)
+                        }
                     } catch (_: Exception) {}
                 }
             }
@@ -440,10 +485,35 @@ class UserSyncRepository(
         val currentUid = secureStorageManager.activeUserId
         watchLaterDao.deleteBySlug(currentUid, slug)
         if (secureStorageManager.isLoggedIn) {
+            secureStorageManager.addDeletedWatchLaterSlug(currentUid, slug)
+            secureStorageManager.removePendingAddWatchLaterSlug(currentUid, slug)
             repositoryScope.launch {
                 try {
-                    networkModule.cinepvqApi.deleteWatchlist(slug = slug)
+                    val res = networkModule.cinepvqApi.deleteWatchlist(slug = slug)
+                    if (res.isSuccessful) {
+                        secureStorageManager.removeDeletedWatchLaterSlug(currentUid, slug)
+                    }
                 } catch (_: Exception) {}
+            }
+        }
+    }
+
+    suspend fun clearWatchLater() {
+        val currentUid = secureStorageManager.activeUserId
+        watchLaterDao.clearByUser(currentUid)
+        if (secureStorageManager.isLoggedIn) {
+            secureStorageManager.clearPendingAddWatchLaterSlugs(currentUid)
+            repositoryScope.launch {
+                try {
+                    val res = networkModule.cinepvqApi.deleteWatchlist(slug = null, clear = true)
+                    if (!res.isSuccessful) {
+                        networkModule.cinepvqApi.updateWatchlist(WatchlistActionRequest(action = "clear"))
+                    }
+                } catch (_: Exception) {
+                    try {
+                        networkModule.cinepvqApi.updateWatchlist(WatchlistActionRequest(action = "clear"))
+                    } catch (_: Exception) {}
+                }
             }
         }
     }
@@ -627,23 +697,43 @@ class UserSyncRepository(
             errors.add("Favorites: ${e.localizedMessage ?: e.message}")
         }
 
-        // 2. Sync Watch History with Timestamp Resolution (Cases A - F)
+        // 2. Sync Watch History with Timestamp Resolution and Web Deletion Sync
         try {
+            // First, process any pending deletions (tombstones) on the server
+            val deletedHistSlugs = secureStorageManager.getDeletedHistorySlugs(currentUid)
+            for (delSlug in deletedHistSlugs) {
+                try {
+                    val delRes = networkModule.cinepvqApi.updateHistory(
+                        HistoryActionRequest(action = "remove", movieSlug = delSlug)
+                    )
+                    if (delRes.isSuccessful) {
+                        secureStorageManager.removeDeletedHistorySlug(currentUid, delSlug)
+                    }
+                } catch (_: Exception) {}
+            }
+
             val histRes = networkModule.cinepvqApi.getHistory()
             if (histRes.isSuccessful && histRes.body()?.history != null) {
                 val remoteHist = histRes.body()!!.history
-                histCount = remoteHist.size
-                val remoteSlugs = remoteHist.map { it.slug }.toSet()
+                val activeDeletedHistSlugs = secureStorageManager.getDeletedHistorySlugs(currentUid)
+                val validRemoteHist = remoteHist.filter { it.slug !in activeDeletedHistSlugs }
+                histCount = validRemoteHist.size
+                val validRemoteSlugs = validRemoteHist.map { it.slug }.toSet()
                 val itemsToPush = mutableListOf<WatchHistoryDto>()
+                val pendingSyncHistSlugs = secureStorageManager.getPendingSyncHistorySlugs(currentUid)
+
+                // Delete any local items marked as deleted locally
+                for (delSlug in activeDeletedHistSlugs) {
+                    historyDao.deleteBySlug(currentUid, delSlug)
+                }
 
                 // Compare remote items with local items of current user
-                remoteHist.forEach { r ->
+                validRemoteHist.forEach { r ->
                     val local = historyDao.getHistoryBySlug(currentUid, r.slug)
                     val timeRemote = parseTime(r.updatedAt)
                     val timeLocal = parseTime(local?.updatedAt)
 
                     if (local == null || timeRemote >= timeLocal) {
-                        // Case A (remote newer), Case C (equal timestamps), Case E (remote-only): remote wins
                         historyDao.upsert(
                             WatchHistoryEntity(
                                 userId = currentUid,
@@ -661,8 +751,9 @@ class UserSyncRepository(
                         if (!r.episodeSlug.isNullOrBlank()) {
                             saveEpisodeProgress(r.slug, r.episodeSlug, r.currentTime, r.duration)
                         }
+                        secureStorageManager.removePendingSyncHistorySlug(currentUid, r.slug)
                     } else {
-                        // Case B (local newer), Case F (newer episode in local): push local to server
+                        // Local has newer timestamp than remote: push local update to server
                         itemsToPush.add(
                             WatchHistoryDto(
                                 slug = local.slug,
@@ -679,10 +770,18 @@ class UserSyncRepository(
                     }
                 }
 
-                // Case D: Local-only items for current user (not present on remote): push to server
                 val allLocal = historyDao.getAllHistoryDirect(currentUid)
-                val localOnly = allLocal.filter { it.slug !in remoteSlugs }
-                localOnly.forEach { local ->
+                // If an item in Room is NOT in validRemoteSlugs and NOT in pendingSyncHistSlugs:
+                // It was deleted on Web! Remove it from local Room DB to reflect Web deletion.
+                val deletedOnWeb = allLocal.filter { it.slug !in validRemoteSlugs && it.slug !in pendingSyncHistSlugs }
+                for (delItem in deletedOnWeb) {
+                    historyDao.deleteBySlug(currentUid, delItem.slug)
+                    secureStorageManager.removeEpisodeProgressForMovie(currentUid, delItem.slug)
+                }
+
+                // Push ONLY items that are truly pending local additions/offline watches
+                val localOnlyToPush = allLocal.filter { it.slug !in validRemoteSlugs && it.slug in pendingSyncHistSlugs }
+                localOnlyToPush.forEach { local ->
                     itemsToPush.add(
                         WatchHistoryDto(
                             slug = local.slug,
@@ -703,7 +802,11 @@ class UserSyncRepository(
                     val pushRes = networkModule.cinepvqApi.updateHistory(
                         HistoryActionRequest(action = "sync", history = itemsToPush)
                     )
-                    if (!pushRes.isSuccessful) {
+                    if (pushRes.isSuccessful) {
+                        for (p in itemsToPush) {
+                            secureStorageManager.removePendingSyncHistorySlug(currentUid, p.slug)
+                        }
+                    } else {
                         Log.w("UserSyncRepo", "Push local history returned HTTP ${pushRes.code()}: ${pushRes.message()}")
                     }
                 }
@@ -719,36 +822,62 @@ class UserSyncRepository(
 
         // 3. Sync Watchlist (Xem Sau)
         try {
+            // First, process any pending deletions (tombstones) on the server
+            val deletedWlSlugs = secureStorageManager.getDeletedWatchLaterSlugs(currentUid)
+            for (delSlug in deletedWlSlugs) {
+                try {
+                    val delRes = networkModule.cinepvqApi.deleteWatchlist(slug = delSlug)
+                    if (delRes.isSuccessful) {
+                        secureStorageManager.removeDeletedWatchLaterSlug(currentUid, delSlug)
+                    }
+                } catch (e: Exception) {
+                    Log.w("UserSyncRepo", "Retry delete watchlist for $delSlug failed: ${e.message}")
+                }
+            }
+
             val watchRes = networkModule.cinepvqApi.getWatchlist()
             if (watchRes.isSuccessful && watchRes.body()?.watchlist != null) {
                 val remoteWatch = watchRes.body()!!.watchlist
-                watchCount = remoteWatch.size
-                val remoteSlugs = remoteWatch.map { it.slug }.toSet()
+                val activeDeletedSlugs = secureStorageManager.getDeletedWatchLaterSlugs(currentUid)
+                val validRemoteWatch = remoteWatch.filter { it.slug !in activeDeletedSlugs }
+                watchCount = validRemoteWatch.size
+                val validRemoteSlugs = validRemoteWatch.map { it.slug }.toSet()
 
-                // Compare remote items with local items of current user
-                remoteWatch.forEach { r ->
-                    val local = watchLaterDao.isInWatchLaterDirect(currentUid, r.slug)
-                    if (!local) {
-                        watchLaterDao.insert(
-                            WatchLaterEntity(
-                                userId = currentUid,
-                                slug = r.slug,
-                                name = r.name,
-                                originalName = r.original_name,
-                                thumbUrl = r.thumb_url,
-                                addedAt = if (!r.addedAt.isNullOrBlank()) r.addedAt else IsoTimestampHelper.nowIso()
-                            )
-                        )
-                    }
+                // Insert valid remote items into local Room DB
+                val entities = validRemoteWatch.map { r ->
+                    WatchLaterEntity(
+                        userId = currentUid,
+                        slug = r.slug,
+                        name = r.name,
+                        originalName = r.original_name,
+                        thumbUrl = r.thumb_url,
+                        addedAt = if (!r.addedAt.isNullOrBlank()) r.addedAt else IsoTimestampHelper.nowIso()
+                    )
+                }
+                watchLaterDao.insertAll(entities)
+
+                // Delete any local items marked as deleted locally
+                for (delSlug in activeDeletedSlugs) {
+                    watchLaterDao.deleteBySlug(currentUid, delSlug)
                 }
 
                 val allLocal = watchLaterDao.getAllWatchLaterDirect(currentUid)
-                val localOnly = allLocal.filter { it.slug !in remoteSlugs }
-                if (localOnly.isNotEmpty()) {
+                val pendingAdds = secureStorageManager.getPendingAddWatchLaterSlugs(currentUid)
+
+                // If an item in Room is NOT in validRemoteSlugs and NOT in pendingAdds,
+                // it was deleted on Web! Remove it from local Room DB to reflect Web deletion.
+                val deletedOnWeb = allLocal.filter { it.slug !in validRemoteSlugs && it.slug !in pendingAdds }
+                for (delItem in deletedOnWeb) {
+                    watchLaterDao.deleteBySlug(currentUid, delItem.slug)
+                }
+
+                // Push ONLY items that are truly pending local additions
+                val localOnlyToPush = allLocal.filter { it.slug in pendingAdds }
+                if (localOnlyToPush.isNotEmpty()) {
                     val pushRes = networkModule.cinepvqApi.updateWatchlist(
                         WatchlistActionRequest(
                             action = "sync",
-                            watchlist = localOnly.map { f ->
+                            watchlist = localOnlyToPush.map { f ->
                                 WatchlistDto(
                                     slug = f.slug,
                                     name = f.name,
@@ -759,7 +888,11 @@ class UserSyncRepository(
                             }
                         )
                     )
-                    if (!pushRes.isSuccessful) {
+                    if (pushRes.isSuccessful) {
+                        for (p in localOnlyToPush) {
+                            secureStorageManager.removePendingAddWatchLaterSlug(currentUid, p.slug)
+                        }
+                    } else {
                         Log.w("UserSyncRepo", "Push local watchlist returned HTTP ${pushRes.code()}: ${pushRes.message()}")
                     }
                 }

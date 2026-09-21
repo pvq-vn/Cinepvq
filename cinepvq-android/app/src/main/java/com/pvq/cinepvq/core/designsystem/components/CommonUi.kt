@@ -106,8 +106,12 @@ fun ContinueWatchingCard(
 
                 Spacer(modifier = Modifier.height(2.dp))
 
+                val epDisplay = if (!item.episodeName.isNullOrBlank()) {
+                    com.pvq.cinepvq.core.designsystem.utils.EpisodeDisplayFormatter.format(item.episodeName)
+                } else "Đang xem"
+
                 Text(
-                    text = item.episodeName ?: "Đang xem",
+                    text = epDisplay,
                     color = CinepvqPrimaryLight,
                     fontSize = 11.sp,
                     maxLines = 1,

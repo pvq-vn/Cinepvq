@@ -544,11 +544,7 @@ private fun PlayerTopBar(
                         overflow = TextOverflow.Ellipsis
                     )
                     if (episodeName.isNotBlank()) {
-                        val displayEpisode = if (episodeName.trim().startsWith("tập", ignoreCase = true)) {
-                            episodeName.trim()
-                        } else {
-                            "Tập ${episodeName.trim()}"
-                        }
+                        val displayEpisode = com.pvq.cinepvq.core.designsystem.utils.EpisodeDisplayFormatter.format(episodeName)
                         Text(
                             text = displayEpisode,
                             color = CinepvqPrimaryLight,
