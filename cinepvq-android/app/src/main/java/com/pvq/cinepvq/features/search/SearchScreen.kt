@@ -7,15 +7,18 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -89,30 +92,28 @@ fun SearchScreen(
     val isLoadingMore by viewModel.isLoadingMore.collectAsStateWithLifecycle()
     val canLoadMore by viewModel.canLoadMore.collectAsStateWithLifecycle()
     val selectedTag by viewModel.selectedTag.collectAsStateWithLifecycle()
+    val gridState = rememberLazyGridState()
 
-    val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
-
-    // Viewport Sentinel: Load more results when scrolling near the end
-    androidx.compose.runtime.LaunchedEffect(gridState, isLoadingMore, canLoadMore) {
+    // Viewport Sentinel: Load more results smoothly when scrolling near the end
+    androidx.compose.runtime.LaunchedEffect(gridState) {
         androidx.compose.runtime.snapshotFlow {
             val total = gridState.layoutInfo.totalItemsCount
             val lastVisible = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
             lastVisible to total
-        }.collect { (lastVisible, total) ->
+        }
+        .distinctUntilChanged()
+        .collect { (lastVisible, total) ->
             if (total > 0 && lastVisible >= total - 6) {
                 viewModel.loadMore()
             }
         }
     }
 
-    var isFilterVisible by remember { mutableStateOf(true) }
+    var isFilterVisible by remember { mutableStateOf(false) }
     com.pvq.cinepvq.core.designsystem.components.TrackLazyGridScroll(
         gridState = gridState,
-        threshold = 32,
+        threshold = 96,
         onVisibilityChanged = { visible ->
-            if (isFilterVisible != visible) {
-                isFilterVisible = visible
-            }
             onBarsVisibilityChanged?.invoke(visible)
         }
     )
@@ -200,87 +201,93 @@ fun SearchScreen(
 
         val activeFiltersCount = listOfNotNull(activeCategory, activeGenre, activeCountry, if (activeSort != "latest") activeSort else null).size
 
-        // Advanced Filters Section (Collapsible on scroll, identical behavior to bottom nav bar)
-        AnimatedVisibility(
-            visible = isFilterVisible,
-            enter = expandVertically(animationSpec = tween(250)) + fadeIn(animationSpec = tween(250)),
-            exit = shrinkVertically(animationSpec = tween(250)) + fadeOut(animationSpec = tween(200))
+        // Advanced Filters Header (Tap to toggle filters cleanly, no scroll jank)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { isFilterVisible = !isFilterVisible }
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                // Advanced Filters Header
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = androidx.compose.material.icons.Icons.Default.Menu,
-                            contentDescription = null,
-                            tint = CinepvqPrimary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = androidx.compose.material.icons.Icons.Default.Menu,
+                    contentDescription = null,
+                    tint = if (isFilterVisible || activeFiltersCount > 0) CinepvqPrimary else CinepvqTextSecondary,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Bộ lọc nâng cao",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = CinepvqTextPrimary
+                )
+                if (activeFiltersCount > 0) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .background(CinepvqPrimary, RoundedCornerShape(12.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
                         Text(
-                            text = "Bộ lọc nâng cao",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = CinepvqTextPrimary
+                            text = activeFiltersCount.toString(),
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
                         )
-                        if (activeFiltersCount > 0) {
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Box(
-                                modifier = Modifier
-                                    .background(CinepvqPrimary, RoundedCornerShape(12.dp))
-                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                            ) {
-                                Text(
-                                    text = activeFiltersCount.toString(),
-                                    color = Color.White,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-
-                    if (activeFiltersCount > 0) {
-                        TextButton(
-                            onClick = { viewModel.clearAllFilters() },
-                            contentPadding = PaddingValues(0.dp)
-                        ) {
-                            Text("Đặt lại", fontSize = 12.sp, color = Color.Red)
-                        }
                     }
                 }
+                Spacer(modifier = Modifier.width(4.dp))
+                Icon(
+                    imageVector = if (isFilterVisible) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    contentDescription = null,
+                    tint = CinepvqTextMuted,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
 
-                // Filter Rows
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(bottom = 8.dp)
+            if (activeFiltersCount > 0) {
+                TextButton(
+                    onClick = { viewModel.clearAllFilters() },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
                 ) {
-                    item {
-                        FilterDropdownMenu("Danh mục", SEARCH_CATEGORIES, activeCategory) { slug ->
-                            viewModel.applyFilter("category", slug)
-                        }
+                    Text(
+                        text = "Đặt lại",
+                        color = CinepvqTextMuted,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
+
+        // Advanced Filters Body (Rendered when toggled open, zero layout re-measurement during scroll)
+        if (isFilterVisible) {
+            // Filter Rows
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(bottom = 8.dp)
+            ) {
+                item {
+                    FilterDropdownMenu("Danh mục", SEARCH_CATEGORIES, activeCategory) { slug ->
+                        viewModel.applyFilter("category", slug)
                     }
-                    item {
-                        FilterDropdownMenu("Thể loại", SEARCH_GENRES, activeGenre) { slug ->
-                            viewModel.applyFilter("genre", slug)
-                        }
+                }
+                item {
+                    FilterDropdownMenu("Thể loại", SEARCH_GENRES, activeGenre) { slug ->
+                        viewModel.applyFilter("genre", slug)
                     }
-                    item {
-                        FilterDropdownMenu("Quốc gia", SEARCH_COUNTRIES, activeCountry) { slug ->
-                            viewModel.applyFilter("country", slug)
-                        }
+                }
+                item {
+                    FilterDropdownMenu("Quốc gia", SEARCH_COUNTRIES, activeCountry) { slug ->
+                        viewModel.applyFilter("country", slug)
                     }
-                    item {
-                        FilterDropdownMenu("Sắp xếp", SEARCH_SORTS, activeSort, isSort = true) { slug ->
-                            if (slug != null) viewModel.onSortChanged(slug)
-                        }
+                }
+                item {
+                    FilterDropdownMenu("Sắp xếp", SEARCH_SORTS, activeSort, isSort = true) { slug ->
+                        if (slug != null) viewModel.onSortChanged(slug)
                     }
                 }
             }

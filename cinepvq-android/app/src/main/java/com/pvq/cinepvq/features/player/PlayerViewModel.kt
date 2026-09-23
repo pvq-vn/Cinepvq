@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.pvq.cinepvq.CinepvqApp
 import com.pvq.cinepvq.data.movie.MovieRepository
 import com.pvq.cinepvq.data.player.VideoSourceRepository
+import com.pvq.cinepvq.data.settings.SettingsRepository
 import com.pvq.cinepvq.data.user.UserSyncRepository
 import com.pvq.cinepvq.domain.model.EpisodeItem
 import com.pvq.cinepvq.domain.model.MovieDetail
@@ -12,14 +13,18 @@ import com.pvq.cinepvq.domain.model.StreamSource
 import com.pvq.cinepvq.domain.model.StreamType
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class PlayerViewModel(
     private val movieRepository: MovieRepository = CinepvqApp.instance.movieRepository,
     private val videoSourceRepository: VideoSourceRepository = CinepvqApp.instance.videoSourceRepository,
-    private val userSyncRepository: UserSyncRepository = CinepvqApp.instance.userSyncRepository
+    private val userSyncRepository: UserSyncRepository = CinepvqApp.instance.userSyncRepository,
+    private val settingsRepository: SettingsRepository = CinepvqApp.instance.settingsRepository
 ) : ViewModel() {
 
     private val _movie = MutableStateFlow<MovieDetail?>(null)
@@ -144,15 +149,53 @@ class PlayerViewModel(
             )
 
             _availableSources.value = sources
-            val chosen = if (!preferredSourceKey.isNullOrBlank() && preferredSourceKey != "auto") {
-                sources.firstOrNull { it.isAvailable && it.sourceId.contains(preferredSourceKey, ignoreCase = true) }
-                    ?: sources.firstOrNull { it.isAvailable }
+
+            val effectivePreferredKey = if (!preferredSourceKey.isNullOrBlank() && preferredSourceKey != "auto") {
+                preferredSourceKey
             } else {
-                sources.firstOrNull { it.isAvailable }
+                try {
+                    settingsRepository.playerSettings.first().defaultSource
+                } catch (_: Exception) {
+                    "auto"
+                }
             }
+
+            val preferredMatch = if (!effectivePreferredKey.isNullOrBlank() && effectivePreferredKey != "auto") {
+                sources.firstOrNull { it.isAvailable && matchSource(it, effectivePreferredKey) }
+            } else null
+
+            if (preferredMatch == null && !effectivePreferredKey.isNullOrBlank() && effectivePreferredKey != "auto") {
+                val availableSummary = sources.joinToString(", ") { "${it.sourceId}(${it.name})" }
+                android.util.Log.w("SOURCE_RESOLVE_FAILED", """
+                    SOURCE_RESOLVE_FAILED
+                    requestedSource=$effectivePreferredKey
+                    availableSources=[$availableSummary]
+                    reason=No available source matching key '$effectivePreferredKey'
+                """.trimIndent())
+            }
+
+            val chosen = preferredMatch ?: sources.firstOrNull { it.isAvailable }
+
             if (chosen != null) {
+                android.util.Log.d("PLAYER_INIT", """
+                    PLAYER_INIT
+                    slug=$slug
+                    episode=${targetEp.name}
+                    requestedDefaultSource=$effectivePreferredKey
+                    matchedSource=${chosen.sourceId}
+                    sourceId=${chosen.sourceId}
+                    sourceName=${chosen.name}
+                    streamType=${chosen.type}
+                    streamUrl=${chosen.url}
+                """.trimIndent())
                 _activeStream.value = chosen
             } else {
+                android.util.Log.e("SOURCE_RESOLVE_FAILED", """
+                    SOURCE_RESOLVE_FAILED
+                    requestedSource=$effectivePreferredKey
+                    availableSources=[]
+                    reason=No available sources for episode
+                """.trimIndent())
                 _errorMessage.value = "Không tìm thấy nguồn phát khả dụng cho tập này"
             }
 
@@ -160,7 +203,25 @@ class PlayerViewModel(
         }
     }
 
+    private fun matchSource(source: StreamSource, preferredKey: String): Boolean {
+        if (!source.isAvailable) return false
+        val key = preferredKey.lowercase().trim()
+        if (key == "auto" || key.isEmpty()) return true
+        val id = source.sourceId.lowercase()
+        val name = source.name.lowercase()
+        val displayName = source.displayName.lowercase()
+
+        return when (key) {
+            "k20" -> id.contains("k20") || name.contains("k20") || displayName.contains("k20")
+            "kkphim" -> id.contains("kkphim") || name.contains("kkphim") || displayName.contains("kkphim")
+            "vsmov" -> id.contains("vsmov") || name.contains("vsmov") || displayName.contains("vsmov")
+            "nguonc" -> id.contains("nguonc") || name.contains("nguonc") || id.contains("embed_fallback") || name.contains("streamc") || displayName.contains("nguonc")
+            else -> id.contains(key) || name.contains(key) || displayName.contains(key)
+        }
+    }
+
     fun switchStream(source: StreamSource) {
+        playerInitJob?.cancel()
         _activeStream.value = source
     }
 

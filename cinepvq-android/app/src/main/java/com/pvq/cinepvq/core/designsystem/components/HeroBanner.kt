@@ -47,8 +47,10 @@ fun HeroCarousel(
         if (pagerState.pageCount > 1) {
             while (true) {
                 delay(5500)
-                val nextPage = (pagerState.currentPage + 1) % pagerState.pageCount
-                pagerState.animateScrollToPage(nextPage)
+                if (!pagerState.isScrollInProgress) {
+                    val nextPage = (pagerState.currentPage + 1) % pagerState.pageCount
+                    pagerState.animateScrollToPage(nextPage)
+                }
             }
         }
     }
@@ -103,11 +105,15 @@ private fun HeroSlide(
             .clickable(onClick = onMovieClick)
     ) {
         // Background Backdrop
-        AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current)
+        val context = LocalContext.current
+        val imageRequest = remember(movie.posterUrl, movie.thumbUrl) {
+            ImageRequest.Builder(context)
                 .data(movie.posterUrl.ifBlank { movie.thumbUrl })
                 .crossfade(true)
-                .build(),
+                .build()
+        }
+        AsyncImage(
+            model = imageRequest,
             contentDescription = movie.name,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()

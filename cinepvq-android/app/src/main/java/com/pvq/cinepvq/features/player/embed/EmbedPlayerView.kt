@@ -61,6 +61,8 @@ fun EmbedPlayerView(
         }
     }
 
+    val currentOnCustomViewChange = androidx.compose.runtime.rememberUpdatedState(onCustomViewChange)
+
     var webViewRef: WebView? = remember { null }
 
     DisposableEffect(normalizedUrl) {
@@ -117,11 +119,11 @@ fun EmbedPlayerView(
 
                     webChromeClient = object : WebChromeClient() {
                         override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
-                            onCustomViewChange?.invoke(view, callback)
+                            currentOnCustomViewChange.value?.invoke(view, callback)
                         }
 
                         override fun onHideCustomView() {
-                            onCustomViewChange?.invoke(null, null)
+                            currentOnCustomViewChange.value?.invoke(null, null as? WebChromeClient.CustomViewCallback)
                         }
                     }
 

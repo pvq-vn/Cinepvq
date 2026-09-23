@@ -66,7 +66,6 @@ fun MovieCard(
             val imageRequest = remember(movie.thumbUrl, movie.posterUrl) {
                 ImageRequest.Builder(context)
                     .data(movie.thumbUrl.ifBlank { movie.posterUrl })
-                    .crossfade(true)
                     .build()
             }
             Box(
@@ -163,7 +162,6 @@ fun MovieCard(
         val imageRequest = remember(movie.thumbUrl, movie.posterUrl) {
             ImageRequest.Builder(context)
                 .data(movie.thumbUrl.ifBlank { movie.posterUrl })
-                .crossfade(true)
                 .build()
         }
 

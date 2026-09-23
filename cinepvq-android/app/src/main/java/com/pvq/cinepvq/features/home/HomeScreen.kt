@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.flow.distinctUntilChanged
 import com.pvq.cinepvq.core.designsystem.components.*
 import com.pvq.cinepvq.domain.model.Movie
 import com.pvq.cinepvq.ui.theme.*
@@ -85,27 +86,34 @@ fun HomeScreen(
     val listState = rememberLazyListState()
     val density = LocalDensity.current
 
-    // Viewport Sentinel: Trigger Batch 2 & Batch 3 when user scrolls near the bottom of loaded batches
-    LaunchedEffect(listState, isBatch2Loaded, isBatch2Loading, isBatch3Loaded, isBatch3Loading) {
+    // Viewport Sentinel: Trigger Batch 2 & Batch 3 progressively when user actually scrolls near the bottom of loaded batches
+    LaunchedEffect(listState) {
         snapshotFlow {
             val total = listState.layoutInfo.totalItemsCount
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
             lastVisible to total
-        }.collect { (lastVisible, total) ->
-            if (total > 0 && lastVisible >= total - 3) {
-                if (!isBatch2Loaded && !isBatch2Loading) {
+        }
+        .distinctUntilChanged()
+        .collect { (lastVisible, total) ->
+            if (total > 0) {
+                val b2Loaded = viewModel.isBatch2Loaded.value
+                val b2Loading = viewModel.isBatch2Loading.value
+                val b3Loaded = viewModel.isBatch3Loaded.value
+                val b3Loading = viewModel.isBatch3Loading.value
+
+                if (!b2Loaded && !b2Loading && lastVisible >= total - 1) {
                     viewModel.loadBatch2()
-                } else if (isBatch2Loaded && !isBatch3Loaded && !isBatch3Loading) {
+                } else if (b2Loaded && !b3Loaded && !b3Loading && lastVisible >= total - 2) {
                     viewModel.loadBatch3()
                 }
             }
         }
     }
 
-    // Active scroll tracking via snapshotFlow
+    // Active scroll tracking via snapshotFlow with stabilized jitter-free threshold
     TrackLazyListScroll(
         listState = listState,
-        threshold = 16,
+        threshold = 96,
         onVisibilityChanged = onBarsVisibilityChanged
     )
 
@@ -166,7 +174,7 @@ fun HomeScreen(
                         ) {
                             // ─── BATCH 1: MOUNTED IMMEDIATELY ─────────────────────────
                             // 1. Hero Cinematic Carousel (Top 6 movies from latest)
-                            item(contentType = "HeroCarousel") {
+                            item(key = "HeroCarousel", contentType = "HeroCarousel") {
                                 HeroCarousel(
                                     movies = heroMovies,
                                     onMovieClick = { m -> onMovieClick(m.slug) }
@@ -175,7 +183,7 @@ fun HomeScreen(
 
                             // 2. Continue Watching Shelf (Auto-hides if empty or not logged in)
                             if (isLoggedIn && continueWatching.isNotEmpty()) {
-                                item(contentType = "ContinueWatching") {
+                                item(key = "ContinueWatching", contentType = "ContinueWatching") {
                                     Column(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -205,7 +213,7 @@ fun HomeScreen(
                             }
 
                             // 3. Trending Shelf: 🔥 Top Phim Hôm Nay (Ranking Variant with rank badge 1..10)
-                            item(contentType = "TrendingMovies") {
+                            item(key = "TrendingMovies", contentType = "TrendingMovies") {
                                 MovieRow(
                                     title = "🔥 Top Phim Hôm Nay",
                                     subtitle = "Các bộ phim nổi bật được khán giả theo dõi nhiều nhất",
@@ -217,7 +225,7 @@ fun HomeScreen(
                             }
 
                             // 4. Quick Genre Tags Banner (Matching Web)
-                            item(contentType = "QuickGenres") {
+                            item(key = "QuickGenres", contentType = "QuickGenres") {
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -258,7 +266,7 @@ fun HomeScreen(
                             }
 
                             // 5. Phim Mới Cập Nhật
-                            item(contentType = "LatestMovies") {
+                            item(key = "LatestMovies", contentType = "LatestMovies") {
                                 MovieRow(
                                     title = "Phim Mới Cập Nhật",
                                     subtitle = "Những tác phẩm vừa được cập nhật tập mới",
@@ -269,7 +277,7 @@ fun HomeScreen(
                             }
 
                             // 6. Phim Bộ Đặc Sắc
-                            item(contentType = "SeriesMovies") {
+                            item(key = "SeriesMovies", contentType = "SeriesMovies") {
                                 MovieRow(
                                     title = "Phim Bộ Đặc Sắc",
                                     subtitle = "Series dài tập lôi cuốn, trọn bộ vietsub chất lượng cao",
@@ -282,7 +290,7 @@ fun HomeScreen(
                             // ─── BATCH 2: LAZY LOADED WHEN SCROLLING NEAR BOTTOM ─────
                             if (isBatch2Loaded) {
                                 // 7. Phim Lẻ Chiếu Rạp
-                                item(contentType = "SingleMovies") {
+                                item(key = "SingleMovies", contentType = "SingleMovies") {
                                     MovieRow(
                                         title = "Phim Lẻ Chiếu Rạp",
                                         subtitle = "Bom tấn điện ảnh màn ảnh rộng không thể bỏ lỡ",
@@ -293,7 +301,7 @@ fun HomeScreen(
                                 }
 
                                 // 8. Thế Giới Hoạt Hình & Anime
-                                item(contentType = "AnimeMovies") {
+                                item(key = "AnimeMovies", contentType = "AnimeMovies") {
                                     MovieRow(
                                         title = "Thế Giới Hoạt Hình & Anime",
                                         subtitle = "Các bộ phim hoạt hình kinh điển và anime hot nhất",
@@ -304,7 +312,7 @@ fun HomeScreen(
                                 }
 
                                 // 9. Chương Trình TV Show
-                                item(contentType = "TvShowsMovies") {
+                                item(key = "TvShowsMovies", contentType = "TvShowsMovies") {
                                     MovieRow(
                                         title = "Chương Trình TV Show",
                                         subtitle = "Gameshow truyền hình và các chương trình thực tế thú vị",
@@ -314,7 +322,7 @@ fun HomeScreen(
                                     )
                                 }
                             } else if (isBatch2Loading) {
-                                item(contentType = "Batch2Skeleton") {
+                                item(key = "Batch2Skeleton", contentType = "Batch2Skeleton") {
                                     Column(modifier = Modifier.fillMaxWidth()) {
                                         MovieRowSkeleton(itemCount = 3)
                                     }
@@ -324,7 +332,7 @@ fun HomeScreen(
                             // ─── BATCH 3: LAZY LOADED WHEN SCROLLING TO BATCH 2 ───────
                             if (isBatch3Loaded) {
                                 // 10. Phim Hành Động Kịch Tính
-                                item(contentType = "ActionMovies") {
+                                item(key = "ActionMovies", contentType = "ActionMovies") {
                                     MovieRow(
                                         title = "Hành Động Kịch Tính",
                                         subtitle = "Nghẹt thở với những pha rượt đuổi và cận chiến mãn nhãn",
@@ -335,7 +343,7 @@ fun HomeScreen(
                                 }
 
                                 // 11. Điện Ảnh Âu Mỹ
-                                item(contentType = "WesternMovies") {
+                                item(key = "WesternMovies", contentType = "WesternMovies") {
                                     MovieRow(
                                         title = "Điện Ảnh Âu Mỹ",
                                         subtitle = "Hollywood đỉnh cao với kỹ xảo và âm thanh sống động",
@@ -346,7 +354,7 @@ fun HomeScreen(
                                 }
 
                                 // 12. K-Drama Hàn Quốc
-                                item(contentType = "KoreanMovies") {
+                                item(key = "KoreanMovies", contentType = "KoreanMovies") {
                                     MovieRow(
                                         title = "K-Drama Hàn Quốc",
                                         subtitle = "Những câu chuyện tình cảm lãng mạn và gia đình sâu sắc",
@@ -356,7 +364,7 @@ fun HomeScreen(
                                     )
                                 }
                             } else if (isBatch3Loading) {
-                                item(contentType = "Batch3Skeleton") {
+                                item(key = "Batch3Skeleton", contentType = "Batch3Skeleton") {
                                     Column(modifier = Modifier.fillMaxWidth()) {
                                         MovieRowSkeleton(itemCount = 3)
                                     }

@@ -1,5 +1,6 @@
 package com.pvq.cinepvq.features.library
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.pvq.cinepvq.CinepvqApp
@@ -21,10 +22,19 @@ enum class LibraryTab(val title: String) {
 }
 
 class LibraryViewModel(
+    private val savedStateHandle: SavedStateHandle? = null,
     private val userSyncRepository: UserSyncRepository = CinepvqApp.instance.userSyncRepository
 ) : ViewModel() {
 
-    private val _selectedTab = MutableStateFlow(LibraryTab.FAVORITES)
+    companion object {
+        private const val KEY_SELECTED_TAB = "selected_library_tab"
+    }
+
+    private val _selectedTab = MutableStateFlow(
+        savedStateHandle?.get<String>(KEY_SELECTED_TAB)?.let { name ->
+            try { LibraryTab.valueOf(name) } catch (_: Exception) { LibraryTab.FAVORITES }
+        } ?: LibraryTab.FAVORITES
+    )
     val selectedTab: StateFlow<LibraryTab> = _selectedTab.asStateFlow()
 
     val favorites: StateFlow<List<FavoriteMovie>> = userSyncRepository.getAllFavorites()
@@ -94,6 +104,7 @@ class LibraryViewModel(
 
     fun selectTab(tab: LibraryTab) {
         _selectedTab.value = tab
+        savedStateHandle?.set(KEY_SELECTED_TAB, tab.name)
     }
 
     fun removeFavorite(slug: String) {

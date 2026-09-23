@@ -3,7 +3,9 @@ package com.pvq.cinepvq.features.player
 import android.app.Activity
 import android.content.Context
 import android.media.AudioManager
+import android.view.View
 import android.view.ViewGroup
+import android.webkit.WebChromeClient
 import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
@@ -112,6 +114,7 @@ fun PlayerScreen(
     val maxVolume = remember(audioManager) { audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1) }
 
     var isPlaying by remember { mutableStateOf(true) }
+    var userPausedManually by remember { mutableStateOf(false) }
     var currentPositionMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(0L) }
     var isControlsVisible by remember { mutableStateOf(qaControls) }
@@ -174,6 +177,10 @@ fun PlayerScreen(
     // Playback state restoration across server / stream source transitions
     var pendingSeekPositionMs by remember { mutableStateOf<Long?>(null) }
     var pendingPlayWhenReady by remember { mutableStateOf<Boolean?>(null) }
+
+    // Embed/Iframe fullscreen custom view state (Browser / Cốc Cốc UX)
+    var customEmbedView by remember { mutableStateOf<View?>(null) }
+    var customEmbedCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
 
     // Video tracks & resolution metadata
     var activeVideoWidth by remember { mutableIntStateOf(0) }
@@ -297,6 +304,11 @@ fun PlayerScreen(
                             }
                         }
                         availableVideoTracks = videoTracks
+                        if (videoTracks.size <= 1) {
+                            applyResolution(this@apply, VideoResolution.AUTO, videoTracks)
+                        } else if (currentResolution != VideoResolution.AUTO) {
+                            applyResolution(this@apply, currentResolution, videoTracks)
+                        }
                     }
 
                     override fun onVideoSizeChanged(videoSize: VideoSize) {
@@ -306,9 +318,37 @@ fun PlayerScreen(
                         }
                     }
 
+                    override fun onPositionDiscontinuity(
+                        oldPosition: Player.PositionInfo,
+                        newPosition: Player.PositionInfo,
+                        reason: Int
+                    ) {
+                        currentPositionMs = currentPosition.coerceAtLeast(0L)
+                    }
+
                     override fun onPlaybackStateChanged(playbackState: Int) {
+                        val stateStr = when (playbackState) {
+                            Player.STATE_IDLE -> "IDLE"
+                            Player.STATE_BUFFERING -> "BUFFERING"
+                            Player.STATE_READY -> "READY"
+                            Player.STATE_ENDED -> "ENDED"
+                            else -> "UNKNOWN"
+                        }
+                        android.util.Log.d("PLAYER_STATE", """
+                            PLAYER_STATE
+                            state=$stateStr
+                            playWhenReady=$playWhenReady
+                            isPlaying=$isPlaying
+                            duration=$duration
+                            currentPosition=$currentPosition
+                        """.trimIndent())
+
                         if (playbackState == Player.STATE_READY) {
                             durationMs = duration.coerceAtLeast(0L)
+                            currentPositionMs = currentPosition.coerceAtLeast(0L)
+                            if (playWhenReady && !isPlaying) {
+                                play()
+                            }
                             if (pendingWarningTrigger && (isPlaying || playWhenReady)) {
                                 pendingWarningTrigger = false
                                 isPlaybackStartedWarningVisible = true
@@ -323,6 +363,14 @@ fun PlayerScreen(
                             }
                         }
                     }
+
+                    override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                        android.util.Log.e("PLAYER_ERROR", """
+                            PLAYER_ERROR
+                            sourceId=${activeStream?.sourceId}
+                            error=${error.message}
+                        """.trimIndent(), error)
+                    }
                 })
             }
     }
@@ -334,11 +382,36 @@ fun PlayerScreen(
         }
     }
 
+    LaunchedEffect(playerSettings.defaultResolution) {
+        if (currentResolution == VideoResolution.AUTO && playerSettings.defaultResolution != "auto") {
+            val defaultRes = when (playerSettings.defaultResolution) {
+                "1080p" -> VideoResolution.FHD
+                "720p" -> VideoResolution.HD
+                "480p" -> VideoResolution.SD
+                "360p" -> VideoResolution.LOW
+                else -> VideoResolution.AUTO
+            }
+            if (defaultRes != VideoResolution.AUTO) {
+                currentResolution = defaultRes
+                if (availableVideoTracks.size > 1) {
+                    applyResolution(exoPlayer, defaultRes, availableVideoTracks)
+                }
+            }
+        }
+    }
+
     // When server or episode changes, cleanly transition stream and manage resume position
     var lastLoadedServer by remember { mutableStateOf(serverName) }
     var lastLoadedEpisode by remember { mutableStateOf(episodeSlug) }
 
     LaunchedEffect(slug, episodeSlug, serverName) {
+        if (customEmbedView != null) {
+            try {
+                customEmbedCallback?.onCustomViewHidden()
+            } catch (_: Exception) {}
+            customEmbedView = null
+            customEmbedCallback = null
+        }
         val isEpisodeChanged = (episodeSlug != lastLoadedEpisode)
         val isServerChanged = (serverName != lastLoadedServer)
 
@@ -346,7 +419,7 @@ fun PlayerScreen(
             // User switched server (e.g. Vietsub -> Thuyết minh, Server 1 -> Server 2)
             // MUST preserve current playback position and play/pause state!
             val capturedPos = if (exoPlayer.currentPosition > 0L) exoPlayer.currentPosition else currentPositionMs
-            val wasPlaying = exoPlayer.isPlaying
+            val wasPlaying = if (exoPlayer.playbackState == Player.STATE_READY) exoPlayer.isPlaying else !userPausedManually
 
             if (activeStream?.type == StreamType.HLS_DIRECT && exoPlayer.duration > 0 && capturedPos > 0) {
                 viewModel.recordProgress(lastLoadedEpisode, capturedPos, exoPlayer.duration)
@@ -372,6 +445,7 @@ fun PlayerScreen(
             if (activeStream?.type == StreamType.HLS_DIRECT && exoPlayer.duration > 0) {
                 viewModel.recordProgress(lastLoadedEpisode, exoPlayer.currentPosition, exoPlayer.duration)
             }
+            userPausedManually = false
             exoPlayer.stop()
             exoPlayer.clearMediaItems()
             currentPositionMs = 0L
@@ -421,10 +495,23 @@ fun PlayerScreen(
 
             val targetPos = pendingSeekPositionMs
                 ?: if (viewModel.initialResumePositionMs > 0L) viewModel.initialResumePositionMs else 0L
-            val shouldPlay = pendingPlayWhenReady ?: true
+            val shouldPlay = pendingPlayWhenReady ?: (!userPausedManually)
 
             pendingSeekPositionMs = null
             pendingPlayWhenReady = null
+
+            android.util.Log.d("PLAYER_PREPARE", """
+                PLAYER_PREPARE
+                sourceId=${stream.sourceId}
+                streamType=${stream.type}
+                url=${stream.url}
+            """.trimIndent())
+
+            // Clear any stale track selection overrides from previous stream
+            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                .buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+                .build()
 
             // Direct Media3 startPositionMs seek: ExoPlayer fetches chunks directly at targetPos without double buffering
             exoPlayer.setMediaItem(mediaItem, targetPos)
@@ -432,20 +519,30 @@ fun PlayerScreen(
             exoPlayer.prepare()
         } else {
             // EMBED active: stop ExoPlayer completely to release hardware video codecs and RAM for WebView
+            android.util.Log.d("PLAYER_PREPARE", """
+                PLAYER_PREPARE
+                sourceId=${stream.sourceId}
+                streamType=${stream.type}
+                url=${stream.url}
+            """.trimIndent())
             exoPlayer.stop()
             exoPlayer.clearMediaItems()
         }
     }
 
-    // Record progress every 1s (tied strictly to current episodeSlug to prevent race conditions)
+    // Record progress and sync position every 500ms
     LaunchedEffect(exoPlayer, activeStream, episodeSlug) {
         while (true) {
-            if (activeStream?.type == StreamType.HLS_DIRECT && exoPlayer.isPlaying) {
+            if (activeStream?.type == StreamType.HLS_DIRECT) {
                 currentPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
-                durationMs = exoPlayer.duration.coerceAtLeast(0L)
-                viewModel.recordProgress(episodeSlug, currentPositionMs, durationMs)
+                if (exoPlayer.duration > 0) {
+                    durationMs = exoPlayer.duration.coerceAtLeast(0L)
+                }
+                if (exoPlayer.isPlaying) {
+                    viewModel.recordProgress(episodeSlug, currentPositionMs, durationMs)
+                }
             }
-            delay(1000)
+            delay(500)
         }
     }
 
@@ -470,7 +567,14 @@ fun PlayerScreen(
 
     // Handle Back Navigation
     BackHandler {
-        if (isScreenLocked) {
+        if (customEmbedView != null) {
+            try {
+                customEmbedCallback?.onCustomViewHidden()
+            } catch (_: Exception) {}
+            customEmbedView = null
+            customEmbedCallback = null
+            onFullscreenToggle(false)
+        } else if (isScreenLocked) {
             isScreenLocked = false
             showLockHint = false
         } else if (isFullscreen) {
@@ -499,73 +603,120 @@ fun PlayerScreen(
                 // ── In-App Web View for Iframe Embed (Configured for streaming hosts) ──
                 key(activeStream!!.url) {
                     Box(modifier = Modifier.fillMaxSize()) {
-                        EmbedPlayerView(
-                            url = activeStream!!.url,
-                            modifier = Modifier.fillMaxSize()
-                        )
-
-                    // Overlay Top Bar for Embed
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .then(if (isFullscreen) Modifier else Modifier.statusBarsPadding())
-                            .padding(horizontal = 16.dp, vertical = 12.dp)
-                            .align(Alignment.TopCenter)
-                            .background(Color.Black.copy(alpha = 0.65f)),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(
-                                onClick = {
-                                    if (isFullscreen) onFullscreenToggle(false) else onBackClick()
+                        if (customEmbedView != null) {
+                            // Fullscreen custom view container (WebChromeClient onShowCustomView)
+                            AndroidView(
+                                factory = { _ ->
+                                    FrameLayout(context).apply {
+                                        layoutParams = ViewGroup.LayoutParams(
+                                            ViewGroup.LayoutParams.MATCH_PARENT,
+                                            ViewGroup.LayoutParams.MATCH_PARENT
+                                        )
+                                        setBackgroundColor(android.graphics.Color.BLACK)
+                                        val parent = customEmbedView?.parent as? ViewGroup
+                                        parent?.removeView(customEmbedView)
+                                        addView(
+                                            customEmbedView,
+                                            FrameLayout.LayoutParams(
+                                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                                ViewGroup.LayoutParams.MATCH_PARENT
+                                            )
+                                        )
+                                    }
                                 },
-                                modifier = Modifier.size(40.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.KeyboardArrowDown,
-                                    contentDescription = "Thu nhỏ",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column {
-                                Text(
-                                    text = movie?.name ?: "Cinepvq",
-                                    color = Color.White,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = "Nguồn nhúng: ${activeStream?.displayName}",
-                                    color = CinepvqPrimaryLight,
-                                    fontSize = 11.sp
-                                )
-                            }
-                        }
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            EmbedPlayerView(
+                                url = activeStream!!.url,
+                                modifier = Modifier.fillMaxSize(),
+                                onCustomViewChange = { view, callback ->
+                                    customEmbedView = view
+                                    customEmbedCallback = callback
+                                    if (view != null) {
+                                        onFullscreenToggle(true)
+                                    } else {
+                                        onFullscreenToggle(false)
+                                    }
+                                }
+                            )
 
-                        if (availableSources.size > 1) {
-                            TextButton(
-                                onClick = { showSourcesSheet = true },
-                                colors = ButtonDefaults.textButtonColors(contentColor = CinepvqPrimaryLight)
+                            // Overlay Top Bar for Embed
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .then(if (isFullscreen) Modifier else Modifier.statusBarsPadding())
+                                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                                    .align(Alignment.TopCenter)
+                                    .background(Color.Black.copy(alpha = 0.65f)),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Icon(Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "Đổi Nguồn",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconButton(
+                                        onClick = {
+                                            if (isFullscreen) onFullscreenToggle(false) else onBackClick()
+                                        },
+                                        modifier = Modifier.size(40.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.KeyboardArrowDown,
+                                            contentDescription = "Thu nhỏ",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Column {
+                                        Text(
+                                            text = movie?.name ?: "Cinepvq",
+                                            color = Color.White,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = "Nguồn nhúng: ${activeStream?.displayName}",
+                                            color = CinepvqPrimaryLight,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                }
+
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (availableSources.size > 1) {
+                                        TextButton(
+                                            onClick = { showSourcesSheet = true },
+                                            colors = ButtonDefaults.textButtonColors(contentColor = CinepvqPrimaryLight)
+                                        ) {
+                                            Icon(Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = "Đổi Nguồn",
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 12.sp
+                                            )
+                                        }
+                                    }
+                                    IconButton(
+                                        onClick = { onFullscreenToggle(!isFullscreen) },
+                                        modifier = Modifier.size(40.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                            contentDescription = if (isFullscreen) "Thoát toàn màn hình" else "Toàn màn hình",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-        else -> {
+            else -> {
             // 1. Video Surface Layer (Pure ExoPlayer Surface)
             Box(modifier = Modifier.fillMaxSize()) {
                     AndroidView(
@@ -962,8 +1113,10 @@ fun PlayerScreen(
                     onTogglePlayPause = {
                         if (exoPlayer.isPlaying) {
                             exoPlayer.pause()
+                            userPausedManually = true
                         } else {
                             exoPlayer.play()
+                            userPausedManually = false
                         }
                     },
                     onSeekTo = { posMs ->
@@ -975,6 +1128,7 @@ fun PlayerScreen(
                             if (activeStream?.type == StreamType.HLS_DIRECT && exoPlayer.duration > 0) {
                                 viewModel.recordProgress(episodeSlug, exoPlayer.currentPosition, exoPlayer.duration)
                             }
+                            userPausedManually = false
                             exoPlayer.stop()
                             exoPlayer.clearMediaItems()
                             currentPositionMs = 0L
@@ -987,6 +1141,7 @@ fun PlayerScreen(
                             if (activeStream?.type == StreamType.HLS_DIRECT && exoPlayer.duration > 0) {
                                 viewModel.recordProgress(episodeSlug, exoPlayer.currentPosition, exoPlayer.duration)
                             }
+                            userPausedManually = false
                             exoPlayer.stop()
                             exoPlayer.clearMediaItems()
                             currentPositionMs = 0L
@@ -1025,6 +1180,7 @@ fun PlayerScreen(
                         if (activeStream?.type == StreamType.HLS_DIRECT && exoPlayer.duration > 0) {
                             viewModel.recordProgress(episodeSlug, exoPlayer.currentPosition, exoPlayer.duration)
                         }
+                        userPausedManually = false
                         exoPlayer.stop()
                         exoPlayer.clearMediaItems()
                         currentPositionMs = 0L
@@ -1049,33 +1205,7 @@ fun PlayerScreen(
                 currentResolution = currentResolution,
                 onResolutionChange = { res ->
                     currentResolution = res
-                    if (res == VideoResolution.AUTO) {
-                        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
-                            .buildUpon()
-                            .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
-                            .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
-                            .build()
-                    } else {
-                        val matchingTrack = availableVideoTracks.find { it.resolution == res }
-                        if (matchingTrack != null) {
-                            val group = exoPlayer.currentTracks.groups.getOrNull(matchingTrack.groupIndex)?.mediaTrackGroup
-                            if (group != null) {
-                                exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
-                                    .buildUpon()
-                                    .setOverrideForType(
-                                        TrackSelectionOverride(group, listOf(matchingTrack.trackIndex))
-                                    )
-                                    .build()
-                            }
-                        } else {
-                            val maxH = res.maxLines
-                            val maxW = if (maxH == Int.MAX_VALUE) Int.MAX_VALUE else (maxH * 16) / 9
-                            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
-                                .buildUpon()
-                                .setMaxVideoSize(maxW, maxH)
-                                .build()
-                        }
-                    }
+                    applyResolution(exoPlayer, res, availableVideoTracks)
                 },
                 availableVideoTracks = availableVideoTracks,
                 activeVideoWidth = activeVideoWidth,
@@ -1092,13 +1222,30 @@ fun PlayerScreen(
                 activeSource = activeStream,
                 onSelectSource = { source ->
                     if (source.sourceId != activeStream?.sourceId) {
-                        val capturedPos = if (exoPlayer.currentPosition > 0L) exoPlayer.currentPosition else currentPositionMs
-                        val wasPlaying = exoPlayer.isPlaying
+                        if (customEmbedView != null) {
+                            try {
+                                customEmbedCallback?.onCustomViewHidden()
+                            } catch (_: Exception) {}
+                            customEmbedView = null
+                            customEmbedCallback = null
+                            onFullscreenToggle(false)
+                        }
+                        val capturedPos = if (activeStream?.type == StreamType.HLS_DIRECT && exoPlayer.currentPosition > 0L) {
+                            exoPlayer.currentPosition
+                        } else {
+                            currentPositionMs
+                        }
+                        val wasPlaying = if (activeStream?.type == StreamType.HLS_DIRECT) {
+                            if (exoPlayer.playbackState == Player.STATE_READY) exoPlayer.isPlaying else !userPausedManually
+                        } else {
+                            !userPausedManually
+                        }
                         if (activeStream?.type == StreamType.HLS_DIRECT && exoPlayer.duration > 0 && capturedPos > 0) {
                             viewModel.recordProgress(episodeSlug, capturedPos, exoPlayer.duration)
                         }
                         pendingSeekPositionMs = capturedPos
                         pendingPlayWhenReady = wasPlaying
+                        showSourcesSheet = false
                         viewModel.switchStream(source)
                     }
                 },
@@ -1118,5 +1265,37 @@ private fun formatSeekTime(millis: Long): String {
         String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, seconds)
     } else {
         String.format(Locale.ROOT, "%02d:%02d", minutes, seconds)
+    }
+}
+
+@OptIn(UnstableApi::class)
+private fun applyResolution(player: ExoPlayer, res: VideoResolution, tracks: List<VideoTrackInfo>) {
+    if (res == VideoResolution.AUTO || tracks.size <= 1) {
+        player.trackSelectionParameters = player.trackSelectionParameters
+            .buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+            .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
+            .build()
+    } else {
+        val matchingTrack = tracks.find { it.resolution == res }
+        if (matchingTrack != null) {
+            val group = player.currentTracks.groups.getOrNull(matchingTrack.groupIndex)?.mediaTrackGroup
+            if (group != null) {
+                player.trackSelectionParameters = player.trackSelectionParameters
+                    .buildUpon()
+                    .setOverrideForType(
+                        TrackSelectionOverride(group, listOf(matchingTrack.trackIndex))
+                    )
+                    .build()
+            }
+        } else {
+            val maxH = res.maxLines
+            val maxW = if (maxH == Int.MAX_VALUE) Int.MAX_VALUE else (maxH * 16) / 9
+            player.trackSelectionParameters = player.trackSelectionParameters
+                .buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+                .setMaxVideoSize(maxW, maxH)
+                .build()
+        }
     }
 }

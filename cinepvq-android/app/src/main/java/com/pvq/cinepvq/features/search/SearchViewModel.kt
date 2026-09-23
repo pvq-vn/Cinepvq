@@ -63,7 +63,7 @@ class SearchViewModel(
     private fun executeDiscovery() {
         searchJob?.cancel()
         loadMoreJob?.cancel()
-        searchJob = viewModelScope.launch {
+        searchJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             _isSearching.value = true
             currentPage = 1
             _canLoadMore.value = true
@@ -82,9 +82,12 @@ class SearchViewModel(
             }
 
             val list = res.getOrDefault(emptyList())
-            rawMovies = list.toMutableList()
+            synchronized(rawMovies) {
+                rawMovies.clear()
+                rawMovies.addAll(list)
+            }
             _canLoadMore.value = list.size >= 10
-            applySorting(rawMovies)
+            applySorting(list)
             _isSearching.value = false
         }
     }
@@ -94,9 +97,14 @@ class SearchViewModel(
     }
 
     private fun applySorting(list: List<Movie>) {
-        val sorted = when (activeSort.value) {
+        val sortType = activeSort.value
+        val sorted = when (sortType) {
             "name" -> list.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
-            "year" -> list.sortedByDescending { it.year.filter { c -> c.isDigit() }.toIntOrNull() ?: 0 }
+            "year" -> {
+                list.sortedByDescending { movie ->
+                    movie.year.filter { c -> c.isDigit() }.toIntOrNull() ?: 0
+                }
+            }
             else -> list
         }
         _searchResults.value = sorted
@@ -105,7 +113,13 @@ class SearchViewModel(
     fun onSortChanged(sort: String) {
         if (activeSort.value == sort) return
         activeSort.value = sort
-        // Reset to page 1 fresh and re-fetch discovery under the new sort
+        // Re-apply sorting to cached rawMovies immediately without re-fetching network
+        synchronized(rawMovies) {
+            if (rawMovies.isNotEmpty()) {
+                applySorting(rawMovies.toList())
+                return
+            }
+        }
         executeDiscovery()
     }
 
@@ -122,7 +136,7 @@ class SearchViewModel(
         if (_isSearching.value || _isLoadingMore.value || !_canLoadMore.value) return
 
         loadMoreJob?.cancel()
-        loadMoreJob = viewModelScope.launch {
+        loadMoreJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             _isLoadingMore.value = true
             val nextPage = currentPage + 1
 
@@ -143,17 +157,23 @@ class SearchViewModel(
             if (newItems.isEmpty()) {
                 _canLoadMore.value = false
             } else {
-                val existingSlugs = rawMovies.map { it.slug }.toSet()
-                val uniqueNew = newItems.filter { it.slug !in existingSlugs }
-                if (uniqueNew.isEmpty()) {
-                    _canLoadMore.value = false
-                } else {
-                    currentPage = nextPage
-                    rawMovies.addAll(uniqueNew)
-                    applySorting(rawMovies)
-                    if (newItems.size < 10) {
+                var currentListSnapshot: List<Movie> = emptyList()
+                synchronized(rawMovies) {
+                    val existingSlugs = rawMovies.map { it.slug }.toSet()
+                    val uniqueNew = newItems.filter { it.slug !in existingSlugs }
+                    if (uniqueNew.isEmpty()) {
                         _canLoadMore.value = false
+                    } else {
+                        currentPage = nextPage
+                        rawMovies.addAll(uniqueNew)
+                        currentListSnapshot = rawMovies.toList()
+                        if (newItems.size < 10) {
+                            _canLoadMore.value = false
+                        }
                     }
+                }
+                if (currentListSnapshot.isNotEmpty()) {
+                    applySorting(currentListSnapshot)
                 }
             }
             _isLoadingMore.value = false

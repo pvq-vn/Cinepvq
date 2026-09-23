@@ -124,16 +124,20 @@ class HomeViewModel(
 
     fun loadBatch2() {
         if (_isBatch2Loaded.value || _isBatch2Loading.value) return
-        viewModelScope.launch {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             _isBatch2Loading.value = true
             try {
                 val singleDeferred = async { movieRepository.getMoviesByCategory("phim-le", 1) }
                 val animeDeferred = async { movieRepository.getMoviesByCategory("hoat-hinh", 1) }
                 val tvShowsDeferred = async { movieRepository.getMoviesByCategory("tv-shows", 1) }
 
-                _singleMovies.value = singleDeferred.await().getOrDefault(emptyList())
-                _animeMovies.value = animeDeferred.await().getOrDefault(emptyList())
-                _tvShowsMovies.value = tvShowsDeferred.await().getOrDefault(emptyList())
+                val single = singleDeferred.await().getOrDefault(emptyList())
+                val anime = animeDeferred.await().getOrDefault(emptyList())
+                val tv = tvShowsDeferred.await().getOrDefault(emptyList())
+
+                _singleMovies.value = single
+                _animeMovies.value = anime
+                _tvShowsMovies.value = tv
 
                 _isBatch2Loaded.value = true
             } catch (_: Exception) {
@@ -146,16 +150,20 @@ class HomeViewModel(
 
     fun loadBatch3() {
         if (!_isBatch2Loaded.value || _isBatch3Loaded.value || _isBatch3Loading.value) return
-        viewModelScope.launch {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             _isBatch3Loading.value = true
             try {
                 val actionDeferred = async { movieRepository.getMoviesByGenre("hanh-dong", 1) }
                 val westernDeferred = async { movieRepository.getMoviesByCountry("au-my", 1) }
                 val koreanDeferred = async { movieRepository.getMoviesByCountry("han-quoc", 1) }
 
-                _actionMovies.value = actionDeferred.await().getOrDefault(emptyList())
-                _westernMovies.value = westernDeferred.await().getOrDefault(emptyList())
-                _koreanMovies.value = koreanDeferred.await().getOrDefault(emptyList())
+                val action = actionDeferred.await().getOrDefault(emptyList())
+                val western = westernDeferred.await().getOrDefault(emptyList())
+                val korean = koreanDeferred.await().getOrDefault(emptyList())
+
+                _actionMovies.value = action
+                _westernMovies.value = western
+                _koreanMovies.value = korean
 
                 _isBatch3Loaded.value = true
             } catch (_: Exception) {

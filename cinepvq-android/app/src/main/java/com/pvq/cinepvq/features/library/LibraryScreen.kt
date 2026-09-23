@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -52,20 +53,25 @@ fun LibraryTab.icon(): ImageVector = when (this) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(
-    initialTab: Int = 0,
+    initialTab: Int? = null,
     onMovieClick: (String) -> Unit,
     onResumeMovie: (String, String?) -> Unit,
     onExploreClick: () -> Unit,
     onBarsVisibilityChanged: ((Boolean) -> Unit)? = null,
     viewModel: LibraryViewModel = viewModel()
 ) {
+    var hasAppliedInitialTab by rememberSaveable { mutableStateOf(false) }
+
     LaunchedEffect(initialTab) {
-        val target = when (initialTab) {
-            1 -> LibraryTab.HISTORY
-            2 -> LibraryTab.WATCH_LATER
-            else -> LibraryTab.FAVORITES
+        if (initialTab != null && !hasAppliedInitialTab) {
+            val target = when (initialTab) {
+                1 -> LibraryTab.HISTORY
+                2 -> LibraryTab.WATCH_LATER
+                else -> LibraryTab.FAVORITES
+            }
+            viewModel.selectTab(target)
+            hasAppliedInitialTab = true
         }
-        viewModel.selectTab(target)
     }
 
     val selectedTab by viewModel.selectedTab.collectAsStateWithLifecycle()
