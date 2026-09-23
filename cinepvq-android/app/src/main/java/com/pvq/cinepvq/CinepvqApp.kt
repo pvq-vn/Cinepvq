@@ -57,6 +57,16 @@ class CinepvqApp : Application(), SingletonImageLoader.Factory {
         com.pvq.cinepvq.data.settings.SettingsRepository(this)
     }
 
+    val playbackManager: com.pvq.cinepvq.data.player.PlaybackManager by lazy {
+        com.pvq.cinepvq.data.player.PlaybackManager(
+            context = this,
+            movieRepository = movieRepository,
+            videoSourceRepository = videoSourceRepository,
+            userSyncRepository = userSyncRepository,
+            settingsRepository = settingsRepository
+        )
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this

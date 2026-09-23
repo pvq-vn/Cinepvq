@@ -43,6 +43,13 @@ fun WatchScreen(
     val context = LocalContext.current
     val activity = context as? ComponentActivity
 
+    val playbackManager = remember { com.pvq.cinepvq.CinepvqApp.instance.playbackManager }
+    val initialIsFullscreen = qaFullscreen || playbackManager.previousPresentationState == com.pvq.cinepvq.data.player.PlayerPresentationState.FULL_LANDSCAPE
+
+    // Fullscreen state: strictly controlled by explicit user toggle
+    var isFullscreen by remember { mutableStateOf(initialIsFullscreen) }
+    val effectiveFullscreen = isFullscreen
+
     // Restore portrait orientation when leaving WatchScreen
     DisposableEffect(Unit) {
         onDispose {
@@ -50,9 +57,13 @@ fun WatchScreen(
         }
     }
 
-    LaunchedEffect(qaFullscreen) {
-        if (qaFullscreen) {
+    LaunchedEffect(effectiveFullscreen) {
+        if (effectiveFullscreen) {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            playbackManager.setPresentation(com.pvq.cinepvq.data.player.PlayerPresentationState.FULL_LANDSCAPE)
+        } else {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            playbackManager.setPresentation(com.pvq.cinepvq.data.player.PlayerPresentationState.FULL_PORTRAIT)
         }
     }
 
@@ -73,10 +84,6 @@ fun WatchScreen(
     var currentEpisodeSlug by remember { mutableStateOf(initialEpisodeSlug) }
     var currentServerName by remember { mutableStateOf(initialServerName) }
     var currentEmbedUrl by remember { mutableStateOf(initialEmbedUrl) }
-
-    // Fullscreen state: strictly controlled by explicit user toggle
-    var isFullscreen by remember { mutableStateOf(qaFullscreen) }
-    val effectiveFullscreen = isFullscreen
 
     // Comment States: Portrait Sheet vs Landscape Side Panel
     var showCommentSheet by remember { mutableStateOf(false) }
@@ -124,7 +131,19 @@ fun WatchScreen(
         context.startActivity(Intent.createChooser(sendIntent, "Chia sẻ phim"))
     }
 
-    // Back Handler: Close landscape comments -> Exit fullscreen -> Back navigation
+    val handleMinimize: () -> Unit = {
+        if (effectiveFullscreen) {
+            if (showLandscapeComments) {
+                showLandscapeComments = false
+            }
+            isFullscreen = false
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+        playbackManager.minimize()
+        onBackClick()
+    }
+
+    // Back Handler: Close landscape comments -> Exit fullscreen -> Minimize to In-App Mini Player
     BackHandler {
         if (showLandscapeComments) {
             showLandscapeComments = false
@@ -132,7 +151,7 @@ fun WatchScreen(
             isFullscreen = false
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         } else {
-            onBackClick()
+            handleMinimize()
         }
     }
 
@@ -170,6 +189,7 @@ fun WatchScreen(
                                 ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                             }
                         },
+                        onMinimize = handleMinimize,
                         onBackClick = {
                             if (effectiveFullscreen) {
                                 if (showLandscapeComments) {
@@ -179,7 +199,7 @@ fun WatchScreen(
                                     activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                                 }
                             } else {
-                                onBackClick()
+                                handleMinimize()
                             }
                         },
                         onSwitchEpisode = { _, epSlug ->

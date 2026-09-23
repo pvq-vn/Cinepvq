@@ -35,11 +35,56 @@ import com.pvq.cinepvq.ui.theme.CinepvqBackground
 import com.pvq.cinepvq.ui.theme.CinepvqTheme
 import java.net.URLDecoder
 
+import android.app.PendingIntent
+import android.app.PictureInPictureParams
+import android.app.RemoteAction
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ActivityInfo
+import android.content.res.Configuration
+import android.graphics.drawable.Icon
 import android.os.Build
+import android.util.Rational
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.media3.ui.PlayerView
+import com.pvq.cinepvq.data.player.PlayerPresentationState
+import com.pvq.cinepvq.domain.model.StreamType
+import com.pvq.cinepvq.features.player.InAppMiniPlayer
+import com.pvq.cinepvq.features.player.embed.EmbedPlayerView
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        const val ACTION_PIP_PREV = "com.pvq.cinepvq.PIP_ACTION_PREV"
+        const val ACTION_PIP_PLAY_PAUSE = "com.pvq.cinepvq.PIP_ACTION_PLAY_PAUSE"
+        const val ACTION_PIP_NEXT = "com.pvq.cinepvq.PIP_ACTION_NEXT"
+        const val ACTION_PIP_CLOSE = "com.pvq.cinepvq.PIP_ACTION_CLOSE"
+    }
+
+    private val pipReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val pm = CinepvqApp.instance.playbackManager
+            when (intent?.action) {
+                ACTION_PIP_PREV -> pm.playPrevious()
+                ACTION_PIP_PLAY_PAUSE -> pm.togglePlayPause()
+                ACTION_PIP_NEXT -> pm.playNext()
+                ACTION_PIP_CLOSE -> pm.closePlayback()
+            }
+            updatePipParams()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
@@ -56,6 +101,40 @@ class MainActivity : ComponentActivity() {
             setTurnScreenOn(true)
         }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        // Register PiP action broadcast receiver
+        val filter = IntentFilter().apply {
+            addAction(ACTION_PIP_PREV)
+            addAction(ACTION_PIP_PLAY_PAUSE)
+            addAction(ACTION_PIP_NEXT)
+            addAction(ACTION_PIP_CLOSE)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(pipReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(pipReceiver, filter)
+        }
+
+        // Dynamically monitor playback states to update PiP parameters & auto-enter eligibility
+        lifecycleScope.launch {
+            val pm = CinepvqApp.instance.playbackManager
+            launch {
+                pm.isPlaying.collect {
+                    updatePipParams()
+                }
+            }
+            launch {
+                pm.currentEpisode.collect {
+                    updatePipParams()
+                }
+            }
+            launch {
+                pm.presentationState.collect {
+                    updatePipParams()
+                }
+            }
+        }
+
         enableEdgeToEdge()
         setContent {
             CinepvqTheme {
@@ -71,6 +150,114 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    fun updatePipParams() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val pm = CinepvqApp.instance.playbackManager
+            val isPlaying = pm.isPlaying.value
+            val hasPrev = pm.getPreviousEpisode() != null
+            val hasNext = pm.getNextEpisode() != null
+            val shouldEnter = pm.shouldEnterPip()
+
+            val actions = mutableListOf<RemoteAction>()
+
+            // 1. Previous Episode
+            val prevIntent = PendingIntent.getBroadcast(
+                this,
+                101,
+                Intent(ACTION_PIP_PREV).setPackage(packageName),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val prevAction = RemoteAction(
+                Icon.createWithResource(this, android.R.drawable.ic_media_previous),
+                "Tập trước",
+                "Tập trước",
+                prevIntent
+            ).apply { isEnabled = hasPrev }
+            actions.add(prevAction)
+
+            // 2. Play / Pause
+            val playPauseIntent = PendingIntent.getBroadcast(
+                this,
+                102,
+                Intent(ACTION_PIP_PLAY_PAUSE).setPackage(packageName),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val playPauseIcon = if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
+            val playPauseTitle = if (isPlaying) "Tạm dừng" else "Phát"
+            val playPauseAction = RemoteAction(
+                Icon.createWithResource(this, playPauseIcon),
+                playPauseTitle,
+                playPauseTitle,
+                playPauseIntent
+            ).apply { isEnabled = true }
+            actions.add(playPauseAction)
+
+            // 3. Next Episode
+            val nextIntent = PendingIntent.getBroadcast(
+                this,
+                103,
+                Intent(ACTION_PIP_NEXT).setPackage(packageName),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val nextAction = RemoteAction(
+                Icon.createWithResource(this, android.R.drawable.ic_media_next),
+                "Tập tiếp theo",
+                "Tập tiếp theo",
+                nextIntent
+            ).apply { isEnabled = hasNext }
+            actions.add(nextAction)
+
+            val builder = PictureInPictureParams.Builder()
+                .setAspectRatio(Rational(16, 9))
+                .setActions(actions)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                builder.setAutoEnterEnabled(shouldEnter)
+            }
+
+            try {
+                setPictureInPictureParams(builder.build())
+            } catch (_: Exception) {}
+        }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val pm = CinepvqApp.instance.playbackManager
+            if (pm.shouldEnterPip()) {
+                updatePipParams()
+                val builder = PictureInPictureParams.Builder()
+                    .setAspectRatio(Rational(16, 9))
+                try {
+                    enterPictureInPictureMode(builder.build())
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        val pm = CinepvqApp.instance.playbackManager
+        if (isInPictureInPictureMode) {
+            pm.onPipModeChanged(true)
+        } else {
+            val restoredState = pm.expand()
+            requestedOrientation = if (restoredState == PlayerPresentationState.FULL_LANDSCAPE) {
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            } else {
+                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try {
+            unregisterReceiver(pipReceiver)
+        } catch (_: Exception) {}
+    }
 }
 
 @Composable
@@ -83,6 +270,11 @@ fun CinepvqAppRoot(
     qaVolume: Float = -1f,
     qaSeek: Long = -1L
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val playbackManager = remember { CinepvqApp.instance.playbackManager }
+    val presentationState by playbackManager.presentationState.collectAsStateWithLifecycle()
+    val activeStream by playbackManager.activeStream.collectAsStateWithLifecycle()
+
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
@@ -105,11 +297,40 @@ fun CinepvqAppRoot(
         isBarsVisible = true
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(CinepvqBackground)
-    ) {
+    if (presentationState == PlayerPresentationState.SYSTEM_PIP) {
+        // Pure Video Surface inside System PiP Window
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            if (activeStream?.type == StreamType.EMBED) {
+                EmbedPlayerView(
+                    url = activeStream?.url ?: "",
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                AndroidView(
+                    factory = { ctx ->
+                        PlayerView(ctx).apply {
+                            player = playbackManager.exoPlayer
+                            useController = false
+                            layoutParams = FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+    } else {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(CinepvqBackground)
+        ) {
         NavHost(
             navController = navController,
             startDestination = startRoute,
@@ -363,5 +584,36 @@ fun CinepvqAppRoot(
                 modifier = Modifier.align(Alignment.BottomCenter)
             )
         }
+
+        // ── Floating In-App Mini Player Overlay (Root Level) ─────────────────
+        if (presentationState == PlayerPresentationState.MINI_IN_APP) {
+            InAppMiniPlayer(
+                playbackManager = playbackManager,
+                onExpand = {
+                    val restoredState = playbackManager.expand()
+                    val targetOrientation = if (restoredState == PlayerPresentationState.FULL_LANDSCAPE) {
+                        ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    } else {
+                        ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                    }
+                    (context as? ComponentActivity)?.requestedOrientation = targetOrientation
+                    navController.navigate(
+                        Screen.Player.createRoute(
+                            slug = playbackManager.currentSlug,
+                            episodeSlug = playbackManager.currentEpisodeSlug,
+                            serverName = playbackManager.currentServerName,
+                            embedUrl = playbackManager.currentEmbedUrl
+                        )
+                    )
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(
+                        end = 16.dp,
+                        bottom = if (isBottomBarRoute && isBarsVisible) 80.dp else 24.dp
+                    )
+            )
+        }
     }
+}
 }
