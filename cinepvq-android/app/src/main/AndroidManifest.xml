@@ -23,6 +23,7 @@
             android:theme="@style/Theme.Cinepvq"
             android:screenOrientation="portrait"
             android:supportsPictureInPicture="true"
+            android:launchMode="singleTop"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>

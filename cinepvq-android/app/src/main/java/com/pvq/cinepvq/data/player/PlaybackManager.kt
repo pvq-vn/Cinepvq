@@ -694,7 +694,12 @@ class PlaybackManager(
 
     // ── System PiP Support ───────────────────────────────────────────────────
     fun shouldEnterPip(): Boolean {
-        val isCurrentlyPlaying = exoPlayer.isPlaying
+        val stream = _activeStream.value
+        val isCurrentlyPlaying = if (stream?.type == StreamType.EMBED) {
+            !userPausedManually
+        } else {
+            exoPlayer.isPlaying
+        }
         val isEligiblePresentation = _presentationState.value in listOf(
             PlayerPresentationState.FULL_PORTRAIT,
             PlayerPresentationState.FULL_LANDSCAPE,

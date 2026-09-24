@@ -62,6 +62,8 @@ import com.pvq.cinepvq.domain.model.StreamType
 import com.pvq.cinepvq.features.player.InAppMiniPlayer
 import com.pvq.cinepvq.features.player.embed.EmbedPlayerView
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 class MainActivity : ComponentActivity() {
 
@@ -70,6 +72,9 @@ class MainActivity : ComponentActivity() {
         const val ACTION_PIP_PLAY_PAUSE = "com.pvq.cinepvq.PIP_ACTION_PLAY_PAUSE"
         const val ACTION_PIP_NEXT = "com.pvq.cinepvq.PIP_ACTION_NEXT"
         const val ACTION_PIP_CLOSE = "com.pvq.cinepvq.PIP_ACTION_CLOSE"
+        const val ACTION_ENTER_PIP = "com.pvq.cinepvq.ACTION_ENTER_PIP"
+        const val ACTION_MINIMIZE = "com.pvq.cinepvq.ACTION_MINIMIZE"
+        const val ACTION_EXPAND = "com.pvq.cinepvq.ACTION_EXPAND"
     }
 
     private val pipReceiver = object : BroadcastReceiver() {
@@ -79,9 +84,47 @@ class MainActivity : ComponentActivity() {
                 ACTION_PIP_PREV -> pm.playPrevious()
                 ACTION_PIP_PLAY_PAUSE -> pm.togglePlayPause()
                 ACTION_PIP_NEXT -> pm.playNext()
-                ACTION_PIP_CLOSE -> pm.closePlayback()
+                ACTION_PIP_CLOSE -> {
+                    pm.closePlayback()
+                    finish()
+                }
+                ACTION_ENTER_PIP -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        val shouldEnter = pm.shouldEnterPip()
+                        android.util.Log.d("Cinepvq", "ACTION_ENTER_PIP received, shouldEnter=$shouldEnter, state=${pm.presentationState.value}, isPlaying=${pm.isPlaying.value}")
+                        if (shouldEnter) {
+                            updatePipParams()
+                            val builder = PictureInPictureParams.Builder()
+                                .setAspectRatio(Rational(16, 9))
+                            try {
+                                val result = enterPictureInPictureMode(builder.build())
+                                android.util.Log.d("Cinepvq", "ACTION_ENTER_PIP enterPictureInPictureMode result=$result")
+                            } catch (e: Exception) {
+                                android.util.Log.e("Cinepvq", "ACTION_ENTER_PIP error", e)
+                            }
+                        }
+                    }
+                }
+                ACTION_MINIMIZE -> {
+                    android.util.Log.d("Cinepvq", "ACTION_MINIMIZE: state before=${pm.presentationState.value}")
+                    pm.minimize()
+                    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                    onBackPressedDispatcher.onBackPressed()
+                    android.util.Log.d("Cinepvq", "ACTION_MINIMIZE: state after=${pm.presentationState.value}")
+                }
+                ACTION_EXPAND -> {
+                    val restoredState = pm.expand()
+                    android.util.Log.d("Cinepvq", "ACTION_EXPAND: restoredState=$restoredState")
+                    requestedOrientation = if (restoredState == PlayerPresentationState.FULL_LANDSCAPE) {
+                        ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    } else {
+                        ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                    }
+                }
             }
-            updatePipParams()
+            if (intent?.action != ACTION_PIP_CLOSE) {
+                updatePipParams()
+            }
         }
     }
 
@@ -91,6 +134,17 @@ class MainActivity : ComponentActivity() {
                 val pm = CinepvqApp.instance.playbackManager
                 pm.pause()
             }
+        }
+    }
+
+    private val externalRoute = MutableStateFlow<String?>(null)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val route = intent.getStringExtra("route")
+        if (!route.isNullOrBlank()) {
+            externalRoute.value = route
         }
     }
 
@@ -117,9 +171,12 @@ class MainActivity : ComponentActivity() {
             addAction(ACTION_PIP_PLAY_PAUSE)
             addAction(ACTION_PIP_NEXT)
             addAction(ACTION_PIP_CLOSE)
+            addAction(ACTION_ENTER_PIP)
+            addAction(ACTION_MINIMIZE)
+            addAction(ACTION_EXPAND)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(pipReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(pipReceiver, filter, Context.RECEIVER_EXPORTED)
         } else {
             registerReceiver(pipReceiver, filter)
         }
@@ -150,6 +207,7 @@ class MainActivity : ComponentActivity() {
             CinepvqTheme {
                 CinepvqAppRoot(
                     startRoute = startRoute,
+                    externalRoute = externalRoute,
                     qaFullscreen = qaFullscreen,
                     qaControls = qaControls,
                     qaComments = qaComments,
@@ -187,6 +245,7 @@ class MainActivity : ComponentActivity() {
             actions.add(prevAction)
 
             // 2. Play / Pause
+            val isHlsDirect = pm.activeStream.value?.type == StreamType.HLS_DIRECT
             val playPauseIntent = PendingIntent.getBroadcast(
                 this,
                 102,
@@ -200,7 +259,7 @@ class MainActivity : ComponentActivity() {
                 playPauseTitle,
                 playPauseTitle,
                 playPauseIntent
-            ).apply { isEnabled = true }
+            ).apply { isEnabled = isHlsDirect }
             actions.add(playPauseAction)
 
             // 3. Next Episode
@@ -241,21 +300,29 @@ class MainActivity : ComponentActivity() {
 
             try {
                 setPictureInPictureParams(builder.build())
-            } catch (_: Exception) {}
+                android.util.Log.d("Cinepvq", "setPictureInPictureParams success: autoEnter=$shouldEnter, isPlaying=$isPlaying")
+            } catch (e: Exception) {
+                android.util.Log.e("Cinepvq", "setPictureInPictureParams error", e)
+            }
         }
     }
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val pm = CinepvqApp.instance.playbackManager
-            if (pm.shouldEnterPip()) {
+            val shouldEnter = pm.shouldEnterPip()
+            android.util.Log.d("Cinepvq", "onUserLeaveHint: isInPip=$isInPictureInPictureMode, shouldEnter=$shouldEnter, isPlaying=${pm.isPlaying.value}, state=${pm.presentationState.value}")
+            if (!isInPictureInPictureMode && shouldEnter) {
                 updatePipParams()
                 val builder = PictureInPictureParams.Builder()
                     .setAspectRatio(Rational(16, 9))
                 try {
-                    enterPictureInPictureMode(builder.build())
-                } catch (_: Exception) {}
+                    val result = enterPictureInPictureMode(builder.build())
+                    android.util.Log.d("Cinepvq", "onUserLeaveHint enterPictureInPictureMode result=$result")
+                } catch (e: Exception) {
+                    android.util.Log.e("Cinepvq", "onUserLeaveHint enterPictureInPictureMode error", e)
+                }
             }
         }
     }
@@ -263,13 +330,16 @@ class MainActivity : ComponentActivity() {
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         val pm = CinepvqApp.instance.playbackManager
+        android.util.Log.d("Cinepvq", "onPictureInPictureModeChanged: isInPip=$isInPictureInPictureMode, lifecycleState=${lifecycle.currentState}")
         if (isInPictureInPictureMode) {
             pm.onPipModeChanged(true)
         } else {
             if (lifecycle.currentState == androidx.lifecycle.Lifecycle.State.CREATED || isFinishing) {
+                android.util.Log.d("Cinepvq", "PiP dismissed/closed -> closePlayback()")
                 pm.closePlayback()
             } else {
                 val restoredState = pm.restoreFromPip()
+                android.util.Log.d("Cinepvq", "PiP expanded -> restoreFromPip: $restoredState")
                 requestedOrientation = if (restoredState == PlayerPresentationState.FULL_LANDSCAPE) {
                     ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                 } else {
@@ -309,6 +379,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun CinepvqAppRoot(
     startRoute: String = Screen.Home.route,
+    externalRoute: StateFlow<String?> = MutableStateFlow(null),
     qaFullscreen: Boolean = false,
     qaControls: Boolean = false,
     qaComments: Boolean = false,
@@ -337,6 +408,17 @@ fun CinepvqAppRoot(
     )
 
     var isBarsVisible by remember { mutableStateOf(true) }
+
+    val routeToNavigate by externalRoute.collectAsStateWithLifecycle()
+    LaunchedEffect(routeToNavigate) {
+        val target = routeToNavigate
+        if (!target.isNullOrBlank() && target != currentRoute) {
+            (externalRoute as? MutableStateFlow<String?>)?.value = null
+            navController.navigate(target) {
+                launchSingleTop = true
+            }
+        }
+    }
 
     // When navigating between destinations, reset bars to visible
     LaunchedEffect(currentRoute) {
