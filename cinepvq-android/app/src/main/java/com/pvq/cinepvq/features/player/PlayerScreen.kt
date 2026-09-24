@@ -130,6 +130,9 @@ fun PlayerScreen(
     val trackSelector = playbackManager.trackSelector
 
     val isPlaying by playbackManager.isPlaying.collectAsStateWithLifecycle()
+    val presentationState by playbackManager.presentationState.collectAsStateWithLifecycle()
+    val shouldAttachPlayer = presentationState == com.pvq.cinepvq.data.player.PlayerPresentationState.FULL_PORTRAIT ||
+                             presentationState == com.pvq.cinepvq.data.player.PlayerPresentationState.FULL_LANDSCAPE
     var userPausedManually by remember { mutableStateOf(playbackManager.userPausedManually) }
     var currentPositionMs by remember {
         mutableLongStateOf(
@@ -558,7 +561,7 @@ fun PlayerScreen(
                             val dragY = change.position.y - startPos.y
 
                             if (!isDraggingDown) {
-                                if (dragY > touchSlop && dragY > kotlin.math.abs(dragX) * 1.1f) {
+                                if (dragY > touchSlop && dragY > kotlin.math.abs(dragX) * 1.3f) {
                                     isDraggingDown = true
                                     change.consume()
                                     dragOffsetY = dragY
@@ -703,13 +706,22 @@ fun PlayerScreen(
                     AndroidView(
                         factory = { ctx ->
                             PlayerView(ctx).apply {
-                                player = exoPlayer
+                                player = if (shouldAttachPlayer) exoPlayer else null
                                 useController = false
                                 layoutParams = FrameLayout.LayoutParams(
                                     ViewGroup.LayoutParams.MATCH_PARENT,
                                     ViewGroup.LayoutParams.MATCH_PARENT
                                 )
                             }
+                        },
+                        update = { playerView ->
+                            val target = if (shouldAttachPlayer) exoPlayer else null
+                            if (playerView.player !== target) {
+                                playerView.player = target
+                            }
+                        },
+                        onRelease = { playerView ->
+                            playerView.player = null
                         },
                         modifier = Modifier.fillMaxSize()
                     )

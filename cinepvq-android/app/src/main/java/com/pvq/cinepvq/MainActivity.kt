@@ -357,44 +357,17 @@ fun CinepvqAppRoot(
                     serverName = playbackManager.currentServerName,
                     embedUrl = playbackManager.currentEmbedUrl
                 )
-            )
+            ) {
+                launchSingleTop = true
+            }
         }
     }
 
-    if (presentationState == PlayerPresentationState.SYSTEM_PIP) {
-        // Pure Video Surface inside System PiP Window
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black)
-        ) {
-            if (activeStream?.type == StreamType.EMBED) {
-                EmbedPlayerView(
-                    url = activeStream?.url ?: "",
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                AndroidView(
-                    factory = { ctx ->
-                        PlayerView(ctx).apply {
-                            player = playbackManager.exoPlayer
-                            useController = false
-                            layoutParams = FrameLayout.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT
-                            )
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-        }
-    } else {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(CinepvqBackground)
-        ) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(CinepvqBackground)
+    ) {
         NavHost(
             navController = navController,
             startDestination = startRoute,
@@ -641,7 +614,7 @@ fun CinepvqAppRoot(
             }
         }
 
-        if (isBottomBarRoute) {
+        if (isBottomBarRoute && presentationState != PlayerPresentationState.SYSTEM_PIP) {
             CinepvqBottomNavBar(
                 navController = navController,
                 isVisible = isBarsVisible,
@@ -661,14 +634,6 @@ fun CinepvqAppRoot(
                         ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                     }
                     (context as? ComponentActivity)?.requestedOrientation = targetOrientation
-                    navController.navigate(
-                        Screen.Player.createRoute(
-                            slug = playbackManager.currentSlug,
-                            episodeSlug = playbackManager.currentEpisodeSlug,
-                            serverName = playbackManager.currentServerName,
-                            embedUrl = playbackManager.currentEmbedUrl
-                        )
-                    )
                 },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -678,6 +643,43 @@ fun CinepvqAppRoot(
                     )
             )
         }
+
+        // ── Pure Video Surface inside System PiP Window ──────────────────────
+        if (presentationState == PlayerPresentationState.SYSTEM_PIP) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+            ) {
+                if (activeStream?.type == StreamType.EMBED) {
+                    EmbedPlayerView(
+                        url = activeStream?.url ?: "",
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    AndroidView(
+                        factory = { ctx ->
+                            PlayerView(ctx).apply {
+                                player = playbackManager.exoPlayer
+                                useController = false
+                                layoutParams = FrameLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                            }
+                        },
+                        update = { playerView ->
+                            if (playerView.player !== playbackManager.exoPlayer) {
+                                playerView.player = playbackManager.exoPlayer
+                            }
+                        },
+                        onRelease = { playerView ->
+                            playerView.player = null
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+        }
     }
-}
 }

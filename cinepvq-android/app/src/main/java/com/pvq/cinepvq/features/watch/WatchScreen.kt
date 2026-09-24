@@ -140,10 +140,6 @@ fun WatchScreen(
 
     val handleMinimize: () -> Unit = {
         playbackManager.minimize()
-        if (showLandscapeComments) {
-            showLandscapeComments = false
-        }
-        isFullscreen = false
         activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         onBackClick()
     }

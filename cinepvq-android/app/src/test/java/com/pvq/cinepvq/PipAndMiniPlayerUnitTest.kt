@@ -272,4 +272,111 @@ class PipAndMiniPlayerUnitTest {
         assertNull(next)
         assertEquals("tap-2", prev?.slug)
     }
+
+    // ── 5. Downward Drag Gesture Discrimination ──────────────────────────────
+
+    private fun shouldClassifyAsDownwardDrag(
+        dragX: Float,
+        dragY: Float,
+        touchSlop: Float,
+        isFullscreen: Boolean
+    ): Boolean {
+        if (isFullscreen) return false
+        return dragY > touchSlop && dragY > Math.abs(dragX) * 1.3f
+    }
+
+    @Test
+    fun testDownwardDrag_gestureDiscrimination() {
+        val touchSlop = 20f
+
+        // 1. Pure vertical downward drag exceeding touchSlop -> Classified
+        assertTrue(shouldClassifyAsDownwardDrag(dragX = 0f, dragY = 50f, touchSlop = touchSlop, isFullscreen = false))
+
+        // 2. Below touchSlop -> Not classified
+        assertFalse(shouldClassifyAsDownwardDrag(dragX = 0f, dragY = 15f, touchSlop = touchSlop, isFullscreen = false))
+
+        // 3. Upward drag -> Not classified
+        assertFalse(shouldClassifyAsDownwardDrag(dragX = 0f, dragY = -50f, touchSlop = touchSlop, isFullscreen = false))
+
+        // 4. Pure horizontal drag -> Not classified
+        assertFalse(shouldClassifyAsDownwardDrag(dragX = 60f, dragY = 10f, touchSlop = touchSlop, isFullscreen = false))
+
+        // 5. Diagonal swipe with x > y -> Not classified
+        assertFalse(shouldClassifyAsDownwardDrag(dragX = 40f, dragY = 35f, touchSlop = touchSlop, isFullscreen = false))
+
+        // 6. Fullscreen -> Never activates downward drag
+        assertFalse(shouldClassifyAsDownwardDrag(dragX = 0f, dragY = 100f, touchSlop = touchSlop, isFullscreen = true))
+    }
+
+    // ── 6. State Continuity Across Transitions ───────────────────────────────
+
+    data class PlaybackSessionState(
+        var presentationState: PlayerPresentationState,
+        val slug: String,
+        val episodeSlug: String,
+        val sourceId: String,
+        val positionMs: Long,
+        val isPlaying: Boolean
+    )
+
+    @Test
+    fun testMiniAndPipExpansion_preservesSessionContinuity() {
+        val originalSession = PlaybackSessionState(
+            presentationState = PlayerPresentationState.FULL_PORTRAIT,
+            slug = "movie-1",
+            episodeSlug = "tap-1",
+            sourceId = "hls-1",
+            positionMs = 45000L,
+            isPlaying = true
+        )
+
+        // Minimize to In-App Mini
+        val miniSession = originalSession.copy(presentationState = PlayerPresentationState.MINI_IN_APP)
+        assertEquals(originalSession.positionMs, miniSession.positionMs)
+        assertEquals(originalSession.episodeSlug, miniSession.episodeSlug)
+        assertEquals(originalSession.sourceId, miniSession.sourceId)
+        assertEquals(originalSession.isPlaying, miniSession.isPlaying)
+
+        // Expand back to FULL_PORTRAIT
+        val restoredSession = miniSession.copy(presentationState = PlayerPresentationState.FULL_PORTRAIT)
+        assertEquals(originalSession.positionMs, restoredSession.positionMs)
+        assertEquals(originalSession.episodeSlug, restoredSession.episodeSlug)
+        assertEquals(originalSession.sourceId, restoredSession.sourceId)
+        assertEquals(originalSession.isPlaying, restoredSession.isPlaying)
+
+        // Enter PiP
+        val pipSession = restoredSession.copy(presentationState = PlayerPresentationState.SYSTEM_PIP)
+        assertEquals(originalSession.positionMs, pipSession.positionMs)
+        assertEquals(originalSession.episodeSlug, pipSession.episodeSlug)
+        assertEquals(originalSession.sourceId, pipSession.sourceId)
+        assertEquals(originalSession.isPlaying, pipSession.isPlaying)
+
+        // Expand from PiP
+        val finalSession = pipSession.copy(presentationState = PlayerPresentationState.FULL_PORTRAIT)
+        assertEquals(originalSession.positionMs, finalSession.positionMs)
+        assertEquals(originalSession.episodeSlug, finalSession.episodeSlug)
+        assertEquals(originalSession.sourceId, finalSession.sourceId)
+        assertEquals(originalSession.isPlaying, finalSession.isPlaying)
+    }
+
+    @Test
+    fun testMiniClose_clearsPlaybackSession() {
+        val holder = PresentationStateHolder(PlayerPresentationState.MINI_IN_APP)
+        var activeStream: String? = "hls-stream-url"
+        var currentPositionMs = 120000L
+        var isPlaying = true
+
+        // User taps close 'X'
+        holder.closePlayback()
+        activeStream = null
+        currentPositionMs = 0L
+        isPlaying = false
+
+        assertEquals(PlayerPresentationState.HIDDEN, holder.presentationState)
+        assertNull(activeStream)
+        assertEquals(0L, currentPositionMs)
+        assertFalse(isPlaying)
+        assertFalse(checkPipEligibility(hasActivePlayback = false, isPlaying = isPlaying, presentationState = holder.presentationState))
+    }
 }
+

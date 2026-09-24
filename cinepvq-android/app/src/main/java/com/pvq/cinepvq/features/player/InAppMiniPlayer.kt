@@ -97,6 +97,9 @@ fun InAppMiniPlayer(
                             playerView.player = playbackManager.exoPlayer
                         }
                     },
+                    onRelease = { playerView ->
+                        playerView.player = null
+                    },
                     modifier = Modifier
                         .fillMaxSize()
                         .clip(RoundedCornerShape(12.dp))
@@ -128,21 +131,25 @@ fun InAppMiniPlayer(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Top-Left: Play / Pause Button (Clean, compact YouTube style)
-                Box(
-                    modifier = Modifier
-                        .size(26.dp)
-                        .background(Color.Black.copy(alpha = 0.45f), CircleShape)
-                        .clip(CircleShape)
-                        .clickable { playbackManager.togglePlayPause() },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        contentDescription = if (isPlaying) "Tạm dừng" else "Phát",
-                        tint = Color.White,
-                        modifier = Modifier.size(15.dp)
-                    )
+                // Top-Left: Play / Pause Button (Clean, compact YouTube style - only for native ExoPlayer HLS streams)
+                if (activeStream?.type == StreamType.HLS_DIRECT) {
+                    Box(
+                        modifier = Modifier
+                            .size(26.dp)
+                            .background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                            .clip(CircleShape)
+                            .clickable { playbackManager.togglePlayPause() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (isPlaying) "Tạm dừng" else "Phát",
+                            tint = Color.White,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+                } else {
+                    Spacer(modifier = Modifier.size(26.dp))
                 }
 
                 // Top-Right: Close 'X' Button (Clean, compact YouTube style)

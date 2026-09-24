@@ -143,7 +143,7 @@ class PlaybackManager(
                 .setUsage(C.USAGE_MEDIA)
                 .build()
             setAudioAttributes(audioAttributes, true)
-            playWhenReady = true
+            playWhenReady = false
 
             addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(playing: Boolean) {
@@ -208,9 +208,6 @@ class PlaybackManager(
                     if (playbackState == Player.STATE_READY) {
                         _durationMs.value = duration.coerceAtLeast(0L)
                         _currentPositionMs.value = currentPosition.coerceAtLeast(0L)
-                        if (playWhenReady && !isPlaying) {
-                            play()
-                        }
                     } else if (playbackState == Player.STATE_ENDED) {
                         if (_activeStream.value?.type == StreamType.HLS_DIRECT && duration > 0) {
                             recordProgress(currentEpisodeSlug, duration, duration)
@@ -544,26 +541,32 @@ class PlaybackManager(
             recordProgress(currentEpisodeSlug, exoPlayer.currentPosition, exoPlayer.duration)
         }
         playerInitJob?.cancel()
+        userPausedManually = true
         exoPlayer.pause()
         exoPlayer.stop()
         exoPlayer.clearMediaItems()
         _activeStream.value = null
+        _currentEpisode.value = null
+        _movie.value = null
+        currentSlug = ""
+        currentEpisodeSlug = ""
+        currentServerName = null
+        currentEmbedUrl = null
+        _currentPositionMs.value = 0L
+        _durationMs.value = 0L
         _presentationState.value = PlayerPresentationState.HIDDEN
-        userPausedManually = false
+        previousPresentationState = PlayerPresentationState.FULL_PORTRAIT
+        pipPreviousPresentationState = PlayerPresentationState.FULL_PORTRAIT
     }
 
     fun pause() {
-        if (exoPlayer.isPlaying) {
-            exoPlayer.pause()
-            userPausedManually = true
-        }
+        exoPlayer.pause()
+        userPausedManually = true
     }
 
     fun play() {
-        if (!exoPlayer.isPlaying) {
-            exoPlayer.play()
-            userPausedManually = false
-        }
+        exoPlayer.play()
+        userPausedManually = false
     }
 
     fun togglePlayPause() {
