@@ -76,8 +76,7 @@ import kotlin.math.abs
 
 private enum class GestureMode {
     SEEK,
-    VERTICAL,
-    DOWNWARD_DRAG
+    VERTICAL
 }
 
 private enum class SeekSide {
@@ -126,10 +125,39 @@ fun PlayerScreen(
     val audioManager = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     val maxVolume = remember(audioManager) { audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1) }
 
-    var isPlaying by remember { mutableStateOf(true) }
-    var userPausedManually by remember { mutableStateOf(false) }
-    var currentPositionMs by remember { mutableLongStateOf(0L) }
-    var durationMs by remember { mutableLongStateOf(0L) }
+    val playbackManager = remember { CinepvqApp.instance.playbackManager }
+    val exoPlayer = playbackManager.exoPlayer
+    val trackSelector = playbackManager.trackSelector
+
+    val isPlaying by playbackManager.isPlaying.collectAsStateWithLifecycle()
+    var userPausedManually by remember { mutableStateOf(playbackManager.userPausedManually) }
+    var currentPositionMs by remember {
+        mutableLongStateOf(
+            if (playbackManager.currentPositionMs.value > 0L) playbackManager.currentPositionMs.value
+            else if (exoPlayer.currentPosition > 0L) exoPlayer.currentPosition
+            else 0L
+        )
+    }
+    var durationMs by remember {
+        mutableLongStateOf(
+            if (playbackManager.durationMs.value > 0L) playbackManager.durationMs.value
+            else if (exoPlayer.duration > 0L) exoPlayer.duration
+            else 0L
+        )
+    }
+
+    LaunchedEffect(Unit) {
+        launch {
+            playbackManager.currentPositionMs.collect { pos ->
+                if (pos > 0L) currentPositionMs = pos
+            }
+        }
+        launch {
+            playbackManager.durationMs.collect { dur ->
+                if (dur > 0L) durationMs = dur
+            }
+        }
+    }
     var isControlsVisible by remember { mutableStateOf(qaControls) }
 
     // Screen Lock State
@@ -249,138 +277,94 @@ fun PlayerScreen(
         }
     }
 
-    val playbackManager = remember { CinepvqApp.instance.playbackManager }
-    val exoPlayer = playbackManager.exoPlayer
-    val trackSelector = playbackManager.trackSelector
-
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
-                isPlaying = playing
                 if (playing && pendingWarningTrigger && exoPlayer.playbackState == Player.STATE_READY) {
                     pendingWarningTrigger = false
                     isPlaybackStartedWarningVisible = true
                 }
             }
 
-                    override fun onTracksChanged(tracks: Tracks) {
-                        val videoTracks = mutableListOf<VideoTrackInfo>()
-                        for (groupIndex in 0 until tracks.groups.size) {
-                            val group = tracks.groups[groupIndex]
-                            if (group.type == C.TRACK_TYPE_VIDEO) {
-                                val mediaTrackGroup = group.mediaTrackGroup
-                                for (trackIndex in 0 until mediaTrackGroup.length) {
-                                    val format = mediaTrackGroup.getFormat(trackIndex)
-                                    val isSelected = group.isTrackSelected(trackIndex)
-                                    val res = when {
-                                        format.height >= 1080 -> VideoResolution.FHD
-                                        format.height >= 720 -> VideoResolution.HD
-                                        format.height >= 480 -> VideoResolution.SD
-                                        format.height in 1..479 -> VideoResolution.LOW
-                                        else -> VideoResolution.AUTO
-                                    }
-                                    val label = when (res) {
-                                        VideoResolution.FHD -> "1080p (FHD)"
-                                        VideoResolution.HD -> "720p (HD)"
-                                        VideoResolution.SD -> "480p (SD)"
-                                        VideoResolution.LOW -> "360p (Tiết kiệm)"
-                                        VideoResolution.AUTO -> "Tự động"
-                                    }
-                                    videoTracks.add(
-                                        VideoTrackInfo(
-                                            width = format.width,
-                                            height = format.height,
-                                            bitrate = format.bitrate,
-                                            isSelected = isSelected,
-                                            label = label,
-                                            resolution = res,
-                                            groupIndex = groupIndex,
-                                            trackIndex = trackIndex
-                                        )
-                                    )
-                                    if (isSelected) {
-                                        activeVideoWidth = format.width
-                                        activeVideoHeight = format.height
-                                        activeVideoBitrate = format.bitrate
-                                    }
-                                }
+            override fun onTracksChanged(tracks: Tracks) {
+                val videoTracks = mutableListOf<VideoTrackInfo>()
+                for (groupIndex in 0 until tracks.groups.size) {
+                    val group = tracks.groups[groupIndex]
+                    if (group.type == C.TRACK_TYPE_VIDEO) {
+                        val mediaTrackGroup = group.mediaTrackGroup
+                        for (trackIndex in 0 until mediaTrackGroup.length) {
+                            val format = mediaTrackGroup.getFormat(trackIndex)
+                            val isSelected = group.isTrackSelected(trackIndex)
+                            val res = when {
+                                format.height >= 1080 -> VideoResolution.FHD
+                                format.height >= 720 -> VideoResolution.HD
+                                format.height >= 480 -> VideoResolution.SD
+                                format.height in 1..479 -> VideoResolution.LOW
+                                else -> VideoResolution.AUTO
+                            }
+                            val label = when (res) {
+                                VideoResolution.FHD -> "1080p (FHD)"
+                                VideoResolution.HD -> "720p (HD)"
+                                VideoResolution.SD -> "480p (SD)"
+                                VideoResolution.LOW -> "360p (Tiết kiệm)"
+                                VideoResolution.AUTO -> "Tự động"
+                            }
+                            videoTracks.add(
+                                VideoTrackInfo(
+                                    width = format.width,
+                                    height = format.height,
+                                    bitrate = format.bitrate,
+                                    isSelected = isSelected,
+                                    label = label,
+                                    resolution = res,
+                                    groupIndex = groupIndex,
+                                    trackIndex = trackIndex
+                                )
+                            )
+                            if (isSelected) {
+                                activeVideoWidth = format.width
+                                activeVideoHeight = format.height
+                                activeVideoBitrate = format.bitrate
                             }
                         }
-                        availableVideoTracks = videoTracks
-                        if (videoTracks.size <= 1) {
-                            applyResolution(exoPlayer, VideoResolution.AUTO, videoTracks)
-                        } else if (currentResolution != VideoResolution.AUTO) {
-                            applyResolution(exoPlayer, currentResolution, videoTracks)
-                        }
-                    }
-
-                    override fun onVideoSizeChanged(videoSize: VideoSize) {
-                        if (videoSize.width > 0 && videoSize.height > 0) {
-                            activeVideoWidth = videoSize.width
-                            activeVideoHeight = videoSize.height
-                        }
-                    }
-
-                    override fun onPositionDiscontinuity(
-                        oldPosition: Player.PositionInfo,
-                        newPosition: Player.PositionInfo,
-                        reason: Int
-                    ) {
-                        currentPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
-                    }
-
-                    override fun onPlaybackStateChanged(playbackState: Int) {
-                        val stateStr = when (playbackState) {
-                            Player.STATE_IDLE -> "IDLE"
-                            Player.STATE_BUFFERING -> "BUFFERING"
-                            Player.STATE_READY -> "READY"
-                            Player.STATE_ENDED -> "ENDED"
-                            else -> "UNKNOWN"
-                        }
-                        android.util.Log.d("PLAYER_STATE", """
-                            PLAYER_STATE
-                            state=$stateStr
-                            playWhenReady=${exoPlayer.playWhenReady}
-                            isPlaying=${exoPlayer.isPlaying}
-                            duration=${exoPlayer.duration}
-                            currentPosition=${exoPlayer.currentPosition}
-                        """.trimIndent())
-
-                        if (playbackState == Player.STATE_READY) {
-                            durationMs = exoPlayer.duration.coerceAtLeast(0L)
-                            currentPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
-                            if (exoPlayer.playWhenReady && !isPlaying) {
-                                exoPlayer.play()
-                            }
-                            if (pendingWarningTrigger && (isPlaying || exoPlayer.playWhenReady)) {
-                                pendingWarningTrigger = false
-                                isPlaybackStartedWarningVisible = true
-                            }
-                        } else if (playbackState == Player.STATE_ENDED) {
-                            if (activeStream?.type == StreamType.HLS_DIRECT && exoPlayer.duration > 0) {
-                                viewModel.recordProgress(episodeSlug, exoPlayer.duration, exoPlayer.duration)
-                            }
-                            val nextEp = viewModel.getNextEpisode()
-                            if (nextEp != null) {
-                                onSwitchEpisode(slug, nextEp.slug)
-                            }
-                        }
-                    }
-
-                    override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                        android.util.Log.e("PLAYER_ERROR", """
-                            PLAYER_ERROR
-                            sourceId=${activeStream?.sourceId}
-                            error=${error.message}
-                        """.trimIndent(), error)
                     }
                 }
+                availableVideoTracks = videoTracks
+                if (videoTracks.size <= 1) {
+                    applyResolution(exoPlayer, VideoResolution.AUTO, videoTracks)
+                } else if (currentResolution != VideoResolution.AUTO) {
+                    applyResolution(exoPlayer, currentResolution, videoTracks)
+                }
+            }
+
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                if (videoSize.width > 0 && videoSize.height > 0) {
+                    activeVideoWidth = videoSize.width
+                    activeVideoHeight = videoSize.height
+                }
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) {
+                    if (pendingWarningTrigger && (exoPlayer.isPlaying || exoPlayer.playWhenReady)) {
+                        pendingWarningTrigger = false
+                        isPlaybackStartedWarningVisible = true
+                    }
+                } else if (playbackState == Player.STATE_ENDED) {
+                    val nextEp = viewModel.getNextEpisode()
+                    if (nextEp != null) {
+                        onSwitchEpisode(slug, nextEp.slug)
+                    }
+                }
+            }
+
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                android.util.Log.e("PLAYER_ERROR", "sourceId=${activeStream?.sourceId}, error=${error.message}", error)
+            }
+        }
         exoPlayer.addListener(listener)
         onDispose {
             exoPlayer.removeListener(listener)
-            if (activeStream?.type == StreamType.HLS_DIRECT && exoPlayer.duration > 0) {
-                viewModel.recordProgress(episodeSlug, exoPlayer.currentPosition, exoPlayer.duration)
-            }
         }
     }
 
@@ -487,73 +471,7 @@ fun PlayerScreen(
         }
     }
 
-    // Load stream into ExoPlayer with clean state reset and lifecycle synchronization
-    LaunchedEffect(activeStream) {
-        val stream = activeStream ?: return@LaunchedEffect
-        val generation = ++currentSwitchGeneration
 
-        if (stream.type == StreamType.HLS_DIRECT) {
-            val mediaItem = MediaItem.Builder()
-                .setUri(stream.url)
-                .apply {
-                    if (stream.url.contains(".m3u8") || stream.url.contains("/m3u8")) {
-                        setMimeType(MimeTypes.APPLICATION_M3U8)
-                    }
-                }
-                .build()
-
-            val targetPos = pendingSeekPositionMs
-                ?: if (viewModel.initialResumePositionMs > 0L) viewModel.initialResumePositionMs else 0L
-            val shouldPlay = pendingPlayWhenReady ?: (!userPausedManually)
-
-            pendingSeekPositionMs = null
-            pendingPlayWhenReady = null
-
-            android.util.Log.d("PLAYER_PREPARE", """
-                PLAYER_PREPARE
-                sourceId=${stream.sourceId}
-                streamType=${stream.type}
-                url=${stream.url}
-            """.trimIndent())
-
-            // Clear any stale track selection overrides from previous stream
-            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
-                .buildUpon()
-                .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
-                .build()
-
-            // Direct Media3 startPositionMs seek: ExoPlayer fetches chunks directly at targetPos without double buffering
-            exoPlayer.setMediaItem(mediaItem, targetPos)
-            exoPlayer.playWhenReady = shouldPlay
-            exoPlayer.prepare()
-        } else {
-            // EMBED active: stop ExoPlayer completely to release hardware video codecs and RAM for WebView
-            android.util.Log.d("PLAYER_PREPARE", """
-                PLAYER_PREPARE
-                sourceId=${stream.sourceId}
-                streamType=${stream.type}
-                url=${stream.url}
-            """.trimIndent())
-            exoPlayer.stop()
-            exoPlayer.clearMediaItems()
-        }
-    }
-
-    // Progress sync interval
-    LaunchedEffect(exoPlayer, activeStream, episodeSlug) {
-        while (true) {
-            if (activeStream?.type == StreamType.HLS_DIRECT) {
-                currentPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
-                if (exoPlayer.duration > 0) {
-                    durationMs = exoPlayer.duration.coerceAtLeast(0L)
-                }
-                if (exoPlayer.isPlaying) {
-                    viewModel.recordProgress(episodeSlug, currentPositionMs, durationMs)
-                }
-            }
-            delay(500)
-        }
-    }
 
     // Auto-hide controls overlay after 4 seconds of playback (disabled if qaControls/qaHud requested)
     LaunchedEffect(isControlsVisible, isPlaying) {
@@ -582,8 +500,9 @@ fun PlayerScreen(
         }
     }
 
-        val dragFraction = if (!isFullscreen && dragThresholdPx > 0f) (dragOffsetY / (dragThresholdPx * 2.5f)).coerceIn(0f, 1f) else 0f
+        val dragFraction = if (!isFullscreen && dragThresholdPx > 0f) (dragOffsetY / (dragThresholdPx * 2.2f)).coerceIn(0f, 1f) else 0f
         val dragScale = 1f - (dragFraction * 0.22f)
+        val cornerRadius = (dragFraction * 14).dp
 
         Box(
             modifier = Modifier
@@ -595,10 +514,62 @@ fun PlayerScreen(
                             .graphicsLayer {
                                 scaleX = dragScale
                                 scaleY = dragScale
-                                alpha = 1f - (dragFraction * 0.2f)
+                                alpha = 1f - (dragFraction * 0.15f)
                             }
+                            .clip(RoundedCornerShape(cornerRadius))
                     } else Modifier
                 )
+                .pointerInput(isFullscreen, isScreenLocked) {
+                    if (isFullscreen || isScreenLocked) return@pointerInput
+                    val touchSlop = viewConfig.touchSlop
+                    awaitEachGesture {
+                        val down = awaitFirstDown(pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial, requireUnconsumed = false)
+                        val startPos = down.position
+                        var isDraggingDown = false
+
+                        while (true) {
+                            val event = awaitPointerEvent(pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+
+                            if (!change.pressed) {
+                                if (isDraggingDown) {
+                                    if (dragOffsetY > dragThresholdPx) {
+                                        dragOffsetY = 0f
+                                        onMinimize()
+                                    } else {
+                                        val currentOffset = dragOffsetY
+                                        coroutineScope.launch {
+                                            Animatable(currentOffset).animateTo(
+                                                targetValue = 0f,
+                                                animationSpec = spring(
+                                                    dampingRatio = Spring.DampingRatioLowBouncy,
+                                                    stiffness = Spring.StiffnessMedium
+                                                )
+                                            ) {
+                                                dragOffsetY = value
+                                            }
+                                        }
+                                    }
+                                }
+                                break
+                            }
+
+                            val dragX = change.position.x - startPos.x
+                            val dragY = change.position.y - startPos.y
+
+                            if (!isDraggingDown) {
+                                if (dragY > touchSlop && dragY > kotlin.math.abs(dragX) * 1.1f) {
+                                    isDraggingDown = true
+                                    change.consume()
+                                    dragOffsetY = dragY
+                                }
+                            } else {
+                                change.consume()
+                                dragOffsetY = dragY.coerceAtLeast(0f)
+                            }
+                        }
+                    }
+                }
                 .background(Color.Black)
         ) {
         when {
@@ -666,9 +637,7 @@ fun PlayerScreen(
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     IconButton(
-                                        onClick = {
-                                            if (isFullscreen) onFullscreenToggle(false) else onBackClick()
-                                        },
+                                        onClick = { onMinimize() },
                                         modifier = Modifier.size(40.dp)
                                     ) {
                                         Icon(
@@ -779,25 +748,7 @@ fun PlayerScreen(
 
                                         if (!change.pressed) {
                                             // Finger released / UP
-                                            if (gestureMode == GestureMode.DOWNWARD_DRAG) {
-                                                if (dragOffsetY > dragThresholdPx) {
-                                                    dragOffsetY = 0f
-                                                    onMinimize()
-                                                } else {
-                                                    val currentOffset = dragOffsetY
-                                                    coroutineScope.launch {
-                                                        Animatable(currentOffset).animateTo(
-                                                            targetValue = 0f,
-                                                            animationSpec = spring(
-                                                                dampingRatio = Spring.DampingRatioLowBouncy,
-                                                                stiffness = Spring.StiffnessMedium
-                                                            )
-                                                        ) {
-                                                            dragOffsetY = value
-                                                        }
-                                                    }
-                                                }
-                                            } else if (isSpeedBoosting) {
+                                            if (isSpeedBoosting) {
                                                 isSpeedBoosting = false
                                                 exoPlayer.setPlaybackSpeed(previousSpeedBeforeBoost)
                                             } else if (showSeekHud) {
@@ -855,10 +806,6 @@ fun PlayerScreen(
                                                 lastTapTime = 0L
                                                 if (isFullscreen) {
                                                     gestureMode = if (abs(dragX) > abs(dragY)) GestureMode.SEEK else GestureMode.VERTICAL
-                                                } else {
-                                                    if (dragY > touchSlop && dragY > abs(dragX) * 1.1f) {
-                                                        gestureMode = GestureMode.DOWNWARD_DRAG
-                                                    }
                                                 }
                                             } else if ((System.currentTimeMillis() - startTime) >= longPressTimeout && !isSpeedBoosting) {
                                                 // Long Press Triggered (Works in portrait and fullscreen!)
@@ -868,11 +815,6 @@ fun PlayerScreen(
                                                 exoPlayer.setPlaybackSpeed(2.0f)
                                                 isSpeedBoosting = true
                                             }
-                                        }
-
-                                        if (!isFullscreen && gestureMode == GestureMode.DOWNWARD_DRAG) {
-                                            change.consume()
-                                            dragOffsetY = totalDragY.coerceAtLeast(0f)
                                         }
 
                                         if (isFullscreen && gestureMode != null) {
@@ -1189,11 +1131,7 @@ fun PlayerScreen(
                         }
                     },
                     onTopExitClick = {
-                        if (isFullscreen) {
-                            onFullscreenToggle(false)
-                        } else {
-                            onMinimize()
-                        }
+                        onMinimize()
                     },
                     onFullscreenToggle = {
                         onFullscreenToggle(!isFullscreen)

@@ -16,6 +16,8 @@ class PipAndMiniPlayerUnitTest {
     ) {
         var previousPresentationState: PlayerPresentationState = PlayerPresentationState.FULL_PORTRAIT
             private set
+        var pipPreviousPresentationState: PlayerPresentationState = PlayerPresentationState.FULL_PORTRAIT
+            private set
 
         fun minimize() {
             if (presentationState == PlayerPresentationState.FULL_PORTRAIT ||
@@ -27,20 +29,28 @@ class PipAndMiniPlayerUnitTest {
         }
 
         fun expand(): PlayerPresentationState {
-            val target = if (previousPresentationState == PlayerPresentationState.FULL_LANDSCAPE) {
-                PlayerPresentationState.FULL_LANDSCAPE
-            } else {
-                PlayerPresentationState.FULL_PORTRAIT
-            }
+            val target = previousPresentationState
             presentationState = target
             return target
         }
 
         fun enterPip() {
             if (presentationState != PlayerPresentationState.SYSTEM_PIP) {
-                previousPresentationState = presentationState
+                pipPreviousPresentationState = presentationState
                 presentationState = PlayerPresentationState.SYSTEM_PIP
             }
+        }
+
+        fun restoreFromPip(): PlayerPresentationState {
+            val target = pipPreviousPresentationState
+            presentationState = target
+            return target
+        }
+
+        fun closePlayback() {
+            presentationState = PlayerPresentationState.HIDDEN
+            previousPresentationState = PlayerPresentationState.FULL_PORTRAIT
+            pipPreviousPresentationState = PlayerPresentationState.FULL_PORTRAIT
         }
     }
 
@@ -76,9 +86,9 @@ class PipAndMiniPlayerUnitTest {
 
         holder.enterPip()
         assertEquals(PlayerPresentationState.SYSTEM_PIP, holder.presentationState)
-        assertEquals(PlayerPresentationState.FULL_PORTRAIT, holder.previousPresentationState)
+        assertEquals(PlayerPresentationState.FULL_PORTRAIT, holder.pipPreviousPresentationState)
 
-        val restored = holder.expand()
+        val restored = holder.restoreFromPip()
         assertEquals(PlayerPresentationState.FULL_PORTRAIT, restored)
         assertEquals(PlayerPresentationState.FULL_PORTRAIT, holder.presentationState)
     }
@@ -89,11 +99,37 @@ class PipAndMiniPlayerUnitTest {
 
         holder.enterPip()
         assertEquals(PlayerPresentationState.SYSTEM_PIP, holder.presentationState)
-        assertEquals(PlayerPresentationState.FULL_LANDSCAPE, holder.previousPresentationState)
+        assertEquals(PlayerPresentationState.FULL_LANDSCAPE, holder.pipPreviousPresentationState)
 
-        val restored = holder.expand()
+        val restored = holder.restoreFromPip()
         assertEquals(PlayerPresentationState.FULL_LANDSCAPE, restored)
         assertEquals(PlayerPresentationState.FULL_LANDSCAPE, holder.presentationState)
+    }
+
+    @Test
+    fun testMiniToPipToExpand_restoresMiniInApp() {
+        val holder = PresentationStateHolder(PlayerPresentationState.FULL_PORTRAIT)
+
+        holder.minimize()
+        assertEquals(PlayerPresentationState.MINI_IN_APP, holder.presentationState)
+
+        holder.enterPip()
+        assertEquals(PlayerPresentationState.SYSTEM_PIP, holder.presentationState)
+        assertEquals(PlayerPresentationState.MINI_IN_APP, holder.pipPreviousPresentationState)
+
+        val restored = holder.restoreFromPip()
+        assertEquals(PlayerPresentationState.MINI_IN_APP, restored)
+        assertEquals(PlayerPresentationState.MINI_IN_APP, holder.presentationState)
+    }
+
+    @Test
+    fun testPipClose_transitionsToHidden() {
+        val holder = PresentationStateHolder(PlayerPresentationState.FULL_LANDSCAPE)
+        holder.enterPip()
+        assertEquals(PlayerPresentationState.SYSTEM_PIP, holder.presentationState)
+
+        holder.closePlayback()
+        assertEquals(PlayerPresentationState.HIDDEN, holder.presentationState)
     }
 
     // ── 2. System PiP Eligibility Determination ──────────────────────────────
@@ -101,14 +137,15 @@ class PipAndMiniPlayerUnitTest {
     private fun checkPipEligibility(
         hasActivePlayback: Boolean,
         isPlaying: Boolean,
-        presentationState: PlayerPresentationState
+        presentationState: PlayerPresentationState,
+        isScreenOn: Boolean = true
     ): Boolean {
         val isEligiblePresentation = presentationState in listOf(
             PlayerPresentationState.FULL_PORTRAIT,
             PlayerPresentationState.FULL_LANDSCAPE,
             PlayerPresentationState.MINI_IN_APP
         )
-        return hasActivePlayback && isPlaying && isEligiblePresentation
+        return hasActivePlayback && isPlaying && isEligiblePresentation && isScreenOn
     }
 
     @Test
@@ -139,6 +176,13 @@ class PipAndMiniPlayerUnitTest {
     @Test
     fun testPipEligibility_miniPause_doesNotEnterPip() {
         assertFalse(checkPipEligibility(hasActivePlayback = true, isPlaying = false, presentationState = PlayerPresentationState.MINI_IN_APP))
+    }
+
+    @Test
+    fun testPipEligibility_screenOff_neverEntersPip() {
+        assertFalse(checkPipEligibility(hasActivePlayback = true, isPlaying = true, presentationState = PlayerPresentationState.FULL_PORTRAIT, isScreenOn = false))
+        assertFalse(checkPipEligibility(hasActivePlayback = true, isPlaying = true, presentationState = PlayerPresentationState.FULL_LANDSCAPE, isScreenOn = false))
+        assertFalse(checkPipEligibility(hasActivePlayback = true, isPlaying = true, presentationState = PlayerPresentationState.MINI_IN_APP, isScreenOn = false))
     }
 
     @Test

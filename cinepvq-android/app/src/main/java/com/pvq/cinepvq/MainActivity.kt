@@ -85,6 +85,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val screenOffReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == Intent.ACTION_SCREEN_OFF) {
+                val pm = CinepvqApp.instance.playbackManager
+                pm.pause()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
@@ -114,6 +123,7 @@ class MainActivity : ComponentActivity() {
         } else {
             registerReceiver(pipReceiver, filter)
         }
+        registerReceiver(screenOffReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF))
 
         // Dynamically monitor playback states to update PiP parameters & auto-enter eligibility
         lifecycleScope.launch {
@@ -214,6 +224,19 @@ class MainActivity : ComponentActivity() {
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 builder.setAutoEnterEnabled(shouldEnter)
+                val closeIntent = PendingIntent.getBroadcast(
+                    this,
+                    104,
+                    Intent(ACTION_PIP_CLOSE).setPackage(packageName),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                val closeAction = RemoteAction(
+                    Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
+                    "Đóng",
+                    "Đóng",
+                    closeIntent
+                )
+                builder.setCloseAction(closeAction)
             }
 
             try {
@@ -243,12 +266,28 @@ class MainActivity : ComponentActivity() {
         if (isInPictureInPictureMode) {
             pm.onPipModeChanged(true)
         } else {
-            val restoredState = pm.expand()
-            requestedOrientation = if (restoredState == PlayerPresentationState.FULL_LANDSCAPE) {
-                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            if (lifecycle.currentState == androidx.lifecycle.Lifecycle.State.CREATED || isFinishing) {
+                pm.closePlayback()
             } else {
-                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                val restoredState = pm.restoreFromPip()
+                requestedOrientation = if (restoredState == PlayerPresentationState.FULL_LANDSCAPE) {
+                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                } else {
+                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                }
             }
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        val pm = CinepvqApp.instance.playbackManager
+        val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+        val isScreenOn = powerManager?.isInteractive ?: true
+        if (!isScreenOn) {
+            pm.pause()
+        } else if (!isInPictureInPictureMode && pm.presentationState.value == PlayerPresentationState.SYSTEM_PIP) {
+            pm.closePlayback()
         }
     }
 
@@ -257,6 +296,13 @@ class MainActivity : ComponentActivity() {
         try {
             unregisterReceiver(pipReceiver)
         } catch (_: Exception) {}
+        try {
+            unregisterReceiver(screenOffReceiver)
+        } catch (_: Exception) {}
+        val pm = CinepvqApp.instance.playbackManager
+        if (pm.presentationState.value == PlayerPresentationState.SYSTEM_PIP) {
+            pm.closePlayback()
+        }
     }
 }
 
@@ -295,6 +341,24 @@ fun CinepvqAppRoot(
     // When navigating between destinations, reset bars to visible
     LaunchedEffect(currentRoute) {
         isBarsVisible = true
+    }
+
+    // When restored from PiP or external state into FULL presentation, ensure Player screen is opened
+    LaunchedEffect(presentationState) {
+        if ((presentationState == PlayerPresentationState.FULL_PORTRAIT ||
+             presentationState == PlayerPresentationState.FULL_LANDSCAPE) &&
+            currentRoute != Screen.Player.route &&
+            playbackManager.currentSlug.isNotEmpty()
+        ) {
+            navController.navigate(
+                Screen.Player.createRoute(
+                    slug = playbackManager.currentSlug,
+                    episodeSlug = playbackManager.currentEpisodeSlug,
+                    serverName = playbackManager.currentServerName,
+                    embedUrl = playbackManager.currentEmbedUrl
+                )
+            )
+        }
     }
 
     if (presentationState == PlayerPresentationState.SYSTEM_PIP) {

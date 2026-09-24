@@ -62,6 +62,9 @@ class PlaybackManager(
     var previousPresentationState: PlayerPresentationState = PlayerPresentationState.FULL_PORTRAIT
         private set
 
+    var pipPreviousPresentationState: PlayerPresentationState = PlayerPresentationState.FULL_PORTRAIT
+        private set
+
     // ── Playback Metadata ────────────────────────────────────────────────────
     private val _movie = MutableStateFlow<MovieDetail?>(null)
     val movie: StateFlow<MovieDetail?> = _movie.asStateFlow()
@@ -264,7 +267,8 @@ class PlaybackManager(
     ) {
         val isSameMovie = (slug == currentSlug && currentSlug.isNotEmpty())
         val isSameEpisode = (episodeSlug == currentEpisodeSlug && currentEpisodeSlug.isNotEmpty())
-        val isSameServer = (serverName == currentServerName)
+        val isSameServer = (serverName == null || serverName == currentServerName)
+        val hasValidStream = (_activeStream.value != null)
 
         currentSlug = slug
         currentEpisodeSlug = episodeSlug
@@ -272,7 +276,7 @@ class PlaybackManager(
         currentEmbedUrl = initialEmbedUrl
 
         // Update presentation state if hidden or mini
-        val targetPresentation = if (initialFullscreen) {
+        val targetPresentation = if (initialFullscreen || previousPresentationState == PlayerPresentationState.FULL_LANDSCAPE) {
             PlayerPresentationState.FULL_LANDSCAPE
         } else {
             PlayerPresentationState.FULL_PORTRAIT
@@ -285,11 +289,8 @@ class PlaybackManager(
             previousPresentationState = targetPresentation
         }
 
-        // If already playing this exact stream, just unpause if needed and return
-        if (isSameMovie && isSameEpisode && isSameServer && _activeStream.value != null) {
-            if (!exoPlayer.isPlaying && !userPausedManually) {
-                exoPlayer.play()
-            }
+        // If already playing this exact stream, do NOT reload stream, prepare, or reset position!
+        if (isSameMovie && isSameEpisode && isSameServer && hasValidStream) {
             return
         }
 
@@ -543,6 +544,7 @@ class PlaybackManager(
             recordProgress(currentEpisodeSlug, exoPlayer.currentPosition, exoPlayer.duration)
         }
         playerInitJob?.cancel()
+        exoPlayer.pause()
         exoPlayer.stop()
         exoPlayer.clearMediaItems()
         _activeStream.value = null
@@ -550,13 +552,25 @@ class PlaybackManager(
         userPausedManually = false
     }
 
-    fun togglePlayPause() {
+    fun pause() {
         if (exoPlayer.isPlaying) {
             exoPlayer.pause()
             userPausedManually = true
-        } else {
+        }
+    }
+
+    fun play() {
+        if (!exoPlayer.isPlaying) {
             exoPlayer.play()
             userPausedManually = false
+        }
+    }
+
+    fun togglePlayPause() {
+        if (exoPlayer.isPlaying) {
+            pause()
+        } else {
+            play()
         }
     }
 
@@ -683,18 +697,33 @@ class PlaybackManager(
             PlayerPresentationState.FULL_LANDSCAPE,
             PlayerPresentationState.MINI_IN_APP
         )
-        return hasActivePlayback && isCurrentlyPlaying && isEligiblePresentation
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+        val isScreenOn = powerManager?.isInteractive ?: true
+        return hasActivePlayback && isCurrentlyPlaying && isEligiblePresentation && isScreenOn
+    }
+
+    fun enterPip() {
+        if (_presentationState.value != PlayerPresentationState.SYSTEM_PIP) {
+            pipPreviousPresentationState = _presentationState.value
+            _presentationState.value = PlayerPresentationState.SYSTEM_PIP
+        }
+    }
+
+    fun restoreFromPip(): PlayerPresentationState {
+        val target = if (pipPreviousPresentationState == PlayerPresentationState.SYSTEM_PIP) {
+            previousPresentationState
+        } else {
+            pipPreviousPresentationState
+        }
+        _presentationState.value = target
+        return target
     }
 
     fun onPipModeChanged(isInPip: Boolean) {
         if (isInPip) {
-            if (_presentationState.value != PlayerPresentationState.SYSTEM_PIP) {
-                previousPresentationState = _presentationState.value
-                _presentationState.value = PlayerPresentationState.SYSTEM_PIP
-            }
+            enterPip()
         } else {
-            // Returned to app foreground from PiP
-            expand()
+            restoreFromPip()
         }
     }
 }

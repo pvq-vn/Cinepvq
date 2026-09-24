@@ -44,7 +44,9 @@ fun WatchScreen(
     val activity = context as? ComponentActivity
 
     val playbackManager = remember { com.pvq.cinepvq.CinepvqApp.instance.playbackManager }
-    val initialIsFullscreen = qaFullscreen || playbackManager.previousPresentationState == com.pvq.cinepvq.data.player.PlayerPresentationState.FULL_LANDSCAPE
+    val initialIsFullscreen = qaFullscreen ||
+        playbackManager.presentationState.value == com.pvq.cinepvq.data.player.PlayerPresentationState.FULL_LANDSCAPE ||
+        playbackManager.previousPresentationState == com.pvq.cinepvq.data.player.PlayerPresentationState.FULL_LANDSCAPE
 
     // Fullscreen state: strictly controlled by explicit user toggle
     var isFullscreen by remember { mutableStateOf(initialIsFullscreen) }
@@ -58,12 +60,17 @@ fun WatchScreen(
     }
 
     LaunchedEffect(effectiveFullscreen) {
-        if (effectiveFullscreen) {
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-            playbackManager.setPresentation(com.pvq.cinepvq.data.player.PlayerPresentationState.FULL_LANDSCAPE)
-        } else {
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            playbackManager.setPresentation(com.pvq.cinepvq.data.player.PlayerPresentationState.FULL_PORTRAIT)
+        val currentPres = playbackManager.presentationState.value
+        if (currentPres != com.pvq.cinepvq.data.player.PlayerPresentationState.MINI_IN_APP &&
+            currentPres != com.pvq.cinepvq.data.player.PlayerPresentationState.SYSTEM_PIP
+        ) {
+            if (effectiveFullscreen) {
+                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                playbackManager.setPresentation(com.pvq.cinepvq.data.player.PlayerPresentationState.FULL_LANDSCAPE)
+            } else {
+                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                playbackManager.setPresentation(com.pvq.cinepvq.data.player.PlayerPresentationState.FULL_PORTRAIT)
+            }
         }
     }
 
@@ -132,14 +139,12 @@ fun WatchScreen(
     }
 
     val handleMinimize: () -> Unit = {
-        if (effectiveFullscreen) {
-            if (showLandscapeComments) {
-                showLandscapeComments = false
-            }
-            isFullscreen = false
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        }
         playbackManager.minimize()
+        if (showLandscapeComments) {
+            showLandscapeComments = false
+        }
+        isFullscreen = false
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         onBackClick()
     }
 

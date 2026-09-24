@@ -66,10 +66,10 @@ fun InAppMiniPlayer(
             ) {
                 onExpand()
             },
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(12.dp),
         color = Color.Black,
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
-        shadowElevation = 14.dp
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
+        shadowElevation = 10.dp
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             // ── Video Surface Layer ──────────────────────────────────────────
@@ -78,7 +78,7 @@ fun InAppMiniPlayer(
                     url = activeStream!!.url,
                     modifier = Modifier
                         .fillMaxSize()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(12.dp))
                 )
             } else {
                 AndroidView(
@@ -99,27 +99,27 @@ fun InAppMiniPlayer(
                     },
                     modifier = Modifier
                         .fillMaxSize()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(12.dp))
                 )
             }
 
-            // ── Gradient Scrim for Controls ──────────────────────────────────
+            // ── Subtle Top Gradient Scrim for Controls ──────────────────────
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(44.dp)
+                    .height(36.dp)
                     .align(Alignment.TopCenter)
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
-                                Color.Black.copy(alpha = 0.75f),
+                                Color.Black.copy(alpha = 0.5f),
                                 Color.Transparent
                             )
                         )
                     )
             )
 
-            // ── Top Controls: [Play/Pause] on top-left, [Close X] on top-right ──
+            // ── Top Micro-Controls: [Play/Pause] on top-left, [Close X] on top-right ──
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -128,33 +128,37 @@ fun InAppMiniPlayer(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Top-Left: Play / Pause Button
-                IconButton(
-                    onClick = { playbackManager.togglePlayPause() },
+                // Top-Left: Play / Pause Button (Clean, compact YouTube style)
+                Box(
                     modifier = Modifier
-                        .size(32.dp)
-                        .background(Color.Black.copy(alpha = 0.65f), CircleShape)
+                        .size(26.dp)
+                        .background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                        .clip(CircleShape)
+                        .clickable { playbackManager.togglePlayPause() },
+                    contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                         contentDescription = if (isPlaying) "Tạm dừng" else "Phát",
                         tint = Color.White,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(15.dp)
                     )
                 }
 
-                // Top-Right: Close 'X' Button
-                IconButton(
-                    onClick = { playbackManager.closePlayback() },
+                // Top-Right: Close 'X' Button (Clean, compact YouTube style)
+                Box(
                     modifier = Modifier
-                        .size(32.dp)
-                        .background(Color.Black.copy(alpha = 0.65f), CircleShape)
+                        .size(26.dp)
+                        .background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                        .clip(CircleShape)
+                        .clickable { playbackManager.closePlayback() },
+                    contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
                         contentDescription = "Đóng mini player",
                         tint = Color.White,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(15.dp)
                     )
                 }
             }
