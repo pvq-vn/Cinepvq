@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pvq.cinepvq.ui.theme.*
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -148,6 +149,7 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(24.dp))
 
             // Group 3: Information
+            val coroutineScope = rememberCoroutineScope()
             SettingsSectionHeader(title = "Thông tin ứng dụng")
             Card(
                 shape = RoundedCornerShape(16.dp),
@@ -158,14 +160,25 @@ fun SettingsScreen(
                 Column {
                     SettingsInfoRow(
                         icon = Icons.Default.Info,
-                        title = "Phiên bản",
-                        value = "1.0.0 (Build 2026.09)"
+                        title = "Phiên bản hiện tại",
+                        value = "v${com.pvq.cinepvq.BuildConfig.VERSION_NAME} (Mã bản dựng: ${com.pvq.cinepvq.BuildConfig.VERSION_CODE})"
+                    )
+                    HorizontalDivider(color = CinepvqBorderSubtle, modifier = Modifier.padding(horizontal = 16.dp))
+                    SettingsItemRow(
+                        icon = Icons.Default.SystemUpdate,
+                        title = "Kiểm tra cập nhật",
+                        value = "Tìm kiếm phiên bản APK mới nhất",
+                        onClick = {
+                            coroutineScope.launch {
+                                com.pvq.cinepvq.CinepvqApp.instance.updateManager.checkForUpdate(manualTrigger = true)
+                            }
+                        }
                     )
                     HorizontalDivider(color = CinepvqBorderSubtle, modifier = Modifier.padding(horizontal = 16.dp))
                     SettingsInfoRow(
                         icon = Icons.Default.PlayCircle,
                         title = "Trình phát",
-                        value = "ExoPlayer Media3"
+                        value = "ExoPlayer Media3 (Native PiP)"
                     )
                 }
             }

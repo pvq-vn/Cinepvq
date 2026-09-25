@@ -82,4 +82,8 @@ interface CinepvqApiService {
     suspend fun postComment(
         @Body request: PostCommentRequest
     ): Response<CommentsResponse>
+
+    // ── App Version & Updates ─────────────────────────────────────────────────
+    @GET("api/app/version")
+    suspend fun getAppVersion(): Response<AppVersionDto>
 }

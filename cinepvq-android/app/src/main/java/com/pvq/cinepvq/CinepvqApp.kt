@@ -57,6 +57,14 @@ class CinepvqApp : Application(), SingletonImageLoader.Factory {
         com.pvq.cinepvq.data.settings.SettingsRepository(this)
     }
 
+    val updateManager: com.pvq.cinepvq.core.update.CinepvqUpdateManager by lazy {
+        com.pvq.cinepvq.core.update.CinepvqUpdateManager(
+            context = this,
+            apiService = networkModule.cinepvqApi,
+            okHttpClient = networkModule.okHttpClient
+        )
+    }
+
     val playbackManager: com.pvq.cinepvq.data.player.PlaybackManager by lazy {
         com.pvq.cinepvq.data.player.PlaybackManager(
             context = this,
@@ -79,6 +87,12 @@ class CinepvqApp : Application(), SingletonImageLoader.Factory {
                 if (secureStorageManager.isLoggedIn) {
                     userSyncRepository.syncAll()
                 }
+            } catch (_: Exception) {}
+
+            try {
+                // Check for updates non-blockingly after initial sync
+                delay(2000)
+                updateManager.checkForUpdate(manualTrigger = false)
             } catch (_: Exception) {}
         }
     }

@@ -24,6 +24,22 @@ android {
         buildConfigField("String", "DEFAULT_PROD_URL", "\"https://cinepvq.vercel.app/\"")
     }
 
+    signingConfigs {
+        create("release") {
+            val keystorePath = System.getenv("KEYSTORE_FILE") ?: (project.findProperty("KEYSTORE_FILE") as? String)
+            val storePass = System.getenv("KEYSTORE_PASSWORD") ?: (project.findProperty("KEYSTORE_PASSWORD") as? String)
+            val kAlias = System.getenv("KEY_ALIAS") ?: (project.findProperty("KEY_ALIAS") as? String)
+            val kPass = System.getenv("KEY_PASSWORD") ?: (project.findProperty("KEY_PASSWORD") as? String)
+
+            if (!keystorePath.isNullOrBlank() && file(keystorePath).exists()) {
+                storeFile = file(keystorePath)
+                storePassword = storePass ?: ""
+                keyAlias = kAlias ?: ""
+                keyPassword = kPass ?: ""
+            }
+        }
+    }
+
     buildTypes {
         debug {
             buildConfigField("String", "BASE_BACKEND_URL", "\"https://cinepvq.vercel.app/\"")
@@ -35,6 +51,10 @@ android {
                 "proguard-rules.pro"
             )
             buildConfigField("String", "BASE_BACKEND_URL", "\"https://cinepvq.vercel.app/\"")
+            val releaseSigning = signingConfigs.getByName("release")
+            if (releaseSigning.storeFile != null && releaseSigning.storeFile!!.exists()) {
+                signingConfig = releaseSigning
+            }
         }
     }
     compileOptions {
@@ -44,6 +64,9 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 }
 

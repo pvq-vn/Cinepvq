@@ -29,6 +29,7 @@ import com.pvq.cinepvq.features.player.PlayerScreen
 import com.pvq.cinepvq.features.profile.ProfileScreen
 import com.pvq.cinepvq.features.search.SearchScreen
 import com.pvq.cinepvq.features.section.SectionDetailScreen
+import com.pvq.cinepvq.core.designsystem.components.UpdateDialog
 import com.pvq.cinepvq.features.settings.SettingsScreen
 import com.pvq.cinepvq.features.trending.TrendingScreen
 import com.pvq.cinepvq.ui.theme.CinepvqBackground
@@ -389,8 +390,11 @@ fun CinepvqAppRoot(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val playbackManager = remember { CinepvqApp.instance.playbackManager }
+    val updateManager = remember { CinepvqApp.instance.updateManager }
     val presentationState by playbackManager.presentationState.collectAsStateWithLifecycle()
     val activeStream by playbackManager.activeStream.collectAsStateWithLifecycle()
+    val updateState by updateManager.uiState.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
 
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
@@ -450,6 +454,21 @@ fun CinepvqAppRoot(
             .fillMaxSize()
             .background(CinepvqBackground)
     ) {
+        UpdateDialog(
+            state = updateState,
+            onStartDownload = { info ->
+                scope.launch {
+                    updateManager.startDownload(info)
+                }
+            },
+            onInstall = { apkFile ->
+                updateManager.installApk(context, apkFile)
+            },
+            onDismiss = {
+                updateManager.dismissOptionalUpdate()
+            }
+        )
+
         NavHost(
             navController = navController,
             startDestination = startRoute,

@@ -1,0 +1,97 @@
+name: Build & Release Cinepvq Android APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      force_update:
+        description: 'Mark this release as mandatory/forced update (true/false)'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Publish Canonical APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Decode Release Keystore (if configured in Secrets)
+        id: setup_signing
+        run: |
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "Decoding release keystore from GitHub Secrets..."
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > cinepvq-android/release.keystore
+            echo "HAS_KEYSTORE=true" >> $GITHUB_ENV
+          else
+            echo "No KEYSTORE_BASE64 provided in repository secrets. Release will use unsigned/fallback build."
+            echo "HAS_KEYSTORE=false" >> $GITHUB_ENV
+          fi
+
+      - name: Build Release APK
+        working-directory: cinepvq-android
+        env:
+          KEYSTORE_FILE: ${{ env.HAS_KEYSTORE == 'true' && 'release.keystore' || '' }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --stacktrace
+
+      - name: Prepare Canonical Release Asset
+        run: |
+          # Locate built APK
+          APK_PATH=$(find cinepvq-android/app/build/outputs/apk/release -type f -name "*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "ERROR: Release APK not found!"
+            exit 1
+          fi
+          echo "Found APK at $APK_PATH"
+          cp "$APK_PATH" Cinepvq.apk
+          
+          # Generate SHA-256 checksum
+          sha256sum Cinepvq.apk | awk '{print $1}' > Cinepvq.apk.sha256
+          SHA256_VAL=$(cat Cinepvq.apk.sha256)
+          echo "APK_SHA256=$SHA256_VAL" >> $GITHUB_ENV
+          echo "Canonical APK SHA-256: $SHA256_VAL"
+
+      - name: Create GitHub Release & Upload Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Cinepvq Android ${{ github.ref_name }}
+          body: |
+            ### Cinepvq Android Official Release (${{ github.ref_name }})
+            
+            - **Tải trực tiếp**: [Cinepvq.apk](https://github.com/pvq-vn/Cinepvq/releases/download/${{ github.ref_name }}/Cinepvq.apk)
+            - **Mã băm SHA-256**: `${{ env.APK_SHA256 }}`
+            
+            #### Cấu hình Metadata Update API:
+            Cập nhật biến môi trường backend Vercel:
+            - `APP_LATEST_VERSION_NAME`: `${{ github.ref_name }}`
+            - `APP_LATEST_SHA256`: `${{ env.APK_SHA256 }}`
+            - `APP_FORCE_UPDATE`: `${{ github.event.inputs.force_update || 'false' }}`
+          files: |
+            Cinepvq.apk
+            Cinepvq.apk.sha256
+          draft: false
+          prerelease: false
