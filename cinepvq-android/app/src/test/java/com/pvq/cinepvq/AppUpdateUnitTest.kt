@@ -204,4 +204,72 @@ class AppUpdateUnitTest {
         val errorState = state as UpdateUiState.Error
         assertTrue(errorState.canRetry)
     }
+
+    @Test
+    fun testTrustedUrlValidation_redirectHopToObjectsGithubusercontent() {
+        assertTrue(updateManager.isDownloadUrlTrusted("https://objects.githubusercontent.com/github-production-release-asset-2e65be/12345/Cinepvq.apk"))
+        assertTrue(updateManager.isDownloadUrlTrusted("https://raw.githubusercontent.com/pvq-vn/Cinepvq/main/app.json"))
+        assertFalse(updateManager.isDownloadUrlTrusted("https://evil.githubusercontent.com.attacker.com/Cinepvq.apk"))
+    }
+
+    @Test
+    fun testStartDownload_rejectsMissingOrMalformedSha256Upfront() = runBlocking {
+        val invalidHashDto = AppVersionDto(
+            versionCode = 2,
+            versionName = "1.1.0",
+            downloadUrl = "https://github.com/pvq-vn/Cinepvq/releases/latest/download/Cinepvq.apk",
+            sha256 = "not_a_valid_hash"
+        )
+
+        updateManager.startDownload(invalidHashDto)
+
+        val state = updateManager.uiState.value
+        assertTrue("Must transition to Error state", state is UpdateUiState.Error)
+        val errorState = state as UpdateUiState.Error
+        assertFalse("Cannot retry with malformed server manifest hash", errorState.canRetry)
+        assertEquals("Bản cập nhật thiếu mã xác thực SHA-256 hợp lệ từ máy chủ.", errorState.message)
+    }
+
+    @Test
+    fun testStartDownload_rejectsUntrustedUrlUpfront() = runBlocking {
+        val untrustedUrlDto = AppVersionDto(
+            versionCode = 2,
+            versionName = "1.1.0",
+            downloadUrl = "http://malicious.com/app.apk",
+            sha256 = "a".repeat(64)
+        )
+
+        updateManager.startDownload(untrustedUrlDto)
+
+        val state = updateManager.uiState.value
+        assertTrue("Must transition to Error state", state is UpdateUiState.Error)
+        val errorState = state as UpdateUiState.Error
+        assertFalse(errorState.canRetry)
+        assertEquals("Đường dẫn tải về không an toàn hoặc không được hỗ trợ.", errorState.message)
+    }
+
+    @Test
+    fun testCachedApk_reusedWhenValidSha256Matches() = runBlocking {
+        val updatesDir = File(testCacheDir, "updates").apply { mkdirs() }
+        val targetFile = File(updatesDir, "Cinepvq-2.apk")
+        val sampleBytes = "Valid Pre-downloaded APK Content".toByteArray(Charsets.UTF_8)
+        targetFile.writeBytes(sampleBytes)
+
+        val digest = MessageDigest.getInstance("SHA-256")
+        val expectedHash = digest.digest(sampleBytes).joinToString("") { "%02x".format(it) }
+
+        val validDto = AppVersionDto(
+            versionCode = 2,
+            versionName = "1.1.0",
+            downloadUrl = "https://github.com/pvq-vn/Cinepvq/releases/latest/download/Cinepvq.apk",
+            sha256 = expectedHash
+        )
+
+        updateManager.startDownload(validDto)
+
+        val state = updateManager.uiState.value
+        assertTrue("Must recognize valid cached APK and transition to ReadyToInstall", state is UpdateUiState.ReadyToInstall)
+        val readyState = state as UpdateUiState.ReadyToInstall
+        assertEquals(targetFile.absolutePath, readyState.apkFile.absolutePath)
+    }
 }

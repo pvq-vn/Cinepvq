@@ -30,6 +30,7 @@ import com.pvq.cinepvq.features.profile.ProfileScreen
 import com.pvq.cinepvq.features.search.SearchScreen
 import com.pvq.cinepvq.features.section.SectionDetailScreen
 import com.pvq.cinepvq.core.designsystem.components.UpdateDialog
+import com.pvq.cinepvq.core.update.UpdateUiState
 import com.pvq.cinepvq.features.settings.SettingsScreen
 import com.pvq.cinepvq.features.trending.TrendingScreen
 import com.pvq.cinepvq.ui.theme.CinepvqBackground
@@ -454,20 +455,26 @@ fun CinepvqAppRoot(
             .fillMaxSize()
             .background(CinepvqBackground)
     ) {
-        UpdateDialog(
-            state = updateState,
-            onStartDownload = { info ->
-                scope.launch {
-                    updateManager.startDownload(info)
+        // Do not interrupt PiP or full-screen landscape video playback with optional updates
+        val shouldShowUpdateDialog = presentationState != PlayerPresentationState.SYSTEM_PIP &&
+            !(presentationState == PlayerPresentationState.FULL_LANDSCAPE && (updateState as? UpdateUiState.UpdateAvailable)?.isForced == false)
+
+        if (shouldShowUpdateDialog) {
+            UpdateDialog(
+                state = updateState,
+                onStartDownload = { info ->
+                    scope.launch {
+                        updateManager.startDownload(info)
+                    }
+                },
+                onInstall = { apkFile ->
+                    updateManager.installApk(context, apkFile)
+                },
+                onDismiss = {
+                    updateManager.dismissOptionalUpdate()
                 }
-            },
-            onInstall = { apkFile ->
-                updateManager.installApk(context, apkFile)
-            },
-            onDismiss = {
-                updateManager.dismissOptionalUpdate()
-            }
-        )
+            )
+        }
 
         NavHost(
             navController = navController,

@@ -34,7 +34,7 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Decode Release Keystore (if configured in Secrets)
+      - name: Decode Release Keystore & Verify Secrets
         id: setup_signing
         run: |
           if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
@@ -42,8 +42,12 @@ jobs:
             echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > cinepvq-android/release.keystore
             echo "HAS_KEYSTORE=true" >> $GITHUB_ENV
           else
-            echo "No KEYSTORE_BASE64 provided in repository secrets. Release will use unsigned/fallback build."
+            echo "::error::No KEYSTORE_BASE64 configured in GitHub Secrets! Unsigned APKs cannot be installed over production apps."
             echo "HAS_KEYSTORE=false" >> $GITHUB_ENV
+            if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+              echo "::error::Production release tag requires configured signing secrets. Aborting."
+              exit 1
+            fi
           fi
 
       - name: Build Release APK
@@ -57,7 +61,7 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease --stacktrace
 
-      - name: Prepare Canonical Release Asset
+      - name: Prepare & Verify Canonical Release Asset
         run: |
           # Locate built APK
           APK_PATH=$(find cinepvq-android/app/build/outputs/apk/release -type f -name "*.apk" | head -n 1)
@@ -74,24 +78,62 @@ jobs:
           echo "APK_SHA256=$SHA256_VAL" >> $GITHUB_ENV
           echo "Canonical APK SHA-256: $SHA256_VAL"
 
+          # Verify signature with apksigner if available
+          APKSIGNER_BIN=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)
+          if [ -n "$APKSIGNER_BIN" ]; then
+            echo "Verifying APK signature using $APKSIGNER_BIN..."
+            if [ "$HAS_KEYSTORE" = "true" ]; then
+              $APKSIGNER_BIN verify --verbose --print-certs Cinepvq.apk
+            else
+              echo "WARNING: Building without release keystore; signature verification skipped for unsigned build."
+            fi
+          else
+            echo "WARNING: apksigner not found in build-tools; skipping signature verification."
+          fi
+
+          # Extract metadata (versionCode, versionName) with aapt if available
+          AAPT_BIN=$(find "$ANDROID_HOME/build-tools" -name aapt | sort -V | tail -n 1)
+          if [ -n "$AAPT_BIN" ]; then
+            BADGING=$($AAPT_BIN dump badging Cinepvq.apk)
+            V_CODE=$(echo "$BADGING" | grep -o "versionCode='[^']*'" | head -n 1 | cut -d"'" -f2)
+            V_NAME=$(echo "$BADGING" | grep -o "versionName='[^']*'" | head -n 1 | cut -d"'" -f2)
+            echo "Extracted versionCode: $V_CODE, versionName: $V_NAME"
+            echo "APK_VERSION_CODE=$V_CODE" >> $GITHUB_ENV
+            echo "APK_VERSION_NAME=$V_NAME" >> $GITHUB_ENV
+          else
+            echo "APK_VERSION_CODE=1" >> $GITHUB_ENV
+            echo "APK_VERSION_NAME=${{ github.ref_name }}" >> $GITHUB_ENV
+          fi
+
       - name: Create GitHub Release & Upload Asset
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: Cinepvq Android ${{ github.ref_name }}
+          name: Cinepvq Android ${{ env.APK_VERSION_NAME || github.ref_name }}
           body: |
-            ### Cinepvq Android Official Release (${{ github.ref_name }})
+            ### Cinepvq Android Official Release (${{ env.APK_VERSION_NAME || github.ref_name }})
             
+            - **Application ID**: `com.pvq.cinepvq`
+            - **Version Code**: `${{ env.APK_VERSION_CODE }}`
+            - **Version Name**: `${{ env.APK_VERSION_NAME }}`
             - **Tải trực tiếp**: [Cinepvq.apk](https://github.com/pvq-vn/Cinepvq/releases/download/${{ github.ref_name }}/Cinepvq.apk)
             - **Mã băm SHA-256**: `${{ env.APK_SHA256 }}`
+            - **Chữ ký**: ${{ env.HAS_KEYSTORE == 'true' && '✅ Verified (Release Keystore)' || '⚠️ Unsigned / Test Build' }}
             
             #### Cấu hình Metadata Update API:
             Cập nhật biến môi trường backend Vercel:
-            - `APP_LATEST_VERSION_NAME`: `${{ github.ref_name }}`
+            - `APP_LATEST_VERSION_CODE`: `${{ env.APK_VERSION_CODE }}`
+            - `APP_LATEST_VERSION_NAME`: `${{ env.APK_VERSION_NAME }}`
+            - `APP_LATEST_DOWNLOAD_URL`: `https://github.com/pvq-vn/Cinepvq/releases/download/${{ github.ref_name }}/Cinepvq.apk`
             - `APP_LATEST_SHA256`: `${{ env.APK_SHA256 }}`
             - `APP_FORCE_UPDATE`: `${{ github.event.inputs.force_update || 'false' }}`
           files: |
             Cinepvq.apk
             Cinepvq.apk.sha256
           draft: false
-          prerelease: false
+          prerelease: ${{ env.HAS_KEYSTORE != 'true' }}
+
+      - name: Cleanup Keystore
+        if: always()
+        run: |
+          rm -f cinepvq-android/release.keystore

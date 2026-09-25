@@ -31,6 +31,7 @@ fun SettingsScreen(
     onNavigateBack: () -> Unit,
     viewModel: SettingsViewModel = viewModel()
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val settings by viewModel.playerSettings.collectAsStateWithLifecycle()
 
     var showSpeedDialog by remember { mutableStateOf(false) }
@@ -170,7 +171,17 @@ fun SettingsScreen(
                         value = "Tìm kiếm phiên bản APK mới nhất",
                         onClick = {
                             coroutineScope.launch {
-                                com.pvq.cinepvq.CinepvqApp.instance.updateManager.checkForUpdate(manualTrigger = true)
+                                val hasUpdate = com.pvq.cinepvq.CinepvqApp.instance.updateManager.checkForUpdate(manualTrigger = true)
+                                if (!hasUpdate) {
+                                    val currentState = com.pvq.cinepvq.CinepvqApp.instance.updateManager.uiState.value
+                                    if (currentState is com.pvq.cinepvq.core.update.UpdateUiState.Idle) {
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            "Bạn đang sử dụng phiên bản mới nhất (v${com.pvq.cinepvq.BuildConfig.VERSION_NAME})",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
                             }
                         }
                     )

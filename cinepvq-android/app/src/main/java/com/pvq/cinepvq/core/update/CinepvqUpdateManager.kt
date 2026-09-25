@@ -72,6 +72,16 @@ class CinepvqUpdateManager(
 
     private var dismissedVersionCode: Int? = null
 
+    private val downloadOkHttpClient: OkHttpClient = okHttpClient.newBuilder()
+        .addNetworkInterceptor { chain ->
+            val requestUrl = chain.request().url.toString()
+            if (!isDownloadUrlTrusted(requestUrl)) {
+                throw SecurityException("Redirect to untrusted host rejected: $requestUrl")
+            }
+            chain.proceed(chain.request())
+        }
+        .build()
+
     fun isDownloadUrlTrusted(url: String): Boolean {
         if (!url.startsWith("https://", ignoreCase = true)) return false
         return try {
@@ -80,6 +90,7 @@ class CinepvqUpdateManager(
             host == "github.com" ||
                 host.endsWith(".github.com") ||
                 host == "github-releases.githubusercontent.com" ||
+                host == "objects.githubusercontent.com" ||
                 host.endsWith(".githubusercontent.com") ||
                 host == "cinepvq.vercel.app" ||
                 host.endsWith(".cinepvq.vercel.app")
@@ -172,6 +183,16 @@ class CinepvqUpdateManager(
             )
             return@withContext
         }
+        val expectedSha256 = versionInfo.sha256?.trim()?.lowercase()
+        if (expectedSha256.isNullOrBlank() || !expectedSha256.matches(Regex("^[a-fA-F0-9]{64}$"))) {
+            Log.e(TAG, "Missing or invalid SHA-256 in update manifest: '$expectedSha256'")
+            _uiState.value = UpdateUiState.Error(
+                message = "Bản cập nhật thiếu mã xác thực SHA-256 hợp lệ từ máy chủ.",
+                canRetry = false,
+                versionInfo = versionInfo
+            )
+            return@withContext
+        }
 
         val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
         val targetFile = File(updatesDir, "Cinepvq-${versionInfo.versionCode}.apk")
@@ -180,7 +201,7 @@ class CinepvqUpdateManager(
         // If target file already exists and valid SHA-256 matches, reuse it
         if (targetFile.exists() && targetFile.length() > 0) {
             val expectedSha256 = versionInfo.sha256?.trim()?.lowercase()
-            if (!expectedSha256.isNullOrBlank()) {
+            if (!expectedSha256.isNullOrBlank() && expectedSha256.matches(Regex("^[a-fA-F0-9]{64}$"))) {
                 val existingHash = computeFileSha256(targetFile)
                 if (existingHash.equals(expectedSha256, ignoreCase = true)) {
                     Log.d(TAG, "Cached APK has matching checksum; ready to install.")
@@ -189,6 +210,8 @@ class CinepvqUpdateManager(
                 } else {
                     targetFile.delete()
                 }
+            } else {
+                targetFile.delete()
             }
         }
 
@@ -209,7 +232,7 @@ class CinepvqUpdateManager(
                 .header("User-Agent", "Cinepvq-Android/${BuildConfig.VERSION_NAME}")
                 .build()
 
-            val response = okHttpClient.newCall(request).execute()
+            val response = downloadOkHttpClient.newCall(request).execute()
             if (!response.isSuccessful) {
                 _uiState.value = UpdateUiState.Error(
                     message = "Tải gói cài đặt thất bại (HTTP ${response.code}).",
@@ -260,17 +283,26 @@ class CinepvqUpdateManager(
             val calculatedHash = digest.digest().joinToString("") { "%02x".format(it) }
             val expectedHash = versionInfo.sha256?.trim()?.lowercase()
 
-            if (!expectedHash.isNullOrBlank()) {
-                if (!calculatedHash.equals(expectedHash, ignoreCase = true)) {
-                    Log.e(TAG, "SHA-256 hash mismatch! Computed: $calculatedHash, Expected: $expectedHash")
-                    tempFile.delete()
-                    _uiState.value = UpdateUiState.Error(
-                        message = "Xác thực gói cài đặt thất bại (Mã kiểm tra SHA-256 không khớp). Tệp đã bị hủy để đảm bảo an toàn.",
-                        canRetry = true,
-                        versionInfo = versionInfo
-                    )
-                    return@withContext
-                }
+            if (expectedHash.isNullOrBlank() || !expectedHash.matches(Regex("^[a-fA-F0-9]{64}$"))) {
+                Log.e(TAG, "Missing or invalid SHA-256 format in update manifest: '$expectedHash'")
+                tempFile.delete()
+                _uiState.value = UpdateUiState.Error(
+                    message = "Bản cập nhật thiếu mã kiểm tra toàn vẹn SHA-256 hợp lệ từ máy chủ. Tệp đã bị hủy để đảm bảo an toàn.",
+                    canRetry = true,
+                    versionInfo = versionInfo
+                )
+                return@withContext
+            }
+
+            if (!calculatedHash.equals(expectedHash, ignoreCase = true)) {
+                Log.e(TAG, "SHA-256 hash mismatch! Computed: $calculatedHash, Expected: $expectedHash")
+                tempFile.delete()
+                _uiState.value = UpdateUiState.Error(
+                    message = "Xác thực gói cài đặt thất bại (Mã kiểm tra SHA-256 không khớp). Tệp đã bị hủy để đảm bảo an toàn.",
+                    canRetry = true,
+                    versionInfo = versionInfo
+                )
+                return@withContext
             }
 
             if (targetFile.exists()) {
