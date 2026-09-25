@@ -1,3 +1,5 @@
+import java.io.File
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -31,11 +33,32 @@ android {
             val kAlias = System.getenv("KEY_ALIAS") ?: (project.findProperty("KEY_ALIAS") as? String)
             val kPass = System.getenv("KEY_PASSWORD") ?: (project.findProperty("KEY_PASSWORD") as? String)
 
-            if (!keystorePath.isNullOrBlank() && file(keystorePath).exists()) {
-                storeFile = file(keystorePath)
-                storePassword = storePass ?: ""
-                keyAlias = kAlias ?: ""
-                keyPassword = kPass ?: ""
+            if (!keystorePath.isNullOrBlank()) {
+                val candidateFile = File(keystorePath)
+                val resolvedFile = when {
+                    candidateFile.isAbsolute && candidateFile.exists() -> candidateFile
+                    file(keystorePath).exists() -> file(keystorePath)
+                    rootProject.file(keystorePath).exists() -> rootProject.file(keystorePath)
+                    else -> candidateFile
+                }
+
+                if (!resolvedFile.exists()) {
+                    throw GradleException("Release keystore file specified as '$keystorePath' could not be found at: ${resolvedFile.absolutePath}")
+                }
+                if (storePass.isNullOrBlank()) {
+                    throw GradleException("Release signing failed: KEYSTORE_PASSWORD is missing or empty.")
+                }
+                if (kAlias.isNullOrBlank()) {
+                    throw GradleException("Release signing failed: KEY_ALIAS is missing or empty.")
+                }
+                if (kPass.isNullOrBlank()) {
+                    throw GradleException("Release signing failed: KEY_PASSWORD is missing or empty.")
+                }
+
+                storeFile = resolvedFile
+                storePassword = storePass
+                keyAlias = kAlias
+                keyPassword = kPass
             }
         }
     }
@@ -54,6 +77,11 @@ android {
             val releaseSigning = signingConfigs.getByName("release")
             if (releaseSigning.storeFile != null && releaseSigning.storeFile!!.exists()) {
                 signingConfig = releaseSigning
+            } else {
+                val envKeystore = System.getenv("KEYSTORE_FILE")
+                if (!envKeystore.isNullOrBlank()) {
+                    throw GradleException("Release build cannot proceed without signing: KEYSTORE_FILE is set ('$envKeystore') but release signingConfig has no valid storeFile.")
+                }
             }
         }
     }

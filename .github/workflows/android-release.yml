@@ -6,6 +6,10 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
+      publish_release:
+        description: 'Publish as official GitHub Release (true to publish, false to test build/sign only)'
+        required: false
+        default: 'false'
       force_update:
         description: 'Mark this release as mandatory/forced update (true/false)'
         required: false
@@ -34,26 +38,59 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Decode Release Keystore & Verify Secrets
+      - name: Setup & Validate Release Keystore
         id: setup_signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
-            echo "Decoding release keystore from GitHub Secrets..."
-            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > cinepvq-android/release.keystore
-            echo "HAS_KEYSTORE=true" >> $GITHUB_ENV
-          else
-            echo "::error::No KEYSTORE_BASE64 configured in GitHub Secrets! Unsigned APKs cannot be installed over production apps."
-            echo "HAS_KEYSTORE=false" >> $GITHUB_ENV
-            if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-              echo "::error::Production release tag requires configured signing secrets. Aborting."
-              exit 1
-            fi
+          # 1. Verify all required secrets exist
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::Missing KEYSTORE_BASE64 secret in repository settings!"
+            exit 1
           fi
+          if [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::error::Missing KEYSTORE_PASSWORD secret in repository settings!"
+            exit 1
+          fi
+          if [ -z "$KEY_ALIAS" ]; then
+            echo "::error::Missing KEY_ALIAS secret in repository settings!"
+            exit 1
+          fi
+          if [ -z "$KEY_PASSWORD" ]; then
+            echo "::error::Missing KEY_PASSWORD secret in repository settings!"
+            exit 1
+          fi
+
+          # 2. Decode keystore to an unambiguous absolute path
+          KEYSTORE_PATH="$GITHUB_WORKSPACE/cinepvq-android/release.keystore"
+          echo "Decoding release keystore to $KEYSTORE_PATH..."
+          echo "$KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_PATH"
+
+          # 3. Verify file exists, is non-empty, and readable
+          if [ ! -f "$KEYSTORE_PATH" ] || [ ! -s "$KEYSTORE_PATH" ]; then
+            echo "::error::Decoded keystore file does not exist or is empty at $KEYSTORE_PATH!"
+            exit 1
+          fi
+          if [ ! -r "$KEYSTORE_PATH" ]; then
+            echo "::error::Decoded keystore file is not readable at $KEYSTORE_PATH!"
+            exit 1
+          fi
+
+          # 4. Verify keystore integrity and alias without leaking passwords
+          echo "Verifying keystore integrity and alias '$KEY_ALIAS' with keytool..."
+          keytool -list -keystore "$KEYSTORE_PATH" -alias "$KEY_ALIAS" -storepass "$KEYSTORE_PASSWORD" > /dev/null
+          echo "Keystore and alias verified successfully."
+
+          # 5. Export deterministic absolute path to GITHUB_ENV
+          echo "KEYSTORE_FILE=$KEYSTORE_PATH" >> $GITHUB_ENV
 
       - name: Build Release APK
         working-directory: cinepvq-android
         env:
-          KEYSTORE_FILE: ${{ env.HAS_KEYSTORE == 'true' && 'release.keystore' || '' }}
+          KEYSTORE_FILE: ${{ env.KEYSTORE_FILE }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
@@ -61,37 +98,59 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease --stacktrace
 
-      - name: Prepare & Verify Canonical Release Asset
+      - name: Hard Validation & Cryptographic Signature Verification
         run: |
-          # Locate built APK
-          APK_PATH=$(find cinepvq-android/app/build/outputs/apk/release -type f -name "*.apk" | head -n 1)
-          if [ -z "$APK_PATH" ]; then
-            echo "ERROR: Release APK not found!"
+          RELEASE_DIR="cinepvq-android/app/build/outputs/apk/release"
+          echo "Listing release outputs directory:"
+          ls -la "$RELEASE_DIR"
+
+          # 1. Fail immediately if assembleRelease produced an unsigned APK
+          if [ -f "$RELEASE_DIR/app-release-unsigned.apk" ] && [ ! -f "$RELEASE_DIR/app-release.apk" ]; then
+            echo "::error::assembleRelease produced app-release-unsigned.apk! Signing configuration was not applied."
             exit 1
           fi
-          echo "Found APK at $APK_PATH"
-          cp "$APK_PATH" Cinepvq.apk
-          
-          # Generate SHA-256 checksum
-          sha256sum Cinepvq.apk | awk '{print $1}' > Cinepvq.apk.sha256
-          SHA256_VAL=$(cat Cinepvq.apk.sha256)
-          echo "APK_SHA256=$SHA256_VAL" >> $GITHUB_ENV
-          echo "Canonical APK SHA-256: $SHA256_VAL"
 
-          # Verify signature with apksigner if available
-          APKSIGNER_BIN=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)
-          if [ -n "$APKSIGNER_BIN" ]; then
-            echo "Verifying APK signature using $APKSIGNER_BIN..."
-            if [ "$HAS_KEYSTORE" = "true" ]; then
-              $APKSIGNER_BIN verify --verbose --print-certs Cinepvq.apk
-            else
-              echo "WARNING: Building without release keystore; signature verification skipped for unsigned build."
-            fi
-          else
-            echo "WARNING: apksigner not found in build-tools; skipping signature verification."
+          SIGNED_APK="$RELEASE_DIR/app-release.apk"
+          if [ ! -f "$SIGNED_APK" ]; then
+            # Search for any non-unsigned apk
+            SIGNED_APK=$(find "$RELEASE_DIR" -type f -name "*.apk" ! -name "*unsigned*.apk" | head -n 1)
           fi
 
-          # Extract metadata (versionCode, versionName) with aapt if available
+          if [ -z "$SIGNED_APK" ] || [ ! -f "$SIGNED_APK" ]; then
+            echo "::error::Signed APK not found in $RELEASE_DIR!"
+            exit 1
+          fi
+
+          echo "Found signed APK candidate at: $SIGNED_APK"
+
+          # 2. Locate apksigner and verify cryptographic signature
+          APKSIGNER_BIN=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)
+          if [ -z "$APKSIGNER_BIN" ]; then
+            echo "::error::apksigner tool not found in $ANDROID_HOME/build-tools!"
+            exit 1
+          fi
+
+          echo "Running cryptographic verification using: $APKSIGNER_BIN"
+          $APKSIGNER_BIN verify --verbose --print-certs "$SIGNED_APK"
+          if [ $? -ne 0 ]; then
+            echo "::error::apksigner verification FAILED! APK is not properly signed."
+            exit 1
+          fi
+          echo "apksigner verification PASSED."
+
+          # 3. Print certificate SHA-256 digest
+          CERT_FINGERPRINT=$($APKSIGNER_BIN verify --print-certs "$SIGNED_APK" | grep -i "SHA-256 digest:" | head -n 1 | awk '{print $NF}')
+          echo "APK Signer Certificate SHA-256: $CERT_FINGERPRINT"
+
+          # 4. Prepare canonical Cinepvq.apk and SHA-256 checksum
+          cp "$SIGNED_APK" Cinepvq.apk
+          sha256sum Cinepvq.apk | awk '{print $1}' > Cinepvq.apk.sha256
+          SHA256_VAL=$(cat Cinepvq.apk.sha256)
+          echo "Canonical APK SHA-256: $SHA256_VAL"
+          echo "APK_SHA256=$SHA256_VAL" >> $GITHUB_ENV
+          echo "APK_CERT_SHA256=$CERT_FINGERPRINT" >> $GITHUB_ENV
+
+          # 5. Extract metadata (versionCode, versionName) with aapt
           AAPT_BIN=$(find "$ANDROID_HOME/build-tools" -name aapt | sort -V | tail -n 1)
           if [ -n "$AAPT_BIN" ]; then
             BADGING=$($AAPT_BIN dump badging Cinepvq.apk)
@@ -102,10 +161,20 @@ jobs:
             echo "APK_VERSION_NAME=$V_NAME" >> $GITHUB_ENV
           else
             echo "APK_VERSION_CODE=1" >> $GITHUB_ENV
-            echo "APK_VERSION_NAME=${{ github.ref_name }}" >> $GITHUB_ENV
+            echo "APK_VERSION_NAME=1.0.0" >> $GITHUB_ENV
           fi
 
+      - name: Upload Signed APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cinepvq-Android-Signed
+          path: |
+            Cinepvq.apk
+            Cinepvq.apk.sha256
+          if-no-files-found: error
+
       - name: Create GitHub Release & Upload Asset
+        if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
@@ -117,8 +186,9 @@ jobs:
             - **Version Code**: `${{ env.APK_VERSION_CODE }}`
             - **Version Name**: `${{ env.APK_VERSION_NAME }}`
             - **Tải trực tiếp**: [Cinepvq.apk](https://github.com/pvq-vn/Cinepvq/releases/download/${{ github.ref_name }}/Cinepvq.apk)
-            - **Mã băm SHA-256**: `${{ env.APK_SHA256 }}`
-            - **Chữ ký**: ${{ env.HAS_KEYSTORE == 'true' && '✅ Verified (Release Keystore)' || '⚠️ Unsigned / Test Build' }}
+            - **Mã băm APK (SHA-256)**: `${{ env.APK_SHA256 }}`
+            - **Chứng chỉ ký (Certificate SHA-256)**: `${{ env.APK_CERT_SHA256 }}`
+            - **Chữ ký**: ✅ Cryptographically Signed & Verified (`apksigner`)
             
             #### Cấu hình Metadata Update API:
             Cập nhật biến môi trường backend Vercel:
@@ -131,9 +201,9 @@ jobs:
             Cinepvq.apk
             Cinepvq.apk.sha256
           draft: false
-          prerelease: ${{ env.HAS_KEYSTORE != 'true' }}
+          prerelease: false
 
       - name: Cleanup Keystore
         if: always()
         run: |
-          rm -f cinepvq-android/release.keystore
+          rm -f "$GITHUB_WORKSPACE/cinepvq-android/release.keystore" cinepvq-android/release.keystore
