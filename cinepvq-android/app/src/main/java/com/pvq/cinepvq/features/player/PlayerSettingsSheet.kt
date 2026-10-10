@@ -363,7 +363,7 @@ fun PlayerSourceBottomSheet(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Chọn nguồn phát dự phòng nếu video bị gián đoạn",
+                        text = "Chọn nguồn phát khác nếu video bị gián đoạn",
                         color = CinepvqTextMuted,
                         fontSize = 12.sp
                     )
@@ -432,7 +432,7 @@ fun PlayerSourceBottomSheet(
                                     fontSize = 14.sp
                                 )
                                 Text(
-                                    text = if (isHls) "Phát trực tiếp HLS (Mượt, tùy chỉnh đầy đủ)" else "Trình phát nhúng dự phòng",
+                                    text = if (isHls) "Luồng trực tiếp HLS (Mượt, đầy đủ tính năng)" else "Trình phát Web Iframe",
                                     color = CinepvqTextMuted,
                                     fontSize = 11.sp
                                 )

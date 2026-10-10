@@ -45,6 +45,7 @@ fun EpisodeHorizontalList(
     onSelectServer: (Int) -> Unit,
     allEpisodes: List<EpisodeItem>,
     currentEpisodeSlug: String,
+    watchedEpisodes: Set<String> = emptySet(),
     onSelectEpisode: (EpisodeItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -201,12 +202,30 @@ fun EpisodeHorizontalList(
             // Episode Buttons (01, 02, 03...)
             itemsIndexed(displayedEpisodes, key = { _, ep -> ep.slug }) { _, ep ->
                 val isCurrentPlay = currentEpisodeSlug == ep.slug
+                val isWatched = watchedEpisodes.contains(ep.slug)
+
+                val targetBg = when {
+                    isCurrentPlay -> CinepvqPrimary
+                    isWatched -> CinepvqSurface.copy(alpha = 0.35f)
+                    else -> CinepvqSurface
+                }
+                val targetBorder = when {
+                    isCurrentPlay -> CinepvqPrimaryLight
+                    isWatched -> CinepvqBorderSubtle.copy(alpha = 0.25f)
+                    else -> CinepvqBorderSubtle
+                }
+                val targetTextColor = when {
+                    isCurrentPlay -> Color.White
+                    isWatched -> CinepvqTextMuted.copy(alpha = 0.5f)
+                    else -> CinepvqTextPrimary
+                }
+
                 val bgColor by animateColorAsState(
-                    targetValue = if (isCurrentPlay) CinepvqPrimary else CinepvqSurface,
+                    targetValue = targetBg,
                     label = "epBg"
                 )
                 val borderColor by animateColorAsState(
-                    targetValue = if (isCurrentPlay) CinepvqPrimaryLight else CinepvqBorderSubtle,
+                    targetValue = targetBorder,
                     label = "epBorder"
                 )
 
@@ -221,7 +240,7 @@ fun EpisodeHorizontalList(
                 ) {
                     Text(
                         text = ep.episodeNumberOnly,
-                        color = if (isCurrentPlay) Color.White else CinepvqTextPrimary,
+                        color = targetTextColor,
                         fontSize = 13.sp,
                         fontWeight = if (isCurrentPlay) FontWeight.Bold else FontWeight.Medium,
                         maxLines = 1

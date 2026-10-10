@@ -67,6 +67,7 @@ fun PlayerControls(
     showLanguageButton: Boolean = true,
     showQuickEpisodeSelector: Boolean = false,
     allEpisodes: List<EpisodeItem> = emptyList(),
+    watchedEpisodes: Set<String> = emptySet(),
     onTogglePlayPause: () -> Unit,
     onSeekTo: (Long) -> Unit,
     onPreviousClick: () -> Unit,
@@ -323,6 +324,7 @@ fun PlayerControls(
                         PlayerQuickEpisodeSelector(
                             episodes = allEpisodes,
                             currentEpisodeSlug = episode?.slug ?: "",
+                            watchedEpisodes = watchedEpisodes,
                             onSelectEpisode = onSelectQuickEpisode,
                             onClose = onToggleQuickEpisodes
                         )

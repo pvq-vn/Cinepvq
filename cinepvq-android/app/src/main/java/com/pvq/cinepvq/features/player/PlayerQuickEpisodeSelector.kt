@@ -35,6 +35,7 @@ import androidx.compose.material3.IconButton
 fun PlayerQuickEpisodeSelector(
     episodes: List<EpisodeItem>,
     currentEpisodeSlug: String,
+    watchedEpisodes: Set<String> = emptySet(),
     onSelectEpisode: (EpisodeItem) -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier
@@ -83,18 +84,32 @@ fun PlayerQuickEpisodeSelector(
         ) {
             itemsIndexed(episodes) { _, ep ->
                 val isCurrent = ep.slug == currentEpisodeSlug
+                val isWatched = watchedEpisodes.contains(ep.slug)
+
+                val targetBg = when {
+                    isCurrent -> CinepvqPrimary
+                    isWatched -> Color.Black.copy(alpha = 0.3f)
+                    else -> Color.Black.copy(alpha = 0.65f)
+                }
+                val targetBorder = when {
+                    isCurrent -> CinepvqPrimaryLight
+                    isWatched -> Color.White.copy(alpha = 0.1f)
+                    else -> Color.White.copy(alpha = 0.25f)
+                }
+                val targetTextColor = when {
+                    isCurrent -> Color.White
+                    isWatched -> Color.White.copy(alpha = 0.4f)
+                    else -> Color.White.copy(alpha = 0.85f)
+                }
 
                 Box(
                     modifier = Modifier
                         .size(width = 44.dp, height = 36.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(
-                            if (isCurrent) CinepvqPrimary
-                            else Color.Black.copy(alpha = 0.6f)
-                        )
+                        .background(targetBg)
                         .border(
                             width = 1.dp,
-                            color = if (isCurrent) CinepvqPrimaryLight else Color.White.copy(alpha = 0.2f),
+                            color = targetBorder,
                             shape = RoundedCornerShape(8.dp)
                         )
                         .clickable { onSelectEpisode(ep) },
@@ -102,7 +117,7 @@ fun PlayerQuickEpisodeSelector(
                 ) {
                     Text(
                         text = ep.episodeNumberOnly,
-                        color = if (isCurrent) Color.White else Color.White.copy(alpha = 0.85f),
+                        color = targetTextColor,
                         fontSize = 13.sp,
                         fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
                         maxLines = 1

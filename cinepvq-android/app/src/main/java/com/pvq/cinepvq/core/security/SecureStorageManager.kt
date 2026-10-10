@@ -165,6 +165,21 @@ class SecureStorageManager(context: Context) {
         return prefs.getLong(keyDur, 0L)
     }
 
+    fun getWatchedEpisodeSlugs(userId: String, movieSlug: String): Set<String> {
+        if (movieSlug.isBlank()) return emptySet()
+        val prefixPos = "ep_pos_${userId}_${movieSlug}_"
+        val watched = mutableSetOf<String>()
+        for ((k, v) in prefs.all) {
+            if (k.startsWith(prefixPos) && v is Long && v > 15L) {
+                val epSlug = k.removePrefix(prefixPos)
+                if (epSlug.isNotBlank()) {
+                    watched.add(epSlug)
+                }
+            }
+        }
+        return watched
+    }
+
     fun migrateEpisodeProgress(fromUserId: String, toUserId: String) {
         if (fromUserId == toUserId) return
         val prefixPos = "ep_pos_${fromUserId}_"

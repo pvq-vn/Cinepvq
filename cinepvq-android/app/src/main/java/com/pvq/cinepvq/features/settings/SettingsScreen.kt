@@ -42,10 +42,10 @@ fun SettingsScreen(
     val speedOptions = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
     val sourceOptions = listOf(
         "auto" to "Tự động (Ưu tiên nguồn nhanh nhất)",
-        "k20" to "VIP 1 (K20)",
-        "kkphim" to "VIP 2 (KKPhim)",
-        "vsmov" to "Dự phòng 1 (VSMOV)",
-        "nguonc" to "Dự phòng 2 (NguonC)"
+        "k20" to "K20",
+        "kkphim" to "KKphim1",
+        "nguonc" to "NguonC",
+        "vsmov" to "VSMOV"
     )
     val resolutionOptions = listOf(
         "auto" to "Tự động (Khuyên dùng)",

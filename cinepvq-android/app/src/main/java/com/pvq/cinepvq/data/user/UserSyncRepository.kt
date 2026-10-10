@@ -231,6 +231,11 @@ class UserSyncRepository(
         return secureStorageManager.getEpisodeDuration(uid, movieSlug, episodeSlug)
     }
 
+    fun getWatchedEpisodeSlugs(movieSlug: String): Set<String> {
+        val uid = secureStorageManager.activeUserId
+        return secureStorageManager.getWatchedEpisodeSlugs(uid, movieSlug)
+    }
+
     suspend fun recordWatchProgress(
         movieSlug: String,
         movieName: String,

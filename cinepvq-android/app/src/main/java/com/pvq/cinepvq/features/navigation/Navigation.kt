@@ -102,7 +102,7 @@ fun NavController.navigateToTab(targetRoute: String) {
     }
 }
 
-val bottomNavRoutes = bottomNavItems.map { it.route }.toSet()
+val bottomNavRoutes = (bottomNavItems.map { it.route } + Screen.Detail.route).toSet()
 
 @Composable
 fun CinepvqBottomNavBar(

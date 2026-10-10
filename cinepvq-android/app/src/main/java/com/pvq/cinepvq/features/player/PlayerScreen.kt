@@ -109,6 +109,8 @@ fun PlayerScreen(
     onDismissSyncWarning: () -> Unit = {},
     allEpisodes: List<EpisodeItem> = emptyList(),
     viewModel: PlayerViewModel = viewModel(),
+    isCocCocNativeFullscreen: Boolean = false,
+    onStreamSniffed: ((String) -> Unit)? = null,
     qaControls: Boolean = false,
     qaBrightness: Float = -1f,
     qaVolume: Float = -1f,
@@ -118,8 +120,6 @@ fun PlayerScreen(
     val activity = context as? Activity
     val viewConfig = LocalViewConfiguration.current
     val density = LocalDensity.current
-    val dragThresholdPx = remember(density) { with(density) { 120.dp.toPx() } }
-    var dragOffsetY by remember { mutableFloatStateOf(0f) }
 
     // Audio manager for volume control
     val audioManager = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
@@ -217,6 +217,16 @@ fun PlayerScreen(
         }
     }
 
+    var isEmbedControlsVisible by remember { mutableStateOf(false) }
+    var lastEmbedTapTime by remember { mutableLongStateOf(0L) }
+
+    LaunchedEffect(lastEmbedTapTime) {
+        if (isEmbedControlsVisible) {
+            delay(3500)
+            isEmbedControlsVisible = false
+        }
+    }
+
 
     // Playback state restoration across server / stream source transitions
     var pendingSeekPositionMs by remember { mutableStateOf<Long?>(null) }
@@ -271,6 +281,7 @@ fun PlayerScreen(
     val availableSources by viewModel.availableSources.collectAsStateWithLifecycle()
     val isLoadingStream by viewModel.isLoadingStream.collectAsStateWithLifecycle()
     val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
+    val watchedEpisodes by playbackManager.watchedEpisodes.collectAsStateWithLifecycle()
 
     // Auto-hide lock hint after 3 seconds
     LaunchedEffect(showLockHint) {
@@ -503,76 +514,9 @@ fun PlayerScreen(
         }
     }
 
-        val dragFraction = if (!isFullscreen && dragThresholdPx > 0f) (dragOffsetY / (dragThresholdPx * 2.2f)).coerceIn(0f, 1f) else 0f
-        val dragScale = 1f - (dragFraction * 0.22f)
-        val cornerRadius = (dragFraction * 14).dp
-
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .then(
-                    if (!isFullscreen && dragOffsetY > 0f) {
-                        Modifier
-                            .offset { IntOffset(0, dragOffsetY.toInt()) }
-                            .graphicsLayer {
-                                scaleX = dragScale
-                                scaleY = dragScale
-                                alpha = 1f - (dragFraction * 0.15f)
-                            }
-                            .clip(RoundedCornerShape(cornerRadius))
-                    } else Modifier
-                )
-                .pointerInput(isFullscreen, isScreenLocked) {
-                    if (isFullscreen || isScreenLocked) return@pointerInput
-                    val touchSlop = viewConfig.touchSlop
-                    awaitEachGesture {
-                        val down = awaitFirstDown(pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial, requireUnconsumed = false)
-                        val startPos = down.position
-                        var isDraggingDown = false
-
-                        while (true) {
-                            val event = awaitPointerEvent(pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial)
-                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-
-                            if (!change.pressed) {
-                                if (isDraggingDown) {
-                                    if (dragOffsetY > dragThresholdPx) {
-                                        dragOffsetY = 0f
-                                        onMinimize()
-                                    } else {
-                                        val currentOffset = dragOffsetY
-                                        coroutineScope.launch {
-                                            Animatable(currentOffset).animateTo(
-                                                targetValue = 0f,
-                                                animationSpec = spring(
-                                                    dampingRatio = Spring.DampingRatioLowBouncy,
-                                                    stiffness = Spring.StiffnessMedium
-                                                )
-                                            ) {
-                                                dragOffsetY = value
-                                            }
-                                        }
-                                    }
-                                }
-                                break
-                            }
-
-                            val dragX = change.position.x - startPos.x
-                            val dragY = change.position.y - startPos.y
-
-                            if (!isDraggingDown) {
-                                if (dragY > touchSlop && dragY > kotlin.math.abs(dragX) * 1.3f) {
-                                    isDraggingDown = true
-                                    change.consume()
-                                    dragOffsetY = dragY
-                                }
-                            } else {
-                                change.consume()
-                                dragOffsetY = dragY.coerceAtLeast(0f)
-                            }
-                        }
-                    }
-                }
                 .background(Color.Black)
         ) {
         when {
@@ -585,111 +529,143 @@ fun PlayerScreen(
                     onRetry = { viewModel.initializePlayer(slug, episodeSlug, serverName, embedUrl) }
                 )
             }
-            activeStream?.type == StreamType.EMBED -> {
-                // ── In-App Web View for Iframe Embed (Configured for streaming hosts) ──
+            activeStream?.type == StreamType.EMBED && !isCocCocNativeFullscreen -> {
+                // ── In-App Web View for Iframe Embed (Clean, no blocking overlays) ──
                 key(activeStream!!.url) {
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        if (customEmbedView != null) {
-                            // Fullscreen custom view container (WebChromeClient onShowCustomView)
-                            AndroidView(
-                                factory = { _ ->
-                                    FrameLayout(context).apply {
-                                        layoutParams = ViewGroup.LayoutParams(
-                                            ViewGroup.LayoutParams.MATCH_PARENT,
-                                            ViewGroup.LayoutParams.MATCH_PARENT
-                                        )
-                                        setBackgroundColor(android.graphics.Color.BLACK)
-                                        val parent = customEmbedView?.parent as? ViewGroup
-                                        parent?.removeView(customEmbedView)
-                                        addView(
-                                            customEmbedView,
-                                            FrameLayout.LayoutParams(
-                                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                                ViewGroup.LayoutParams.MATCH_PARENT
-                                            )
-                                        )
-                                    }
-                                },
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        } else {
-                            EmbedPlayerView(
-                                url = activeStream!!.url,
-                                modifier = Modifier.fillMaxSize(),
-                                onCustomViewChange = { view, callback ->
-                                    customEmbedView = view
-                                    customEmbedCallback = callback
-                                    if (view != null) {
-                                        onFullscreenToggle(true)
-                                    } else {
-                                        onFullscreenToggle(false)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(Unit) {
+                                awaitEachGesture {
+                                    awaitFirstDown(pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                                    isEmbedControlsVisible = !isEmbedControlsVisible
+                                    if (isEmbedControlsVisible) {
+                                        lastEmbedTapTime = System.currentTimeMillis()
                                     }
                                 }
-                            )
+                            }
+                    ) {
+                        EmbedPlayerView(
+                            url = activeStream!!.url,
+                            modifier = Modifier.fillMaxSize(),
+                            onStreamSniffed = { url ->
+                                playbackManager.setSniffedEmbedStream(url)
+                                onStreamSniffed?.invoke(url)
+                            },
+                            onCustomViewChange = { view, callback ->
+                                customEmbedView = view
+                                customEmbedCallback = callback
+                                if (view != null) {
+                                    onFullscreenToggle(true)
+                                } else {
+                                    onFullscreenToggle(false)
+                                }
+                            }
+                        )
 
-                            // Overlay Top Bar for Embed
-                            Row(
+                        // ── Top Bar in Fullscreen Mode (Back, Title, Episode) ──
+                        if (isFullscreen) {
+                            androidx.compose.animation.AnimatedVisibility(
+                                visible = isEmbedControlsVisible,
+                                enter = androidx.compose.animation.fadeIn(),
+                                exit = androidx.compose.animation.fadeOut(),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .then(if (isFullscreen) Modifier else Modifier.statusBarsPadding())
-                                    .padding(horizontal = 16.dp, vertical = 12.dp)
                                     .align(Alignment.TopCenter)
-                                    .background(Color.Black.copy(alpha = 0.65f)),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                    .padding(horizontal = 16.dp, vertical = 12.dp)
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        IconButton(
+                                            onClick = { onFullscreenToggle(false) },
+                                            modifier = Modifier.size(36.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.ArrowBack,
+                                                contentDescription = "Thoát toàn màn hình",
+                                                tint = Color.White
+                                            )
+                                        }
+                                        Column {
+                                            Text(
+                                                text = movie?.name ?: "",
+                                                color = Color.White,
+                                                fontSize = 15.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1
+                                            )
+                                            if (!episode?.name.isNullOrBlank()) {
+                                                Text(
+                                                    text = episode!!.name,
+                                                    color = Color.White.copy(alpha = 0.7f),
+                                                    fontSize = 12.sp,
+                                                    maxLines = 1
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    // Top-right Change Source Button in Fullscreen
                                     IconButton(
-                                        onClick = { onMinimize() },
-                                        modifier = Modifier.size(40.dp)
+                                        onClick = { showSourcesSheet = true },
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .background(Color.Black.copy(alpha = 0.5f), CircleShape)
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Filled.KeyboardArrowDown,
-                                            contentDescription = "Thu nhỏ",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(24.dp)
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Column {
-                                        Text(
-                                            text = movie?.name ?: "Cinepvq",
-                                            color = Color.White,
-                                            fontSize = 14.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = "Nguồn nhúng: ${activeStream?.displayName}",
-                                            color = CinepvqPrimaryLight,
-                                            fontSize = 11.sp
+                                            imageVector = Icons.Default.Dns,
+                                            contentDescription = "Đổi nguồn",
+                                            tint = CinepvqPrimaryLight,
+                                            modifier = Modifier.size(20.dp)
                                         )
                                     }
                                 }
+                            }
+                        }
 
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (availableSources.size > 1) {
-                                        TextButton(
-                                            onClick = { showSourcesSheet = true },
-                                            colors = ButtonDefaults.textButtonColors(contentColor = CinepvqPrimaryLight)
-                                        ) {
-                                            Icon(Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text(
-                                                text = "Đổi Nguồn",
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 12.sp
-                                            )
-                                        }
-                                    }
+                        // ── Top-Right Controls for Iframe Embed (Portrait Mode) ──
+                        if (!isFullscreen) {
+                            androidx.compose.animation.AnimatedVisibility(
+                                visible = isEmbedControlsVisible,
+                                enter = androidx.compose.animation.fadeIn(),
+                                exit = androidx.compose.animation.fadeOut(),
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(top = 12.dp, end = 12.dp)
+                            ) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                     IconButton(
-                                        onClick = { onFullscreenToggle(!isFullscreen) },
-                                        modifier = Modifier.size(40.dp)
+                                        onClick = { showSourcesSheet = true },
+                                        modifier = Modifier
+                                            .size(38.dp)
+                                            .background(Color.Black.copy(alpha = 0.65f), CircleShape)
                                     ) {
                                         Icon(
-                                            imageVector = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                                            contentDescription = if (isFullscreen) "Thoát toàn màn hình" else "Toàn màn hình",
+                                            imageVector = Icons.Default.Dns,
+                                            contentDescription = "Đổi nguồn",
+                                            tint = CinepvqPrimaryLight,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { onFullscreenToggle(true) },
+                                        modifier = Modifier
+                                            .size(38.dp)
+                                            .background(Color.Black.copy(alpha = 0.65f), CircleShape)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Fullscreen,
+                                            contentDescription = "Toàn màn hình",
                                             tint = Color.White,
                                             modifier = Modifier.size(22.dp)
                                         )
@@ -1103,6 +1079,7 @@ fun PlayerScreen(
                     showLanguageButton = effectiveServers.size > 1,
                     showQuickEpisodeSelector = showQuickEpisodeSelector,
                     allEpisodes = effectiveEpisodes,
+                    watchedEpisodes = watchedEpisodes,
                     onTogglePlayPause = {
                         if (exoPlayer.isPlaying) {
                             exoPlayer.pause()
@@ -1143,7 +1120,11 @@ fun PlayerScreen(
                         }
                     },
                     onTopExitClick = {
-                        onMinimize()
+                        if (isFullscreen) {
+                            onFullscreenToggle(false)
+                        } else {
+                            onMinimize()
+                        }
                     },
                     onFullscreenToggle = {
                         onFullscreenToggle(!isFullscreen)
@@ -1211,6 +1192,12 @@ fun PlayerScreen(
                 activeSource = activeStream,
                 onSelectSource = { source ->
                     if (source.sourceId != activeStream?.sourceId) {
+                        val isVsmovCurrent = activeStream?.sourceId?.contains("vsmov", ignoreCase = true) == true ||
+                                             activeStream?.name?.contains("vsmov", ignoreCase = true) == true ||
+                                             activeStream?.url?.contains("vsmov", ignoreCase = true) == true
+                        if (isVsmovCurrent && isFullscreen) {
+                            onFullscreenToggle(false)
+                        }
                         if (customEmbedView != null) {
                             try {
                                 customEmbedCallback?.onCustomViewHidden()

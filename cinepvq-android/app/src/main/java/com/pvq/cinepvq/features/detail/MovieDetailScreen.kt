@@ -37,14 +37,22 @@ import coil3.request.crossfade
 import com.pvq.cinepvq.core.designsystem.components.ErrorView
 import com.pvq.cinepvq.core.designsystem.components.LoadingView
 import com.pvq.cinepvq.core.network.model.Comment
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.ui.focus.onFocusEvent
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import com.pvq.cinepvq.ui.theme.*
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun MovieDetailScreen(
     slug: String,
     onBackClick: () -> Unit,
     onPlayClick: (String, String) -> Unit,
     onNavigateToMovie: (String) -> Unit,
+    onBarsVisibilityChanged: ((Boolean) -> Unit)? = null,
     viewModel: DetailViewModel = viewModel()
 ) {
     val context = LocalContext.current
@@ -66,11 +74,42 @@ fun MovieDetailScreen(
     var commentText by remember { mutableStateOf("") }
     var isDescriptionExpanded by remember { mutableStateOf(false) }
 
+    val listState = rememberLazyListState()
+    var lastScrollIndex by remember { mutableIntStateOf(0) }
+    var lastScrollOffset by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+        }.collect { (index, offset) ->
+            val isAtTop = index == 0 && offset < 20
+            if (isAtTop) {
+                onBarsVisibilityChanged?.invoke(true)
+            } else {
+                val isScrollingDown = index > lastScrollIndex || (index == lastScrollIndex && offset > lastScrollOffset + 15)
+                val isScrollingUp = index < lastScrollIndex || (index == lastScrollIndex && offset < lastScrollOffset - 15)
+
+                if (isScrollingDown) {
+                    onBarsVisibilityChanged?.invoke(false)
+                } else if (isScrollingUp) {
+                    onBarsVisibilityChanged?.invoke(true)
+                }
+            }
+            lastScrollIndex = index
+            lastScrollOffset = offset
+        }
+    }
+
+    val coroutineScope = rememberCoroutineScope()
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    val isImeVisible = WindowInsets.isImeVisible
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(CinepvqBackground)
             .statusBarsPadding()
+            .imePadding()
     ) {
         when {
             isLoading && movie == null -> LoadingView()
@@ -86,8 +125,9 @@ fun MovieDetailScreen(
                         (resumeHistory?.duration == 0L || (resumeHistory?.currentTime ?: 0L) < (resumeHistory?.duration ?: 0L) * 0.95)
 
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 40.dp)
+                    contentPadding = PaddingValues(bottom = if (isImeVisible) 16.dp else 90.dp)
                 ) {
                     // ── 1. Hero Backdrop Section ──
                     item {
@@ -530,7 +570,17 @@ fun MovieDetailScreen(
                                 
                                 // Comment Input
                                 Row(
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .bringIntoViewRequester(bringIntoViewRequester)
+                                        .onFocusEvent { focusState ->
+                                            if (focusState.isFocused) {
+                                                coroutineScope.launch {
+                                                    delay(200)
+                                                    bringIntoViewRequester.bringIntoView()
+                                                }
+                                            }
+                                        },
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     androidx.compose.material3.OutlinedTextField(

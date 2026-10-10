@@ -165,6 +165,9 @@ class MainActivity : ComponentActivity() {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         // Register PiP action broadcast receiver
@@ -224,7 +227,11 @@ class MainActivity : ComponentActivity() {
     fun updatePipParams() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val pm = CinepvqApp.instance.playbackManager
-            val isPlaying = pm.isPlaying.value
+            val isPlaying = if (pm.activeStream.value?.type == StreamType.EMBED) {
+                pm.isEmbedPlaying.value || !pm.userPausedManually
+            } else {
+                pm.isPlaying.value
+            }
             val hasPrev = pm.getPreviousEpisode() != null
             val hasNext = pm.getNextEpisode() != null
             val shouldEnter = pm.shouldEnterPip()
@@ -247,7 +254,6 @@ class MainActivity : ComponentActivity() {
             actions.add(prevAction)
 
             // 2. Play / Pause
-            val isHlsDirect = pm.activeStream.value?.type == StreamType.HLS_DIRECT
             val playPauseIntent = PendingIntent.getBroadcast(
                 this,
                 102,
@@ -261,7 +267,7 @@ class MainActivity : ComponentActivity() {
                 playPauseTitle,
                 playPauseTitle,
                 playPauseIntent
-            ).apply { isEnabled = isHlsDirect }
+            ).apply { isEnabled = true }
             actions.add(playPauseAction)
 
             // 3. Next Episode
@@ -409,7 +415,8 @@ fun CinepvqAppRoot(
         Screen.Profile.route,
         Screen.Favorites.route,
         Screen.History.route,
-        Screen.SectionDetail.route
+        Screen.SectionDetail.route,
+        Screen.Detail.route
     )
 
     var isBarsVisible by remember { mutableStateOf(true) }
@@ -428,26 +435,6 @@ fun CinepvqAppRoot(
     // When navigating between destinations, reset bars to visible
     LaunchedEffect(currentRoute) {
         isBarsVisible = true
-    }
-
-    // When restored from PiP or external state into FULL presentation, ensure Player screen is opened
-    LaunchedEffect(presentationState) {
-        if ((presentationState == PlayerPresentationState.FULL_PORTRAIT ||
-             presentationState == PlayerPresentationState.FULL_LANDSCAPE) &&
-            currentRoute != Screen.Player.route &&
-            playbackManager.currentSlug.isNotEmpty()
-        ) {
-            navController.navigate(
-                Screen.Player.createRoute(
-                    slug = playbackManager.currentSlug,
-                    episodeSlug = playbackManager.currentEpisodeSlug,
-                    serverName = playbackManager.currentServerName,
-                    embedUrl = playbackManager.currentEmbedUrl
-                )
-            ) {
-                launchSingleTop = true
-            }
-        }
     }
 
     Box(
@@ -489,7 +476,7 @@ fun CinepvqAppRoot(
                     },
                     onContinueWatchingClick = { slug, episodeSlug ->
                         val ep = episodeSlug ?: "tap-1"
-                        navController.navigate(Screen.Player.createRoute(slug, ep))
+                        playbackManager.playMovie(slug, ep)
                     },
                     onCategoryClick = { categorySlug ->
                         if (categorySlug == "thinh-hanh") {
@@ -557,7 +544,7 @@ fun CinepvqAppRoot(
                     },
                     onResumeMovie = { slug, episodeSlug ->
                         val ep = episodeSlug ?: "tap-1"
-                        navController.navigate(Screen.Player.createRoute(slug, ep))
+                        playbackManager.playMovie(slug, ep)
                     },
                     onExploreClick = {
                         navController.navigateToTab(Screen.Home.route)
@@ -622,7 +609,7 @@ fun CinepvqAppRoot(
                 HistoryScreen(
                     onResumeMovie = { slug, episodeSlug ->
                         val ep = episodeSlug ?: "tap-1"
-                        navController.navigate(Screen.Player.createRoute(slug, ep))
+                        playbackManager.playMovie(slug, ep)
                     },
                     onExploreClick = {
                         navController.navigateToTab(Screen.Home.route)
@@ -662,15 +649,16 @@ fun CinepvqAppRoot(
                     slug = slug,
                     onBackClick = { navController.popBackStack() },
                     onPlayClick = { movieSlug, episodeSlug ->
-                        navController.navigate(Screen.Player.createRoute(movieSlug, episodeSlug))
+                        playbackManager.playMovie(movieSlug, episodeSlug)
                     },
                     onNavigateToMovie = { newSlug ->
                         navController.navigate(Screen.Detail.createRoute(newSlug))
-                    }
+                    },
+                    onBarsVisibilityChanged = { isBarsVisible = it }
                 )
             }
 
-            // Video Player Screen
+            // Video Player Route (For external routes or deep links)
             composable(
                 route = Screen.Player.route,
                 arguments = listOf(
@@ -701,28 +689,24 @@ fun CinepvqAppRoot(
                     try { URLDecoder.decode(rawEmbed, "UTF-8") } catch (_: Exception) { rawEmbed }
                 } else null
 
-                com.pvq.cinepvq.features.watch.WatchScreen(
-                    slug = slug,
-                    initialEpisodeSlug = episodeSlug,
-                    initialServerName = serverName,
-                    initialEmbedUrl = embedUrl,
-                    onBackClick = { navController.popBackStack() },
-                    onNavigateToMovie = { newSlug ->
-                        navController.navigate(Screen.Detail.createRoute(newSlug)) {
-                            popUpTo(Screen.Detail.route) { inclusive = false }
-                        }
-                    },
-                    qaFullscreen = qaFullscreen,
-                    qaControls = qaControls,
-                    qaComments = qaComments,
-                    qaBrightness = qaBrightness,
-                    qaVolume = qaVolume,
-                    qaSeek = qaSeek
-                )
+                LaunchedEffect(slug, episodeSlug) {
+                    if (slug.isNotBlank()) {
+                        playbackManager.playMovie(
+                            slug = slug,
+                            episodeSlug = episodeSlug,
+                            serverName = serverName,
+                            initialEmbedUrl = embedUrl
+                        )
+                    }
+                    navController.popBackStack()
+                }
             }
         }
 
-        if (isBottomBarRoute && presentationState != PlayerPresentationState.SYSTEM_PIP) {
+        val isFullPlayerPresentation = presentationState == PlayerPresentationState.FULL_PORTRAIT ||
+                                       presentationState == PlayerPresentationState.FULL_LANDSCAPE
+
+        if (isBottomBarRoute && presentationState != PlayerPresentationState.SYSTEM_PIP && !isFullPlayerPresentation) {
             CinepvqBottomNavBar(
                 navController = navController,
                 isVisible = isBarsVisible,
@@ -750,6 +734,34 @@ fun CinepvqAppRoot(
                         bottom = if (isBottomBarRoute && isBarsVisible) 80.dp else 24.dp
                     )
             )
+        }
+
+        // ── Full-Screen WatchScreen Overlay (Root Level) ─────────────────────
+        val currentPlaySlug by playbackManager.currentSlugFlow.collectAsStateWithLifecycle()
+        val isWatchOpen = isFullPlayerPresentation && currentPlaySlug.isNotBlank()
+
+        if (isWatchOpen) {
+            key(currentPlaySlug) {
+                com.pvq.cinepvq.features.watch.WatchScreen(
+                    slug = currentPlaySlug,
+                    initialEpisodeSlug = playbackManager.currentEpisodeSlug,
+                    initialServerName = playbackManager.currentServerName,
+                    initialEmbedUrl = playbackManager.currentEmbedUrl,
+                    onBackClick = {
+                        playbackManager.minimize()
+                        (context as? ComponentActivity)?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                    },
+                    onNavigateToMovie = { newSlug ->
+                        navController.navigate(Screen.Detail.createRoute(newSlug))
+                    },
+                    qaFullscreen = qaFullscreen,
+                    qaControls = qaControls,
+                    qaComments = qaComments,
+                    qaBrightness = qaBrightness,
+                    qaVolume = qaVolume,
+                    qaSeek = qaSeek
+                )
+            }
         }
 
         // ── Pure Video Surface inside System PiP Window ──────────────────────

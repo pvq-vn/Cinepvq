@@ -1,6 +1,8 @@
 package com.pvq.cinepvq.data.player
 
 import android.content.Context
+import android.view.ViewGroup
+import android.webkit.WebView
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -84,6 +86,9 @@ class PlaybackManager(
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
+    private val _watchedEpisodes = MutableStateFlow<Set<String>>(emptySet())
+    val watchedEpisodes: StateFlow<Set<String>> = _watchedEpisodes.asStateFlow()
+
     // ── Playback Controls & Progress States ──────────────────────────────────
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
@@ -108,6 +113,139 @@ class PlaybackManager(
 
     private val _selectedServerIndex = MutableStateFlow(0)
     val selectedServerIndex: StateFlow<Int> = _selectedServerIndex.asStateFlow()
+
+    private val _currentSlugFlow = MutableStateFlow("")
+    val currentSlugFlow: StateFlow<String> = _currentSlugFlow.asStateFlow()
+
+    private val _isEmbedPlaying = MutableStateFlow(false)
+    val isEmbedPlaying: StateFlow<Boolean> = _isEmbedPlaying.asStateFlow()
+
+    val isActivelyPlaying: Boolean
+        get() {
+            return if (_activeStream.value?.type == StreamType.EMBED) {
+                _isEmbedPlaying.value || !userPausedManually
+            } else {
+                _isPlaying.value
+            }
+        }
+
+    private val _sniffedEmbedStreamUrl = MutableStateFlow<String?>(null)
+    val sniffedEmbedStreamUrl: StateFlow<String?> = _sniffedEmbedStreamUrl.asStateFlow()
+
+    private val _sniffedEmbedHeaders = MutableStateFlow<Map<String, String>>(emptyMap())
+    val sniffedEmbedHeaders: StateFlow<Map<String, String>> = _sniffedEmbedHeaders.asStateFlow()
+
+    private val _sniffedEmbedPositionMs = MutableStateFlow<Long>(0L)
+    val sniffedEmbedPositionMs: StateFlow<Long> = _sniffedEmbedPositionMs.asStateFlow()
+
+    fun setEmbedPlaying(playing: Boolean) {
+        _isEmbedPlaying.value = playing
+    }
+
+    fun setSniffedEmbedStream(url: String, headers: Map<String, String> = emptyMap(), positionMs: Long = 0L) {
+        if (url.isNotBlank()) {
+            _sniffedEmbedStreamUrl.value = url
+            if (headers.isNotEmpty()) {
+                _sniffedEmbedHeaders.value = headers
+            }
+            if (positionMs > 0L) {
+                _sniffedEmbedPositionMs.value = positionMs
+            }
+        }
+    }
+
+    fun updateEmbedPosition(positionMs: Long) {
+        if (positionMs > 0L) {
+            _sniffedEmbedPositionMs.value = positionMs
+            _currentPositionMs.value = positionMs
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    fun playSniffedStream(targetPositionMs: Long? = null, url: String? = null) {
+        val streamUrl = url ?: _sniffedEmbedStreamUrl.value ?: return
+        val pos = targetPositionMs ?: _sniffedEmbedPositionMs.value.takeIf { it > 0L } ?: _currentPositionMs.value
+
+        val headers = _sniffedEmbedHeaders.value.toMutableMap()
+        if (!headers.containsKey("User-Agent")) {
+            headers["User-Agent"] = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36"
+        }
+        val activeEmbedUrl = _activeStream.value?.url
+        if (!activeEmbedUrl.isNullOrBlank()) {
+            if (!headers.containsKey("Referer")) {
+                headers["Referer"] = activeEmbedUrl
+            }
+            if (!headers.containsKey("Origin")) {
+                try {
+                    val uri = android.net.Uri.parse(activeEmbedUrl)
+                    headers["Origin"] = "${uri.scheme}://${uri.host}"
+                } catch (_: Exception) {}
+            }
+        }
+
+        val httpDataSourceFactory = androidx.media3.datasource.DefaultHttpDataSource.Factory()
+            .setUserAgent(headers["User-Agent"] ?: "Mozilla/5.0")
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(15000)
+            .setReadTimeoutMs(15000)
+            .setDefaultRequestProperties(headers)
+
+        val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
+            .setDataSourceFactory(httpDataSourceFactory)
+
+        val mediaItem = MediaItem.Builder()
+            .setUri(streamUrl)
+            .apply {
+                if (streamUrl.contains(".m3u8") || streamUrl.contains("/m3u8")) {
+                    setMimeType(MimeTypes.APPLICATION_M3U8)
+                }
+            }
+            .build()
+
+        val mediaSource = mediaSourceFactory.createMediaSource(mediaItem)
+        exoPlayer.setMediaSource(mediaSource, pos)
+        exoPlayer.playWhenReady = true
+        exoPlayer.prepare()
+    }
+
+    var cachedEmbedWebView: WebView? = null
+        private set
+
+    fun getOrCreateEmbedWebView(context: Context, url: String): Pair<WebView, Boolean> {
+        val existing = cachedEmbedWebView
+        if (existing != null && existing.tag == url) {
+            (existing.parent as? ViewGroup)?.removeView(existing)
+            existing.visibility = android.view.View.VISIBLE
+            return Pair(existing, false)
+        }
+        try {
+            existing?.stopLoading()
+            existing?.loadUrl("about:blank")
+            existing?.clearHistory()
+            existing?.destroy()
+        } catch (_: Exception) {}
+
+        var targetCtx = context
+        while (targetCtx is android.content.ContextWrapper && targetCtx !is android.app.Activity) {
+            targetCtx = targetCtx.baseContext
+        }
+
+        val newWebView = WebView(targetCtx).apply {
+            tag = url
+        }
+        cachedEmbedWebView = newWebView
+        return Pair(newWebView, true)
+    }
+
+    fun destroyCachedEmbedWebView() {
+        try {
+            cachedEmbedWebView?.stopLoading()
+            cachedEmbedWebView?.loadUrl("about:blank")
+            cachedEmbedWebView?.clearHistory()
+            cachedEmbedWebView?.destroy()
+        } catch (_: Exception) {}
+        cachedEmbedWebView = null
+    }
 
     var currentSlug: String = ""
         private set
@@ -268,6 +406,8 @@ class PlaybackManager(
         val hasValidStream = (_activeStream.value != null)
 
         currentSlug = slug
+        _currentSlugFlow.value = slug
+        _sniffedEmbedStreamUrl.value = null
         currentEpisodeSlug = episodeSlug
         currentServerName = serverName
         currentEmbedUrl = initialEmbedUrl
@@ -302,6 +442,7 @@ class PlaybackManager(
             _isLoadingStream.value = true
             _errorMessage.value = null
             _activeStream.value = null
+            _watchedEpisodes.value = userSyncRepository.getWatchedEpisodeSlugs(slug)
 
             // 1. Fetch movie detail
             val movieRes = movieRepository.getMovieDetail(slug)
@@ -516,6 +657,19 @@ class PlaybackManager(
         ) {
             previousPresentationState = _presentationState.value
         }
+        if (_activeStream.value?.type == StreamType.EMBED) {
+            try {
+                cachedEmbedWebView?.evaluateJavascript(
+                    "(function() { try { var v = document.querySelector('video'); return v ? v.currentTime : -1; } catch(e) { return -1; } })()"
+                ) { res ->
+                    val sec = res?.replace("\"", "")?.toDoubleOrNull()
+                    if (sec != null && sec > 0) {
+                        _sniffedEmbedPositionMs.value = (sec * 1000).toLong()
+                        _currentPositionMs.value = (sec * 1000).toLong()
+                    }
+                }
+            } catch (_: Exception) {}
+        }
         _presentationState.value = PlayerPresentationState.MINI_IN_APP
     }
 
@@ -546,9 +700,15 @@ class PlaybackManager(
         exoPlayer.stop()
         exoPlayer.clearMediaItems()
         _activeStream.value = null
+        _sniffedEmbedStreamUrl.value = null
+        _sniffedEmbedHeaders.value = emptyMap()
+        _sniffedEmbedPositionMs.value = 0L
+        _isEmbedPlaying.value = false
+        destroyCachedEmbedWebView()
         _currentEpisode.value = null
         _movie.value = null
         currentSlug = ""
+        _currentSlugFlow.value = ""
         currentEpisodeSlug = ""
         currentServerName = null
         currentEmbedUrl = null
@@ -559,21 +719,74 @@ class PlaybackManager(
         pipPreviousPresentationState = PlayerPresentationState.FULL_PORTRAIT
     }
 
+    fun setEmbedPlayingState(play: Boolean) {
+        _isEmbedPlaying.value = play
+        userPausedManually = !play
+        val wv = cachedEmbedWebView ?: return
+        val js = """
+            (function() {
+                var play = $play;
+                function controlVideo(doc) {
+                    try {
+                        var vids = doc.querySelectorAll('video');
+                        for (var i = 0; i < vids.length; i++) {
+                            var v = vids[i];
+                            if (play) {
+                                var p = v.play();
+                                if (p && p.catch) p.catch(function(e) {});
+                            } else {
+                                v.pause();
+                            }
+                            return true;
+                        }
+                    } catch(e) {}
+                    return false;
+                }
+                if (controlVideo(document)) return;
+                var iframes = document.querySelectorAll('iframe');
+                for (var f = 0; f < iframes.length; f++) {
+                    try {
+                        var idoc = iframes[f].contentDocument || iframes[f].contentWindow.document;
+                        if (idoc && controlVideo(idoc)) return;
+                    } catch(e) {}
+                }
+                var playBtns = document.querySelectorAll('.jw-icon-playback, .art-state, [aria-label*="Play"], [aria-label*="Pause"], [aria-label*="play"], [aria-label*="pause"], .vjs-play-control');
+                for (var b = 0; b < playBtns.length; b++) {
+                    try { playBtns[b].click(); return; } catch(e) {}
+                }
+            })();
+        """.trimIndent()
+        wv.evaluateJavascript(js, null)
+    }
+
     fun pause() {
-        exoPlayer.pause()
+        if (_activeStream.value?.type == StreamType.EMBED) {
+            setEmbedPlayingState(false)
+        } else {
+            exoPlayer.pause()
+        }
         userPausedManually = true
     }
 
     fun play() {
-        exoPlayer.play()
+        if (_activeStream.value?.type == StreamType.EMBED) {
+            setEmbedPlayingState(true)
+        } else {
+            exoPlayer.play()
+        }
         userPausedManually = false
     }
 
     fun togglePlayPause() {
-        if (exoPlayer.isPlaying) {
-            pause()
+        if (_activeStream.value?.type == StreamType.EMBED) {
+            val shouldPlay = !_isEmbedPlaying.value
+            setEmbedPlayingState(shouldPlay)
         } else {
-            play()
+            if (exoPlayer.isPlaying) {
+                pause()
+            } else {
+                play()
+            }
         }
     }
 
@@ -677,6 +890,10 @@ class PlaybackManager(
         val currentSec = currentMs / 1000L
         val durationSec = durationMs / 1000L
         if (currentSec <= 0) return
+
+        if (currentSec > 15L && !_watchedEpisodes.value.contains(forEpisodeSlug)) {
+            _watchedEpisodes.value = _watchedEpisodes.value + forEpisodeSlug
+        }
 
         scope.launch {
             userSyncRepository.recordWatchProgress(
