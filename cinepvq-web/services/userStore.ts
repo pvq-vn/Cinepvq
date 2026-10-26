@@ -12,6 +12,7 @@ import type {
 } from "@/types/movie";
 import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { normalizeEpisodeLabel } from "@/lib/format";
 
 const KEYS = {
   USER: "cinepvq_user",
@@ -22,6 +23,8 @@ const KEYS = {
   NOTIFICATIONS: "cinepvq_notifications",
   SETTINGS: "cinepvq_settings",
 };
+
+const SOLE_ADMIN_EMAIL = "vanquyetp823@gmail.com";
 
 // Default settings
 const DEFAULT_SETTINGS: AppSettings = {
@@ -58,20 +61,63 @@ function isBrowser(): boolean {
   return typeof window !== "undefined";
 }
 
+// ─── High-Performance In-Memory Storage Cache ───────────────────────────────
+// Eliminates thousands of synchronous localStorage.getItem + JSON.parse calls
+// when hundreds of MovieCards mount or scroll into view.
+const rawStorageCache = new Map<string, unknown>();
+const derivedCache = new Map<string, unknown>();
+
+function invalidateMemoryCaches(specificKey?: string) {
+  if (specificKey) {
+    rawStorageCache.delete(specificKey);
+  } else {
+    rawStorageCache.clear();
+  }
+  derivedCache.clear();
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", () => {
+    invalidateMemoryCaches();
+  });
+}
+
+function safeGetItem<T>(key: string, fallback: T): T {
+  if (!isBrowser()) return fallback;
+  if (rawStorageCache.has(key)) {
+    return rawStorageCache.get(key) as T;
+  }
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? (JSON.parse(raw) as T) : fallback;
+    rawStorageCache.set(key, parsed);
+    return parsed;
+  } catch {
+    return fallback;
+  }
+}
+
+function safeSetItem<T>(key: string, value: T): void {
+  if (!isBrowser()) return;
+  try {
+    rawStorageCache.set(key, value);
+    derivedCache.clear();
+    localStorage.setItem(key, JSON.stringify(value));
+    // Dispatch custom event to sync across components and hooks
+    window.dispatchEvent(new Event("cinepvq_storage_update"));
+  } catch (err) {
+    console.warn("Error saving to localStorage", err);
+  }
+}
+
 /**
  * Gets the current active user ID to namespace all local caches.
  * Prevents any cross-user data leakage when switching accounts.
  */
 export function getActiveUserId(): string {
   if (!isBrowser()) return "guest";
-  try {
-    const raw = localStorage.getItem(KEYS.USER);
-    if (!raw) return "guest";
-    const user = JSON.parse(raw) as UserProfile;
-    return user?.id || "guest";
-  } catch {
-    return "guest";
-  }
+  const user = safeGetItem<UserProfile | null>(KEYS.USER, null);
+  return user?.id || "guest";
 }
 
 /**
@@ -83,25 +129,12 @@ function getUserStorageKey(baseKey: string, explicitUserId?: string): string {
   return `${baseKey}_${uid}`;
 }
 
-function safeGetItem<T>(key: string, fallback: T): T {
-  if (!isBrowser()) return fallback;
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function safeSetItem<T>(key: string, value: T): void {
-  if (!isBrowser()) return;
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-    // Dispatch custom event to sync across components and hooks
-    window.dispatchEvent(new Event("cinepvq_storage_update"));
-  } catch (err) {
-    console.warn("Error saving to localStorage", err);
-  }
+function enrichUserRole(user: UserProfile): UserProfile {
+  const isAdmin = user.email?.toLowerCase() === SOLE_ADMIN_EMAIL;
+  return {
+    ...user,
+    role: isAdmin ? "admin" : (user.role || "user"),
+  };
 }
 
 /**
@@ -115,15 +148,14 @@ function migrateLegacyStorageIfNeeded(userId: string, email?: string) {
     const legacyFavs = localStorage.getItem(KEYS.FAVORITES);
     const userHasFavs = localStorage.getItem(userFavKey);
 
-    // Only migrate if user-scoped key is empty and legacy key exists
     if (!userHasFavs && legacyFavs) {
-      // Check if user is the legacy owner
       const isLegacyMigrated = localStorage.getItem(
         `cinepvq_migrated_${email?.toLowerCase()}`
       );
       if (isLegacyMigrated) {
         localStorage.setItem(userFavKey, legacyFavs);
-        localStorage.removeItem(KEYS.FAVORITES); // Remove global key to prevent leakage to other users
+        localStorage.removeItem(KEYS.FAVORITES);
+        invalidateMemoryCaches();
       }
     }
 
@@ -138,6 +170,7 @@ function migrateLegacyStorageIfNeeded(userId: string, email?: string) {
       if (isLegacyMigrated) {
         localStorage.setItem(userHistKey, legacyHist);
         localStorage.removeItem(KEYS.HISTORY);
+        invalidateMemoryCaches();
       }
     }
   } catch (err) {
@@ -159,9 +192,7 @@ export function migrateGuestDataToUser(userId: string) {
 
     if (guestFavs.length > 0) {
       const mergedMap = new Map<string, FavoriteMovie>();
-      // User items first
       userFavs.forEach((f) => mergedMap.set(f.slug, f));
-      // Guest items merged in if not existing
       guestFavs.forEach((f) => {
         if (!mergedMap.has(f.slug)) {
           mergedMap.set(f.slug, f);
@@ -169,6 +200,7 @@ export function migrateGuestDataToUser(userId: string) {
       });
       safeSetItem(userFavKey, Array.from(mergedMap.values()));
       localStorage.removeItem(guestFavKey);
+      invalidateMemoryCaches(guestFavKey);
     }
 
     const guestHistKey = getUserStorageKey(KEYS.HISTORY, "guest");
@@ -198,6 +230,7 @@ export function migrateGuestDataToUser(userId: string) {
       });
       safeSetItem(userHistKey, mergedList.slice(0, 50));
       localStorage.removeItem(guestHistKey);
+      invalidateMemoryCaches(guestHistKey);
     }
 
     const guestProgKey = getUserStorageKey(KEYS.EPISODE_PROGRESS, "guest");
@@ -209,6 +242,7 @@ export function migrateGuestDataToUser(userId: string) {
       const mergedProg = { ...guestProg, ...userProg };
       safeSetItem(userProgKey, mergedProg);
       localStorage.removeItem(guestProgKey);
+      invalidateMemoryCaches(guestProgKey);
     }
 
     const guestWatchlistKey = getUserStorageKey(KEYS.WATCHLIST, "guest");
@@ -223,7 +257,6 @@ export function migrateGuestDataToUser(userId: string) {
         if (!mergedMap.has(w.slug)) {
           mergedMap.set(w.slug, w);
         } else {
-          // If exists in both, retain the newer addedAt
           const existing = mergedMap.get(w.slug)!;
           const timeW = w.addedAt ? new Date(w.addedAt).getTime() : 0;
           const timeExisting = existing.addedAt ? new Date(existing.addedAt).getTime() : 0;
@@ -239,6 +272,7 @@ export function migrateGuestDataToUser(userId: string) {
       });
       safeSetItem(userWatchlistKey, mergedList.slice(0, 100));
       localStorage.removeItem(guestWatchlistKey);
+      invalidateMemoryCaches(guestWatchlistKey);
     }
 
     const guestSettingsKey = getUserStorageKey(KEYS.SETTINGS, "guest");
@@ -250,28 +284,45 @@ export function migrateGuestDataToUser(userId: string) {
         safeSetItem(userSettingsKey, guestSettings);
       }
       localStorage.removeItem(guestSettingsKey);
+      invalidateMemoryCaches(guestSettingsKey);
     }
   } catch (err) {
     console.warn("[UserStore] Error migrating guest data to user", err);
   }
 }
 
-// ─── Favorites Repository (Strictly User-Scoped) ───────────────────────────
+// ─── Favorites Repository (Strictly User-Scoped, O(1) Lookup) ──────────────
 
 export const favoritesStore = {
   getAll(): FavoriteMovie[] {
     const key = getUserStorageKey(KEYS.FAVORITES);
-    return safeGetItem<FavoriteMovie[]>(key, []);
+    const derivedKey = `fav_list_${key}`;
+    if (derivedCache.has(derivedKey)) {
+      return derivedCache.get(derivedKey) as FavoriteMovie[];
+    }
+    const items = safeGetItem<FavoriteMovie[]>(key, []).map((item) => ({
+      ...item,
+      current_episode: item.current_episode ? normalizeEpisodeLabel(item.current_episode) : item.current_episode,
+    }));
+    derivedCache.set(derivedKey, items);
+    return items;
   },
 
   isFavorite(slug: string): boolean {
-    const items = this.getAll();
-    return items.some((item) => item.slug === slug);
+    if (!slug) return false;
+    const key = getUserStorageKey(KEYS.FAVORITES);
+    const setKey = `fav_set_${key}`;
+    let slugSet = derivedCache.get(setKey) as Set<string> | undefined;
+    if (!slugSet) {
+      slugSet = new Set(this.getAll().map((item) => item.slug));
+      derivedCache.set(setKey, slugSet);
+    }
+    return slugSet.has(slug);
   },
 
   toggle(movie: Movie | MovieDetail | FavoriteMovie): boolean {
     const key = getUserStorageKey(KEYS.FAVORITES);
-    const items = this.getAll();
+    const items = [...this.getAll()];
     const existingIndex = items.findIndex((item) => item.slug === movie.slug);
 
     if (existingIndex >= 0) {
@@ -285,7 +336,7 @@ export const favoritesStore = {
         original_name: movie.original_name,
         thumb_url: movie.thumb_url,
         quality: movie.quality,
-        current_episode: movie.current_episode,
+        current_episode: movie.current_episode ? normalizeEpisodeLabel(movie.current_episode) : undefined,
         addedAt: new Date().toISOString(),
       };
       items.unshift(newItem);
@@ -311,25 +362,42 @@ export const favoritesStore = {
   },
 };
 
-// ─── Watchlist Repository (Strictly User-Scoped) ───────────────────────────
+// ─── Watchlist Repository (Strictly User-Scoped, O(1) Lookup) ──────────────
 
 export const watchlistStore = {
   getAll(): WatchlistItem[] {
     const key = getUserStorageKey(KEYS.WATCHLIST);
+    const derivedKey = `wl_list_${key}`;
+    if (derivedCache.has(derivedKey)) {
+      return derivedCache.get(derivedKey) as WatchlistItem[];
+    }
     const raw = safeGetItem<WatchlistItem[]>(key, []);
-    return raw
+    const sorted = raw
       .filter((item) => Boolean(item && item.slug))
+      .map((item) => ({
+        ...item,
+        current_episode: item.current_episode ? normalizeEpisodeLabel(item.current_episode) : item.current_episode,
+      }))
       .sort((a, b) => {
         const timeA = a.addedAt ? new Date(a.addedAt).getTime() : 0;
         const timeB = b.addedAt ? new Date(b.addedAt).getTime() : 0;
         return timeB - timeA;
       })
       .slice(0, 100);
+    derivedCache.set(derivedKey, sorted);
+    return sorted;
   },
 
   isWatchlist(slug: string): boolean {
-    const items = this.getAll();
-    return items.some((item) => item.slug === slug);
+    if (!slug) return false;
+    const key = getUserStorageKey(KEYS.WATCHLIST);
+    const setKey = `wl_set_${key}`;
+    let slugSet = derivedCache.get(setKey) as Set<string> | undefined;
+    if (!slugSet) {
+      slugSet = new Set(this.getAll().map((item) => item.slug));
+      derivedCache.set(setKey, slugSet);
+    }
+    return slugSet.has(slug);
   },
 
   add(movie: Movie | MovieDetail | WatchlistItem | FavoriteMovie): boolean {
@@ -355,7 +423,7 @@ export const watchlistStore = {
       poster_url: posterVal,
       year: yearVal,
       quality: movie.quality,
-      current_episode: movie.current_episode,
+      current_episode: movie.current_episode ? normalizeEpisodeLabel(movie.current_episode) : undefined,
       type: typeVal,
       addedAt: addedAtVal,
     };
@@ -420,14 +488,24 @@ export const watchlistStore = {
 export const historyStore = {
   getAll(): WatchHistoryItem[] {
     const key = getUserStorageKey(KEYS.HISTORY);
+    const derivedKey = `hist_list_${key}`;
+    if (derivedCache.has(derivedKey)) {
+      return derivedCache.get(derivedKey) as WatchHistoryItem[];
+    }
     const raw = safeGetItem<WatchHistoryItem[]>(key, []);
-    return raw
+    const sorted = raw
       .filter((item) => Boolean(item && item.slug))
+      .map((item) => ({
+        ...item,
+        episodeName: normalizeEpisodeLabel(item.episodeName, item.episodeSlug) || item.episodeName,
+      }))
       .sort((a, b) => {
         const timeA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
         const timeB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
         return timeB - timeA;
       });
+    derivedCache.set(derivedKey, sorted);
+    return sorted;
   },
 
   add(
@@ -441,35 +519,53 @@ export const historyStore = {
     const items = this.getAll();
     const existing = items.find((item) => item.slug === movie.slug) || null;
 
+    const targetEpSlug = episode?.slug || existing?.episodeSlug;
+    const isSameEpisode = Boolean(existing && targetEpSlug && existing.episodeSlug === targetEpSlug);
+    const epSeason = season || episode?.season || 1;
+
+    // Determine accurate currentTime for this specific episode:
+    // Never carry over existing.currentTime when switching to a DIFFERENT episode!
+    let resolvedCurrentTime = 0;
+    if (typeof currentTime === "number" && currentTime > 0) {
+      resolvedCurrentTime = Math.floor(currentTime);
+    } else if (isSameEpisode && existing?.currentTime && existing.currentTime > 0) {
+      resolvedCurrentTime = existing.currentTime;
+    } else if (targetEpSlug) {
+      resolvedCurrentTime = episodeProgressStore.get(movie.slug, targetEpSlug, epSeason) || 0;
+    }
+
+    const resolvedDuration =
+      typeof duration === "number" && duration > 0
+        ? Math.floor(duration)
+        : isSameEpisode
+        ? existing?.duration
+        : undefined;
+
+    const cleanEpisodeName = normalizeEpisodeLabel(
+      episode?.name || (isSameEpisode ? existing?.episodeName : undefined),
+      targetEpSlug
+    );
+
     const record: WatchHistoryItem = {
       slug: movie.slug,
       name: movie.name,
       original_name: movie.original_name,
       thumb_url: movie.thumb_url,
-      episodeSlug: episode?.slug || existing?.episodeSlug,
-      episodeName: episode?.name || existing?.episodeName,
-      currentTime:
-        typeof currentTime === "number"
-          ? Math.floor(currentTime)
-          : existing?.currentTime,
-      duration:
-        typeof duration === "number"
-          ? Math.floor(duration)
-          : existing?.duration,
+      episodeSlug: targetEpSlug,
+      episodeName: cleanEpisodeName || undefined,
+      currentTime: resolvedCurrentTime,
+      duration: resolvedDuration,
       updatedAt: new Date().toISOString(),
     };
 
-    // Filter out ANY previous occurrences of this slug to guarantee no duplicates
     const remaining = items.filter((item) => item.slug !== movie.slug);
     remaining.unshift(record);
 
-    // Keep max 50 items
     const finalItems = remaining.slice(0, 50);
     safeSetItem(key, finalItems);
 
-    // Also persist discrete per-episode progress to prevent cross-episode overwrites
-    const epSeason = season || episode?.season || 1;
-    if (episode?.slug && typeof currentTime === "number") {
+    // Persist discrete per-episode progress when currentTime > 0
+    if (episode?.slug && typeof currentTime === "number" && currentTime > 0) {
       episodeProgressStore.save(movie.slug, episode.slug, epSeason, currentTime, duration || 0);
     }
   },
@@ -487,10 +583,13 @@ export const historyStore = {
 
   setAll(items: WatchHistoryItem[]): void {
     const key = getUserStorageKey(KEYS.HISTORY);
-    // Deduplicate by slug, preserving the latest record
     const map = new Map<string, WatchHistoryItem>();
-    for (const item of items) {
-      if (!item || !item.slug) continue;
+    for (const rawItem of items) {
+      if (!rawItem || !rawItem.slug) continue;
+      const item: WatchHistoryItem = {
+        ...rawItem,
+        episodeName: normalizeEpisodeLabel(rawItem.episodeName, rawItem.episodeSlug) || rawItem.episodeName,
+      };
       const existing = map.get(item.slug);
       if (!existing) {
         map.set(item.slug, item);
@@ -551,7 +650,7 @@ export const episodeProgressStore = {
   ): void {
     if (!movieSlug || !episodeSlug) return;
     const key = getUserStorageKey(KEYS.EPISODE_PROGRESS);
-    const all = this.getAll();
+    const all = { ...this.getAll() };
     const progressKey = `${movieSlug}_s${season}_${episodeSlug}`;
     const updatedAt = explicitUpdatedAt || new Date().toISOString();
     all[progressKey] = {
@@ -571,7 +670,8 @@ export const episodeProgressStore = {
 
 export const authStore = {
   getUser(): UserProfile | null {
-    return safeGetItem<UserProfile | null>(KEYS.USER, null);
+    const u = safeGetItem<UserProfile | null>(KEYS.USER, null);
+    return u ? enrichUserRole(u) : null;
   },
 
   async login(email: string, password?: string): Promise<UserProfile> {
@@ -587,7 +687,7 @@ export const authStore = {
       if (!data.user) {
         throw new Error("Không thể xác thực thông tin đăng nhập");
       }
-      const user: UserProfile = {
+      const user = enrichUserRole({
         id: data.user.id,
         email: data.user.email || email,
         username:
@@ -596,7 +696,7 @@ export const authStore = {
           email.split("@")[0],
         avatarUrl: data.user.user_metadata?.avatar_url,
         createdAt: data.user.created_at,
-      };
+      });
       safeSetItem(KEYS.USER, user);
       migrateGuestDataToUser(user.id);
       migrateLegacyStorageIfNeeded(user.id, user.email);
@@ -604,12 +704,12 @@ export const authStore = {
     }
 
     // Fallback mode if Supabase Auth is unconfigured
-    const user: UserProfile = {
+    const user = enrichUserRole({
       id: "usr-" + Math.random().toString(36).substring(2, 9),
       email,
       username: email.split("@")[0],
       createdAt: new Date().toISOString(),
-    };
+    });
     safeSetItem(KEYS.USER, user);
     migrateGuestDataToUser(user.id);
     return user;
@@ -637,19 +737,18 @@ export const authStore = {
       if (!data.user) {
         throw new Error("Không thể tạo tài khoản");
       }
-      const user: UserProfile = {
+      const user = enrichUserRole({
         id: data.user.id,
         email: data.user.email || email,
         username: username?.trim() || email.split("@")[0],
         createdAt: data.user.created_at,
-      };
+      });
       safeSetItem(KEYS.USER, user);
       migrateGuestDataToUser(user.id);
       migrateLegacyStorageIfNeeded(user.id, user.email);
       return user;
     }
 
-    // Fallback mode
     return this.login(email);
   },
 
@@ -668,11 +767,11 @@ export const authStore = {
       throw new Error(resData.message || "Cập nhật hồ sơ thất bại");
     }
 
-    const updated: UserProfile = {
+    const updated = enrichUserRole({
       ...current,
       username: resData.user?.username || data.username || current.username,
       avatarUrl: resData.user?.avatarUrl !== undefined ? resData.user.avatarUrl : current.avatarUrl,
-    };
+    });
 
     safeSetItem(KEYS.USER, updated);
     if (isBrowser()) {
@@ -682,7 +781,7 @@ export const authStore = {
   },
 
   updateUser(user: UserProfile): void {
-    safeSetItem(KEYS.USER, user);
+    safeSetItem(KEYS.USER, enrichUserRole(user));
     if (isBrowser()) {
       window.dispatchEvent(new Event("cinepvq_storage_update"));
     }
@@ -697,7 +796,6 @@ export const authStore = {
         console.warn("[AuthStore] Supabase signOut error", err);
       }
     }
-    // Remove active user -> active user ID becomes "guest"
     safeSetItem(KEYS.USER, null);
     if (isBrowser()) {
       window.dispatchEvent(new Event("cinepvq_storage_update"));
@@ -709,10 +807,9 @@ export const authStore = {
 if (typeof window !== "undefined") {
   const supabase = getSupabaseBrowserClient();
   if (supabase) {
-    // Proactively verify current session on page load
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.user) {
-        const user: UserProfile = {
+        const user = enrichUserRole({
           id: session.user.id,
           email: session.user.email || "",
           username:
@@ -722,7 +819,7 @@ if (typeof window !== "undefined") {
             "User",
           avatarUrl: session.user.user_metadata?.avatar_url,
           createdAt: session.user.created_at,
-        };
+        });
         safeSetItem(KEYS.USER, user);
         migrateGuestDataToUser(user.id);
         migrateLegacyStorageIfNeeded(user.id, user.email);
@@ -743,7 +840,7 @@ if (typeof window !== "undefined") {
             window.dispatchEvent(new Event("cinepvq_storage_update"));
           }
         } else if (session?.user) {
-          const user: UserProfile = {
+          const user = enrichUserRole({
             id: session.user.id,
             email: session.user.email || "",
             username:
@@ -753,7 +850,7 @@ if (typeof window !== "undefined") {
               "User",
             avatarUrl: session.user.user_metadata?.avatar_url,
             createdAt: session.user.created_at,
-          };
+          });
           safeSetItem(KEYS.USER, user);
           migrateGuestDataToUser(user.id);
           migrateLegacyStorageIfNeeded(user.id, user.email);

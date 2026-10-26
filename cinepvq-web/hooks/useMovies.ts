@@ -7,6 +7,8 @@ import {
   getMoviesByGenre,
   getMoviesByCountry,
   getMoviesByYear,
+  getMoviesFiltered,
+  type FilteredMoviesParams,
 } from "@/services/api";
 import type { Movie, MovieDetail, Paginate } from "@/types/movie";
 
@@ -165,6 +167,31 @@ export function useSearchMovies(
   };
 }
 
+// ─── Phim lọc kết hợp (Danh mục + Thể loại + Quốc gia + Năm) ───────────────
+
+export function useFetchMoviesFiltered(
+  params: FilteredMoviesParams,
+  enabled = true
+): MoviesQueryResult {
+  const { data, isLoading, isError, refetch } = useQuery({
+    queryKey: ["moviesFiltered", params],
+    queryFn: async () => {
+      const response = await getMoviesFiltered(params);
+      return response.data;
+    },
+    enabled,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  return {
+    data: data?.items ?? [],
+    paginate: data?.paginate ?? null,
+    isLoading,
+    isError,
+    refetch,
+  };
+}
+
 // ─── Movie Discovery (Search & Multifaceted Filter) ────────────────────────
 
 export interface MovieDiscoveryParams {
@@ -204,20 +231,14 @@ export function useMovieDiscovery({
         const res = await searchMovies(trimmed, page);
         return res.data;
       }
-      if (category) {
-        const res = await getMoviesByCategory(category, page);
-        return res.data;
-      }
-      if (genre) {
-        const res = await getMoviesByGenre(genre, page);
-        return res.data;
-      }
-      if (country) {
-        const res = await getMoviesByCountry(country, page);
-        return res.data;
-      }
-      if (yearNum && !isNaN(yearNum)) {
-        const res = await getMoviesByYear(yearNum, page);
+      if (category || genre || country || (yearNum && !isNaN(yearNum))) {
+        const res = await getMoviesFiltered({
+          category: category || undefined,
+          genre: genre || undefined,
+          country: country || undefined,
+          year: yearNum,
+          page,
+        });
         return res.data;
       }
       // Default exploration: latest updated movies

@@ -4,7 +4,8 @@ import React, { useEffect, useRef, useState, useSyncExternalStore, useCallback }
 import { createPortal } from "react-dom";
 import { useGlobalPlayer } from "@/contexts/GlobalPlayerContext";
 import VideoPlayer from "@/components/VideoPlayer";
-import { X, Maximize2, Tv, PictureInPicture, Play, Pause } from "lucide-react";
+import { normalizeEpisodeLabel } from "@/lib/format";
+import { X, Maximize2, Tv, Play, Pause } from "lucide-react";
 
 const emptySubscribe = () => () => {};
 const getClientSnapshot = () => true;
@@ -68,12 +69,6 @@ export default function GlobalPlayerHost() {
   const slotObserverRef = useRef<ResizeObserver | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
 
-  const supportsPip =
-    isClient &&
-    typeof document !== "undefined" &&
-    "pictureInPictureEnabled" in document &&
-    Boolean(document.pictureInPictureEnabled);
-
   const togglePlay = () => {
     const video = videoRef.current;
     if (!video) return;
@@ -81,20 +76,6 @@ export default function GlobalPlayerHost() {
       video.play().catch(() => {});
     } else {
       video.pause();
-    }
-  };
-
-  const handleToggleBrowserPiP = async () => {
-    const video = videoRef.current;
-    if (!video || typeof document === "undefined" || !document.pictureInPictureEnabled) return;
-    try {
-      if (document.pictureInPictureElement) {
-        await document.exitPictureInPicture();
-      } else {
-        await video.requestPictureInPicture();
-      }
-    } catch (err) {
-      console.warn("[GlobalPlayerHost] PiP toggle error:", err);
     }
   };
 
@@ -274,9 +255,6 @@ export default function GlobalPlayerHost() {
     isNativePip ||
     Boolean(typeof document !== "undefined" && document.pictureInPictureElement);
 
-  // When native PiP is active:
-  // Render minimal 1px offscreen video wrapper so Chromium keeps PiP session alive
-  // Absolutely NO big popup in the website, NO internal mini player!
   const pipUnderlyingStyle: React.CSSProperties = {
     position: "fixed",
     bottom: 0,
@@ -289,7 +267,6 @@ export default function GlobalPlayerHost() {
     overflow: "hidden",
   };
 
-  // Mini mode: fixed bottom-right video overlay (video only; controls bar portaled separately below)
   const miniVideoStyle: React.CSSProperties = {
     position: "fixed",
     bottom: "calc(max(0.75rem, env(safe-area-inset-bottom, 0.75rem)) + 60px)",
@@ -322,6 +299,7 @@ export default function GlobalPlayerHost() {
         <VideoPlayer
           key={session.movieSlug}
           videoUrl={session.videoUrl}
+          knownHlsUrl={session.knownHlsUrl}
           movieSlug={session.movieSlug}
           movieTitle={session.movieTitle}
           imdbId={session.imdbId}
@@ -333,6 +311,7 @@ export default function GlobalPlayerHost() {
           initialTime={session.initialTime || 0}
           serverName={session.serverName}
           episodeSlug={session.episodeSlug}
+          episodes={session.episodes}
           isMini={isMini}
           onTimeUpdate={(cur, dur) => {
             handleTimeUpdate(cur, dur);
@@ -436,7 +415,12 @@ export default function GlobalPlayerHost() {
                   {session.movieTitle}
                 </p>
                 <p className="text-[11px] text-violet-400 font-medium truncate leading-tight">
-                  {session.type === "movie" ? "Bản Full" : `Tập ${session.episode || 1}`}
+                  {session.type === "movie"
+                    ? "Bản Full"
+                    : normalizeEpisodeLabel(
+                        session.episodeTitle,
+                        session.episodeSlug || (session.episode ? String(session.episode) : "1")
+                      )}
                 </p>
               </div>
             </div>

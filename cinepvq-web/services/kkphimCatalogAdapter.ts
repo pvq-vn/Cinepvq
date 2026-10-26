@@ -17,6 +17,7 @@ import type {
   EpisodeServer,
   CategoryGroupItem,
 } from "@/types/movie";
+import { normalizeEpisodeLabel } from "@/lib/format";
 
 // ─── Taxonomy Mappings ────────────────────────────────────────────────────────
 
@@ -302,10 +303,11 @@ export function normalizeEpisodes(episodes?: KKPhimEpisodeServer[]): EpisodeServ
   return episodes.map((server) => ({
     server_name: server.server_name || "Vietsub",
     items: Array.isArray(server.server_data)
-      ? server.server_data.map((ep) => ({
-          name: ep.name || "",
-          slug: ep.slug || "",
+      ? server.server_data.map((ep, idx) => ({
+          name: normalizeEpisodeLabel(ep.name, ep.slug) || `Tập ${String(idx + 1).padStart(2, "0")}`,
+          slug: ep.slug || `tap-${String(idx + 1).padStart(2, "0")}`,
           embed: ep.link_embed || ep.link_m3u8 || "",
+          m3u8: ep.link_m3u8 || "",
         }))
       : [],
   }));
@@ -336,6 +338,8 @@ export function normalizeMovieItem(
       : parseInt(String(raw.year), 10) || raw.year
     : undefined;
 
+  const rawCurrentEp = rawAsMovie.episode_current || "";
+
   return {
     name: raw.name || "",
     slug: raw.slug || "",
@@ -346,7 +350,7 @@ export function normalizeMovieItem(
     modified: modifiedDate || createdDate || "",
     description: rawAsMovie.content || (rawAsMovie as { description?: string }).description || "",
     total_episodes: totalEpisodes,
-    current_episode: rawAsMovie.episode_current || "",
+    current_episode: normalizeEpisodeLabel(rawCurrentEp),
     time: rawAsMovie.time || "",
     quality: rawAsMovie.quality || "",
     language: rawAsMovie.lang || "",
@@ -355,6 +359,29 @@ export function normalizeMovieItem(
     year: yearNum,
     category: buildCategoryDict(rawAsMovie.category, rawAsMovie.country, raw.year, rawAsMovie.type),
     country: normalizeCountries(rawAsMovie.country),
+    view: typeof rawAsMovie.view === "number" ? rawAsMovie.view : undefined,
+    tmdb: raw.tmdb
+      ? {
+          type: raw.tmdb.type,
+          id: raw.tmdb.id ? String(raw.tmdb.id) : null,
+          season: raw.tmdb.season,
+          vote_average:
+            typeof raw.tmdb.vote_average === "number"
+              ? raw.tmdb.vote_average
+              : parseFloat(String(raw.tmdb.vote_average || "0")) || undefined,
+          vote_count: raw.tmdb.vote_count,
+        }
+      : undefined,
+    imdb: raw.imdb
+      ? {
+          id: raw.imdb.id ? String(raw.imdb.id) : null,
+          vote_average:
+            typeof raw.imdb.vote_average === "number"
+              ? raw.imdb.vote_average
+              : parseFloat(String(raw.imdb.vote_average || "0")) || undefined,
+          vote_count: raw.imdb.vote_count,
+        }
+      : undefined,
   };
 }
 
@@ -372,12 +399,18 @@ export function normalizeMovieDetail(
       ? raw.imdb.id.trim()
       : undefined;
 
+  const tmdbId =
+    raw.tmdb?.id !== undefined && raw.tmdb?.id !== null && String(raw.tmdb.id).trim().length > 0
+      ? String(raw.tmdb.id).trim()
+      : undefined;
+
   return {
     ...baseMovie,
     id: raw._id || raw.id || raw.slug || "",
     category: categoryDict,
     episodes: normalizeEpisodes(episodes),
     imdb_id: imdbId,
+    tmdb_id: tmdbId,
   };
 }
 

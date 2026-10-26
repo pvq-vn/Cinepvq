@@ -28,6 +28,40 @@ export interface CategoryGroup {
 
 export type CategoryDict = Record<string, CategoryGroup>;
 
+// ─── Cast & Enrichment ─────────────────────────────────────────────────────
+
+export interface CastMember {
+  name: string;
+  character?: string;
+  profile_url?: string;
+  role?: "actor" | "director" | "Diễn viên" | "Đạo diễn" | string;
+}
+
+export interface MoviePlatformViews {
+  platform: string;
+  views: number;
+}
+
+export interface MovieEnrichmentData {
+  slug: string;
+  staticFromCache: boolean;
+  casts: CastMember[];
+  director: string;
+  imdbId?: string;
+  tmdbId?: string;
+  doubanId?: string;
+  ratings: {
+    imdb: { score: number; votes?: number } | null;
+    douban: { score: number; votes?: number; id?: string } | null;
+    tmdb: { score: number; votes?: number } | null;
+  };
+  views: {
+    total: number;
+    sources: MoviePlatformViews[];
+  };
+  updatedAt: string;
+}
+
 // ─── Movie (list item) ────────────────────────────────────────────────────
 
 export interface Movie {
@@ -51,6 +85,26 @@ export interface Movie {
   year?: string | number;
   category?: Category[] | CategoryDict;
   country?: Country[];
+  view?: number;
+  tmdb?: {
+    type?: string | null;
+    id?: string | null;
+    season?: number | null;
+    vote_average?: number;
+    vote_count?: number;
+  };
+  imdb?: {
+    id?: string | null;
+    vote_average?: number;
+    vote_count?: number;
+  };
+  douban?: {
+    id?: string | null;
+    score?: number;
+    votes?: number;
+  };
+  rank_metric?: string;
+  platform_badge?: string;
 }
 
 // ─── Paginate ──────────────────────────────────────────────────────────────
@@ -76,6 +130,7 @@ export interface EpisodeItem {
   name: string;
   slug: string;
   embed: string;
+  m3u8?: string;
 }
 
 export interface EpisodeServer {
@@ -106,6 +161,27 @@ export interface MovieDetail {
   country?: Country[];
   episodes: EpisodeServer[];
   imdb_id?: string;
+  tmdb_id?: string;
+  douban_id?: string;
+  view?: number;
+  tmdb?: {
+    type?: string | null;
+    id?: string | null;
+    season?: number | null;
+    vote_average?: number;
+    vote_count?: number;
+  };
+  imdb?: {
+    id?: string | null;
+    vote_average?: number;
+    vote_count?: number;
+  };
+  douban?: {
+    id?: string | null;
+    score?: number;
+    votes?: number;
+  };
+  cast_data?: CastMember[];
 }
 
 // ─── Detail response ───────────────────────────────────────────────────────
@@ -168,6 +244,7 @@ export interface UserProfile {
   email: string;
   username: string;
   avatarUrl?: string;
+  role?: "user" | "admin" | "moderator";
   createdAt: string;
 }
 

@@ -11,6 +11,7 @@ import React, {
 import { usePathname, useRouter } from "next/navigation";
 import { historyStore, episodeProgressStore } from "@/services/userStore";
 import { userSyncManager } from "@/services/userSyncManager";
+import { normalizeEpisodeLabel } from "@/lib/format";
 
 export type AudioTrackKind = "vietsub" | "thuyet-minh" | "long-tieng" | "other";
 
@@ -27,7 +28,7 @@ export function normalizeAudioTrackKind(name?: string): AudioTrackKind {
   if (/\b(thuyet\s*minh|tm|voice|voiceover|thuyetminh)\b/i.test(normalized)) {
     return "thuyet-minh";
   }
-  if (/\b(vietsub|sub|phu\s*de|subtitles?)\b/i.test(normalized)) {
+  if (/\b(vietsub|sub|phu\s*de|subtitles?|ha\s*noi|vip|kkphim|vsmov|nguonc)\b/i.test(normalized) || normalized.includes("#")) {
     return "vietsub";
   }
   return "other";
@@ -60,13 +61,15 @@ export interface GlobalPlayerSession {
   tmdbId?: string;
   season?: number;
   episode?: number;
+  episodeTitle?: string;
   type?: "movie" | "series";
   serverName?: string;
   episodeSlug?: string;
   videoUrl: string;
+  knownHlsUrl?: string;
   initialTime?: number;
   autoPlay?: boolean;
-  episodes?: { name: string; slug: string; embed?: string }[];
+  episodes?: { name: string; slug: string; embed?: string; m3u8?: string }[];
   currentEpisodeIndex?: number;
 }
 
@@ -195,6 +198,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   const [isNativePip, setIsNativePip] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const lastReportedSecondRef = useRef<number>(-1);
   const [episodeHandlers, setEpisodeHandlers] = useState<EpisodeHandlers>({});
   // Incremented each time user expands mini player — page.tsx watches this to scroll to player
   const [expandScrollTrigger, setExpandScrollTrigger] = useState(0);
@@ -210,7 +214,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     warningTimerRef.current = setTimeout(() => {
       setSourceSwitchWarning(false);
       warningTimerRef.current = null;
-    }, 2800);
+    }, 4500);
   }, []);
 
   const dismissSourceWarning = useCallback(() => {
@@ -236,10 +240,16 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     serverHandlers.onSwitchServer(index);
   }, [serverHandlers]);
 
-  // Episode transition state (idempotent, single active transition token with timeout fallback)
+  // Episode transition state — tracked with a synchronous ref so rapid clicks on DIFFERENT episodes
+  // always succeed while only duplicate double-clicks on the SAME target episode within 300ms are debounced.
   const [episodeTransition, setEpisodeTransition] = useState<EpisodeTransitionState>({
     isTransitioning: false,
     token: 0,
+  });
+  const transitionRef = useRef<{ isTransitioning: boolean; targetSlug?: string; startedAt: number }>({
+    isTransitioning: false,
+    targetSlug: undefined,
+    startedAt: 0,
   });
   const transitionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -249,6 +259,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       clearTimeout(transitionTimeoutRef.current);
       transitionTimeoutRef.current = null;
     }
+    transitionRef.current = { isTransitioning: false, targetSlug: undefined, startedAt: 0 };
     setEpisodeTransition({
       isTransitioning: false,
       token: 0,
@@ -256,33 +267,37 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   }, []);
 
   const startEpisodeTransition = useCallback((targetSlug: string) => {
-    let started = false;
-    setEpisodeTransition((prev) => {
-      if (prev.isTransitioning) {
-        started = false;
-        return prev;
-      }
-      started = true;
-      return {
-        isTransitioning: true,
-        token: Date.now(),
-        targetEpisodeSlug: targetSlug,
-      };
-    });
-
-    if (started) {
-      if (transitionTimeoutRef.current) {
-        clearTimeout(transitionTimeoutRef.current);
-      }
-      // Timeout fallback: Automatically clear transition overlay after 8 seconds
-      // so user is never stuck in infinite loading deadlock, especially in Fullscreen!
-      transitionTimeoutRef.current = setTimeout(() => {
-        console.warn("[GlobalPlayer] Episode transition timed out (8s fallback), clearing overlay...");
-        finishEpisodeTransition(true);
-      }, 8000);
+    const now = Date.now();
+    // Only ignore if the exact same episode was clicked within the last 300ms
+    if (
+      transitionRef.current.isTransitioning &&
+      transitionRef.current.targetSlug === targetSlug &&
+      now - transitionRef.current.startedAt < 300
+    ) {
+      return false;
     }
 
-    return started;
+    transitionRef.current = {
+      isTransitioning: true,
+      targetSlug,
+      startedAt: now,
+    };
+
+    setEpisodeTransition({
+      isTransitioning: true,
+      token: now,
+      targetEpisodeSlug: targetSlug,
+    });
+
+    if (transitionTimeoutRef.current) {
+      clearTimeout(transitionTimeoutRef.current);
+    }
+    // Fast safety fallback: clear transition overlay after 3.5 seconds maximum
+    transitionTimeoutRef.current = setTimeout(() => {
+      finishEpisodeTransition(true);
+    }, 3500);
+
+    return true;
   }, [finishEpisodeTransition]);
 
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
@@ -316,8 +331,6 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
 
     const onLeavePip = () => {
       setIsNativePip(false);
-      // When leaving native PiP:
-      // If was previously in mini mode, or current mode is mini: stay in mini mode!
       const wasMini =
         modeRef.current === "mini" ||
         modeBeforeHiddenRef.current === "mini";
@@ -329,8 +342,6 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         return;
       }
 
-      // If on movie detail page and was in detail mode: restore detail mode & trigger scroll
-      // If on other pages: restore mini mode if video is playing, or hidden if paused
       if (typeof window !== "undefined") {
         const curPath = window.location.pathname;
         if (session) {
@@ -354,16 +365,21 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       video.removeEventListener("enterpictureinpicture", onEnterPip);
       video.removeEventListener("leavepictureinpicture", onLeavePip);
     };
-  }, [videoElement, session]);
+  }, [videoElement, session, setMode]);
 
   const registerEpisodeHandlers = useCallback((handlers: EpisodeHandlers) => {
     setEpisodeHandlers(handlers);
   }, []);
 
   const handleTimeUpdate = useCallback((current: number, dur: number) => {
-    if (episodeTransition.isTransitioning) return;
-    setCurrentTime(current);
-    setDuration(dur);
+    if (transitionRef.current.isTransitioning) return;
+
+    const sec = Math.floor(current);
+    if (sec !== lastReportedSecondRef.current) {
+      lastReportedSecondRef.current = sec;
+      setCurrentTime(current);
+      setDuration(dur);
+    }
 
     if (session && current > 0 && Math.abs(current - lastSavedTimeRef.current) >= 5) {
       lastSavedTimeRef.current = current;
@@ -372,22 +388,28 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         name: session.movieTitle,
         thumb_url: session.poster || "",
       };
+      const epLabel = normalizeEpisodeLabel(
+        session.episodeTitle,
+        session.episodeSlug || (session.episode ? String(session.episode) : "1")
+      );
       const epData = session.episodeSlug
-        ? { slug: session.episodeSlug, name: `Tập ${session.episode || 1}` }
+        ? { slug: session.episodeSlug, name: epLabel }
         : undefined;
-      historyStore.add(movieData, epData, current, dur);
+      historyStore.add(movieData, epData, current, dur, session.season || 1);
       userSyncManager.syncHistoryAdd(movieData, epData, current, dur);
     }
-  }, [session, episodeTransition.isTransitioning]);
+  }, [session]);
 
   const handlePlayingChange = useCallback((playing: boolean) => {
     setIsPlaying(playing);
   }, []);
 
   const startPlayback = useCallback((newSession: GlobalPlayerSession) => {
+    lastReportedSecondRef.current = Math.floor(newSession.initialTime || 0);
+    setCurrentTime(newSession.initialTime || 0);
     setSession(newSession);
     setMode("detail");
-  }, []);
+  }, [setMode]);
 
   const flushCurrentEpisodeProgress = useCallback(() => {
     if (!session || !session.movieSlug || !session.episodeSlug) return;
@@ -401,15 +423,18 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         name: session.movieTitle,
         thumb_url: session.poster || "",
       };
+      const epLabel = normalizeEpisodeLabel(
+        session.episodeTitle,
+        session.episodeSlug || (session.episode ? String(session.episode) : "1")
+      );
       const epData = {
         slug: session.episodeSlug,
-        name: `Tập ${session.episode || 1}`,
+        name: epLabel,
         season: session.season || 1,
       };
       historyStore.add(movieData, epData, cur, dur, session.season || 1);
       userSyncManager.syncHistoryAdd(movieData, epData, cur, dur);
     }
-    // Pause video immediately so it stops playing the old stream and ceases firing timeupdate events
     if (v && !v.paused) {
       v.pause();
     }
@@ -426,7 +451,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       session.episodes.findIndex((e) => e.slug === session.episodeSlug);
     if (curIdx >= 0 && curIdx < session.episodes.length - 1) {
       const nextEp = session.episodes[curIdx + 1];
-      if (nextEp && nextEp.embed) {
+      if (nextEp && (nextEp.embed || nextEp.m3u8)) {
         if (!startEpisodeTransition(nextEp.slug)) return;
         flushCurrentEpisodeProgress();
         const targetResumeTime =
@@ -439,9 +464,11 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         startPlayback({
           ...session,
           episodeSlug: nextEp.slug,
+          episodeTitle: normalizeEpisodeLabel(nextEp.name, nextEp.slug),
           episode: parseInt(nextEp.name.replace(/\D/g, ""), 10) || curIdx + 2,
           currentEpisodeIndex: curIdx + 1,
-          videoUrl: nextEp.embed,
+          videoUrl: nextEp.embed || nextEp.m3u8 || "",
+          knownHlsUrl: nextEp.m3u8,
           initialTime: targetResumeTime,
           autoPlay: true,
         });
@@ -460,7 +487,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       session.episodes.findIndex((e) => e.slug === session.episodeSlug);
     if (curIdx > 0) {
       const prevEp = session.episodes[curIdx - 1];
-      if (prevEp && prevEp.embed) {
+      if (prevEp && (prevEp.embed || prevEp.m3u8)) {
         if (!startEpisodeTransition(prevEp.slug)) return;
         flushCurrentEpisodeProgress();
         const targetResumeTime =
@@ -473,9 +500,11 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         startPlayback({
           ...session,
           episodeSlug: prevEp.slug,
+          episodeTitle: normalizeEpisodeLabel(prevEp.name, prevEp.slug),
           episode: parseInt(prevEp.name.replace(/\D/g, ""), 10) || curIdx,
           currentEpisodeIndex: curIdx - 1,
-          videoUrl: prevEp.embed,
+          videoUrl: prevEp.embed || prevEp.m3u8 || "",
+          knownHlsUrl: prevEp.m3u8,
           initialTime: targetResumeTime,
           autoPlay: true,
         });
@@ -495,17 +524,12 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     setIsPlaying(false);
     setMode("hidden");
     setSession(null);
-  }, []);
+  }, [setMode]);
 
   const minimizeToMini = useCallback(() => {
     if (!session) return;
-
-    // Cross-browser ensure Fullscreen is exited when minimizing
     exitFullscreenSafely(videoRef.current);
-
     setMode("mini");
-    // If currently on the movie detail page, navigate to the movie info view without watch query param
-    // so the page displays the full movie info (STATE 1) rather than an empty player slot
     if (typeof window !== "undefined") {
       const curPath = window.location.pathname;
       const movieDetailPath = `/phim/${session.movieSlug}`;
@@ -522,15 +546,10 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       ? `/phim/${session.movieSlug}?ep=${epSlug}&watch=true`
       : `/phim/${session.movieSlug}?watch=true`;
     setMode("detail");
-    // Signal page.tsx to scroll to player once it renders in detail mode
     setExpandScrollTrigger((n) => n + 1);
     router.push(targetUrl);
   }, [session, router, setMode]);
 
-  // Page Visibility API: Auto Native PiP (Pop-up nhỏ)
-  // CHỈ kích hoạt tự động khi người dùng chuyển sang tab khác của trình duyệt hoặc thu nhỏ trình duyệt
-  // Yêu cầu video phải đang ở trạng thái playing mới tự động nhảy Pop-up nhỏ.
-  // Khi người dùng quay lại tab Cinepvq, Pop-up Nhỏ tự động đóng lại, chuyển quyền hiển thị về Pop-up Lớn (nếu đang ở trang khác) hoặc Player chính (nếu đang ở trang phim).
   useEffect(() => {
     if (typeof document === "undefined") return;
 
@@ -539,10 +558,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       if (!video || !session) return;
 
       if (document.hidden) {
-        // Record the mode before tab was hidden
         modeBeforeHiddenRef.current = modeRef.current;
-
-        // Tab hidden or browser minimized
         const isActuallyPlaying = !video.paused && !video.ended;
         if (
           isActuallyPlaying &&
@@ -556,8 +572,6 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
           }
         }
       } else {
-        // Tab visible again:
-        // 1. Close Native PiP if active
         if (document.pictureInPictureElement) {
           try {
             await document.exitPictureInPicture();
@@ -566,8 +580,6 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
           }
         }
 
-        // 2. TUYỆT ĐỐI KHÔNG ép setMode("detail") nếu state hiện tại đang là mode === "mini" (hoặc trước đó ở mini).
-        // Tôn trọng trạng thái thu nhỏ của người dùng kể cả khi đang Pause.
         const wasMini =
           modeRef.current === "mini" ||
           modeBeforeHiddenRef.current === "mini";
@@ -579,7 +591,6 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
           return;
         }
 
-        // 3. Nếu trước đó là mode detail và đang ở trang chi tiết phim thì khôi phục detail
         if (typeof window !== "undefined") {
           const curPath = window.location.pathname;
           const movieDetailPath = `/phim/${session.movieSlug}`;
@@ -603,7 +614,6 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     };
   }, [session, videoRef, setMode]);
 
-  // Route transition observer
   useEffect(() => {
     const prevPath = lastPathnameRef.current;
     lastPathnameRef.current = pathname;
@@ -615,7 +625,6 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     const wasOnMovieDetail = prevPath === movieDetailPath;
 
     if (wasOnMovieDetail && !isNowOnMovieDetail) {
-      // User navigated away from the movie detail page
       exitFullscreenSafely(videoRef.current);
       const video = videoRef.current;
       const isActuallyPlaying = video
@@ -623,10 +632,8 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         : isPlaying;
 
       if (isActuallyPlaying) {
-        // Auto Mini Player (Pop-up Lớn): Only when video is genuinely PLAYING
         setMode("mini");
       } else {
-        // Paused: Do NOT auto open Mini Player
         setMode("hidden");
       }
     }

@@ -1,6 +1,7 @@
 import { query } from "@/lib/db/client";
 import { userRepository } from "@/lib/repositories/userRepository";
 import { ensureMovieStub } from "@/lib/repositories/favoriteRepository";
+import { normalizeEpisodeLabel } from "@/lib/format";
 import type { WatchHistoryItem } from "@/types/movie";
 
 interface HistoryJoinedRow {
@@ -44,7 +45,7 @@ export const historyRepository = {
       original_name: row.original_name ?? undefined,
       thumb_url: row.thumb_url ?? "",
       episodeSlug: row.episode_slug ?? undefined,
-      episodeName: row.episode_name ?? undefined,
+      episodeName: normalizeEpisodeLabel(row.episode_name, row.episode_slug) || undefined,
       currentTime: row.last_position_seconds ?? 0,
       duration: row.duration_seconds ?? 0,
       updatedAt: row.updated_at.toISOString(),
@@ -79,18 +80,15 @@ export const historyRepository = {
     if (!movieId) return false;
 
     const epSlug = (typeof episode === "string" ? episode : episode?.slug)?.trim();
-    let epName = (typeof episode === "string" ? episode : episode?.name)?.trim();
+    const rawEpName = (typeof episode === "string" ? undefined : episode?.name)?.trim();
 
     let epNumber: number | null = null;
-    const numMatch = (epName || epSlug || "").match(/\d+/);
+    const numMatch = (rawEpName || epSlug || "").match(/\d+/);
     if (numMatch) {
       epNumber = parseInt(numMatch[0], 10);
     }
-    if (!epName && epNumber !== null) {
-      epName = `Tập ${epNumber}`;
-    } else if (!epName && epSlug) {
-      epName = epSlug;
-    }
+
+    const epName = normalizeEpisodeLabel(rawEpName, epSlug) || (epNumber !== null ? `Tập ${String(epNumber).padStart(2, "0")}` : epSlug || "Tập 01");
 
     let episodeId: string | null = null;
     if (epSlug) {
@@ -134,7 +132,7 @@ export const historyRepository = {
                  name = EXCLUDED.name,
                  episode_number = COALESCE(EXCLUDED.episode_number, episodes.episode_number)
                RETURNING id`,
-              [movieId, serverId, epName || epSlug, epSlug, epNumber]
+              [movieId, serverId, epName, epSlug, epNumber]
             );
             episodeId = newEp?.rows[0]?.id ?? null;
           }
@@ -227,7 +225,7 @@ export const historyRepository = {
             thumb_url: item.thumb_url,
           },
           item.episodeSlug
-            ? { slug: item.episodeSlug, name: item.episodeName }
+            ? { slug: item.episodeSlug, name: normalizeEpisodeLabel(item.episodeName, item.episodeSlug) }
             : undefined,
           Math.floor(item.currentTime || 0),
           Math.floor(item.duration || 0),

@@ -442,10 +442,10 @@ export default function CustomHlsPlayer({
       setIsPlaying(false);
 
       const targetSaved =
-        movieSlug && episodeSlug
-          ? episodeProgressStore.get(movieSlug, episodeSlug, season || 1) || 0
-          : typeof initialTime === "number"
+        typeof initialTime === "number"
           ? initialTime
+          : movieSlug && episodeSlug
+          ? episodeProgressStore.get(movieSlug, episodeSlug, season || 1) || 0
           : 0;
       setCurrentTime(targetSaved);
       if (videoRef.current) {
@@ -485,15 +485,15 @@ export default function CustomHlsPlayer({
     );
 
     const targetEpisodeSavedTime = wasEpisodeSwitch
-      ? (movieSlug && episodeSlug
-          ? episodeProgressStore.get(movieSlug, episodeSlug, season || 1) || 0
-          : typeof initialTime === "number"
+      ? (typeof initialTime === "number"
           ? initialTime
+          : movieSlug && episodeSlug
+          ? episodeProgressStore.get(movieSlug, episodeSlug, season || 1) || 0
           : typeof initialTimeRef.current === "number"
           ? initialTimeRef.current
           : 0)
       : isServerSwitch
-      ? (typeof initialTime === "number" && initialTime > 0
+      ? (typeof initialTime === "number"
           ? initialTime
           : (video && video.currentTime > 0 ? video.currentTime : initialTimeRef.current || 0))
       : Math.max(0, typeof initialTime === "number" ? initialTime : (initialTimeRef.current || 0));
@@ -579,21 +579,8 @@ export default function CustomHlsPlayer({
           }
         }
 
-        // Apply initial resume position for target episode/source:
-        // Forcefully apply target episode progress if transitioning/switching episodes
-        const wasEpisodeSwitch =
-          isEpisodeSwitchRef.current ||
-          Boolean(episodeSlug && prevEpisodeSlugRef.current && episodeSlug !== prevEpisodeSlugRef.current);
-
-        const targetEpisodeSavedTime = wasEpisodeSwitch
-          ? (movieSlug && episodeSlug
-              ? episodeProgressStore.get(movieSlug, episodeSlug, season || 1) || 0
-              : typeof initialTimeRef.current === "number"
-              ? initialTimeRef.current
-              : 0)
-          : Math.max(0, initialTimeRef.current || 0);
-
-        const seekTarget = Math.max(0, targetEpisodeSavedTime || 0);
+        // Apply authoritative initial resume position for target episode/source
+        const seekTarget = Math.max(0, initialTimeRef.current || 0);
         try {
           video.currentTime = seekTarget;
         } catch {}
@@ -668,19 +655,7 @@ export default function CustomHlsPlayer({
             }
           } catch {}
         }
-        const wasNativeEpisodeSwitch =
-          isEpisodeSwitchRef.current ||
-          Boolean(episodeSlug && prevEpisodeSlugRef.current && episodeSlug !== prevEpisodeSlugRef.current);
-
-        const nativeTargetEpisodeSavedTime = wasNativeEpisodeSwitch
-          ? (movieSlug && episodeSlug
-              ? episodeProgressStore.get(movieSlug, episodeSlug, season || 1) || 0
-              : typeof initialTimeRef.current === "number"
-              ? initialTimeRef.current
-              : 0)
-          : Math.max(0, initialTimeRef.current || 0);
-
-        const nativeSeekTarget = Math.max(0, nativeTargetEpisodeSavedTime || 0);
+        const nativeSeekTarget = Math.max(0, initialTimeRef.current || 0);
         try {
           video.currentTime = nativeSeekTarget;
         } catch {}
@@ -1863,31 +1838,27 @@ function getFullscreenElement(): Element | null {
 
           {/* Right: Audio Switcher, Lock, PiP, Settings, Fullscreen */}
           <div className="flex items-center gap-0.5 sm:gap-1.5 shrink-0 relative">
-            {/* Audio Track / Server Switcher Button - Beside Lock, ONLY in fullscreen and when availableServers >= 2 */}
-            {isFullscreen && availableServers && availableServers.length >= 2 && (
+            {/* Audio Track / Server Switcher Button - Available in normal & fullscreen when availableServers >= 2 */}
+            {!isMini && availableServers && availableServers.length >= 2 && (
               <button
                 ref={audioBtnRef}
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (availableServers.length === 2) {
-                    const nextIdx = activeServerIndex === 0 ? 1 : 0;
-                    onSwitchServer?.(nextIdx);
-                  } else {
-                    setShowAudioMenu((prev) => !prev);
-                    setShowSettings(false);
-                  }
+                  setShowAudioMenu((prev) => !prev);
+                  setShowSettings(false);
                 }}
-                className={`p-1 sm:p-1.5 min-h-[32px] min-w-[32px] sm:min-h-[36px] sm:min-w-[36px] rounded-lg transition-colors flex items-center justify-center cursor-pointer shrink-0 ${
+                className={`px-2 py-1 min-h-[32px] min-w-[32px] sm:min-h-[36px] rounded-lg transition-colors flex items-center gap-1 justify-center cursor-pointer shrink-0 ${
                   showAudioMenu ? "bg-white/20 text-violet-400" : "hover:bg-white/10 text-zinc-300 hover:text-white"
                 }`}
-                title={
-                  availableServers.length === 2
-                    ? `Đổi sang ${availableServers[activeServerIndex === 0 ? 1 : 0]?.name || "bản khác"}`
-                    : "Đổi bản Vietsub / Thuyết minh / Lồng tiếng"
-                }
+                title="Đổi bản Vietsub / Thuyết minh / Lồng tiếng"
                 aria-label="Đổi bản dịch âm thanh"
               >
                 <Languages className="h-4 w-4 sm:h-5 sm:w-5" />
+                <span className="hidden md:inline text-[11px] font-semibold max-w-[90px] truncate">
+                  {availableServers[activeServerIndex]?.name?.replace(/^#|\(.*?\)/g, "").trim() ||
+                    availableServers[activeServerIndex]?.name ||
+                    "Bản dịch"}
+                </span>
               </button>
             )}
 
@@ -1972,8 +1943,8 @@ function getFullscreenElement(): Element | null {
               )}
             </button>
 
-            {/* Fullscreen Audio Track Switcher Popup (≥ 3 options) */}
-            {isFullscreen && showAudioMenu && availableServers && availableServers.length >= 3 && (
+            {/* Audio Track Switcher Popup (≥ 2 options) */}
+            {!isMini && showAudioMenu && availableServers && availableServers.length >= 2 && (
               <div
                 ref={audioMenuRef}
                 onClick={(e) => e.stopPropagation()}

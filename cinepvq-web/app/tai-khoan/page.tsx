@@ -223,7 +223,16 @@ export default function AccountPage() {
           </div>
 
           {/* Action buttons */}
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            {(user.email?.toLowerCase() === "vanquyetp823@gmail.com" || user.role === "admin") && (
+              <Link
+                href="/admin"
+                className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 px-3.5 py-2 text-xs font-extrabold text-zinc-950 shadow-md shadow-amber-500/25 hover:brightness-110 transition-all"
+              >
+                <ShieldCheck className="h-3.5 w-3.5" />
+                Quản trị hệ thống
+              </Link>
+            )}
             <button
               onClick={handleOpenEdit}
               className="flex items-center gap-1.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3.5 py-2 text-xs font-semibold text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors shadow-sm"

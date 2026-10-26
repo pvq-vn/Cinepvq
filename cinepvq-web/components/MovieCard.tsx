@@ -1,5 +1,6 @@
 "use client";
 
+import React, { memo } from "react";
 import Link from "next/link";
 import { Bookmark, Heart, Play } from "lucide-react";
 import type { Movie } from "@/types/movie";
@@ -13,7 +14,7 @@ interface MovieCardProps {
   priority?: boolean;
 }
 
-export default function MovieCard({
+function MovieCardComponent({
   movie,
   variant = "default",
   rank,
@@ -48,6 +49,7 @@ export default function MovieCard({
           <img
             src={imageSrc}
             alt={movie.name}
+            decoding="async"
             className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
             loading="lazy"
           />
@@ -75,10 +77,10 @@ export default function MovieCard({
     return (
       <Link
         href={`/phim/${movie.slug}`}
-        className="group relative flex flex-col overflow-hidden rounded-xl bg-zinc-100 dark:bg-zinc-900/80 ring-1 ring-zinc-200/60 dark:ring-zinc-800/60 transition-all duration-300 hover:ring-violet-500/50 hover:shadow-xl hover:shadow-violet-500/10 hover:-translate-y-1"
+        className="group relative flex flex-col overflow-hidden rounded-xl bg-zinc-100 dark:bg-zinc-900/90 ring-1 ring-zinc-200/60 dark:ring-zinc-800/60 transition-transform duration-300 hover:ring-violet-500/50 hover:shadow-xl hover:shadow-violet-500/10 hover:-translate-y-1"
       >
         {/* Large stylized rank number */}
-        <div className="absolute top-2 left-2 z-20 flex h-9 w-9 items-center justify-center rounded-lg bg-black/75 backdrop-blur-md font-black text-lg text-amber-400 shadow-md ring-1 ring-amber-400/30">
+        <div className="absolute top-2 left-2 z-20 flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-950/90 font-black text-lg text-amber-400 shadow-md ring-1 ring-amber-400/30">
           {rank}
         </div>
 
@@ -87,6 +89,8 @@ export default function MovieCard({
           <img
             src={imageSrc}
             alt={movie.name}
+            decoding="async"
+            fetchPriority={priority ? "high" : "auto"}
             className="h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
             loading={priority ? "eager" : "lazy"}
           />
@@ -103,10 +107,10 @@ export default function MovieCard({
             <button
               onClick={handleFavoriteClick}
               aria-label={favorited ? "Xóa khỏi yêu thích" : "Thêm vào yêu thích"}
-              className={`flex h-7 w-7 items-center justify-center rounded-full backdrop-blur-md transition-all duration-200 ${
+              className={`flex h-7 w-7 items-center justify-center rounded-full transition-colors duration-200 ${
                 favorited
                   ? "bg-rose-500 text-white shadow-md shadow-rose-500/30"
-                  : "bg-black/50 text-white/80 hover:bg-black/80 hover:text-white"
+                  : "bg-zinc-950/75 text-white/85 hover:bg-zinc-950 hover:text-white"
               }`}
             >
               <Heart
@@ -117,10 +121,10 @@ export default function MovieCard({
             <button
               onClick={handleWatchlistClick}
               aria-label={inWatchlist ? "Xóa khỏi xem sau" : "Thêm vào xem sau"}
-              className={`flex h-7 w-7 items-center justify-center rounded-full backdrop-blur-md transition-all duration-200 ${
+              className={`flex h-7 w-7 items-center justify-center rounded-full transition-opacity duration-200 ${
                 inWatchlist
                   ? "bg-amber-500 text-white shadow-md shadow-amber-500/30 opacity-100"
-                  : "bg-black/50 text-white/80 hover:bg-black/80 hover:text-white md:opacity-0 md:group-hover:opacity-100"
+                  : "bg-zinc-950/75 text-white/85 hover:bg-zinc-950 hover:text-white md:opacity-0 md:group-hover:opacity-100"
               }`}
             >
               <Bookmark
@@ -132,12 +136,12 @@ export default function MovieCard({
           {/* Badges */}
           <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between text-[11px] pointer-events-none">
             {movie.quality && (
-              <span className="rounded bg-violet-600/90 px-2 py-0.5 font-bold uppercase tracking-wider text-white backdrop-blur-sm shadow-sm">
+              <span className="rounded bg-violet-600 px-2 py-0.5 font-bold uppercase tracking-wider text-white shadow-sm">
                 {movie.quality}
               </span>
             )}
             {movie.current_episode && (
-              <span className="rounded bg-black/70 px-2 py-0.5 font-medium text-white backdrop-blur-sm">
+              <span className="rounded bg-zinc-950/85 px-2 py-0.5 font-medium text-white">
                 {normalizeEpisodeLabel(movie.current_episode)}
               </span>
             )}
@@ -163,13 +167,15 @@ export default function MovieCard({
   return (
     <Link
       href={`/phim/${movie.slug}`}
-      className="group relative flex flex-col overflow-hidden rounded-xl bg-zinc-100 dark:bg-zinc-900/80 ring-1 ring-zinc-200/60 dark:ring-zinc-800/60 transition-all duration-300 hover:ring-violet-500/50 hover:shadow-xl hover:shadow-violet-500/10 hover:-translate-y-1"
+      className="group relative flex flex-col overflow-hidden rounded-xl bg-zinc-100 dark:bg-zinc-900/90 ring-1 ring-zinc-200/60 dark:ring-zinc-800/60 transition-transform duration-300 hover:ring-violet-500/50 hover:shadow-xl hover:shadow-violet-500/10 hover:-translate-y-1"
     >
       {/* Poster */}
       <div className="relative aspect-[2/3] w-full overflow-hidden bg-zinc-800">
         <img
           src={imageSrc}
           alt={movie.name}
+          decoding="async"
+          fetchPriority={priority ? "high" : "auto"}
           className="h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
           loading={priority ? "eager" : "lazy"}
         />
@@ -186,10 +192,10 @@ export default function MovieCard({
           <button
             onClick={handleFavoriteClick}
             aria-label={favorited ? "Xóa khỏi yêu thích" : "Thêm vào yêu thích"}
-            className={`flex h-7 w-7 items-center justify-center rounded-full backdrop-blur-md transition-all duration-200 ${
+            className={`flex h-7 w-7 items-center justify-center rounded-full transition-colors duration-200 ${
               favorited
                 ? "bg-rose-500 text-white shadow-md shadow-rose-500/30"
-                : "bg-black/50 text-white/80 hover:bg-black/80 hover:text-white"
+                : "bg-zinc-950/75 text-white/85 hover:bg-zinc-950 hover:text-white"
             }`}
           >
             <Heart
@@ -200,10 +206,10 @@ export default function MovieCard({
           <button
             onClick={handleWatchlistClick}
             aria-label={inWatchlist ? "Xóa khỏi xem sau" : "Thêm vào xem sau"}
-            className={`flex h-7 w-7 items-center justify-center rounded-full backdrop-blur-md transition-all duration-200 ${
+            className={`flex h-7 w-7 items-center justify-center rounded-full transition-opacity duration-200 ${
               inWatchlist
                 ? "bg-amber-500 text-white shadow-md shadow-amber-500/30 opacity-100"
-                : "bg-black/50 text-white/80 hover:bg-black/80 hover:text-white md:opacity-0 md:group-hover:opacity-100"
+                : "bg-zinc-950/75 text-white/85 hover:bg-zinc-950 hover:text-white md:opacity-0 md:group-hover:opacity-100"
             }`}
           >
             <Bookmark
@@ -212,9 +218,9 @@ export default function MovieCard({
           </button>
         </div>
 
-        {/* Top left badge (Quality or Year) */}
+        {/* Top left badge (Quality) */}
         {movie.quality && (
-          <span className="absolute top-2 left-2 rounded-md bg-violet-600/90 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white backdrop-blur-sm shadow-sm pointer-events-none">
+          <span className="absolute top-2 left-2 rounded-md bg-violet-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white shadow-sm pointer-events-none">
             {movie.quality}
           </span>
         )}
@@ -222,13 +228,13 @@ export default function MovieCard({
         {/* Bottom badges */}
         <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between text-[10px] pointer-events-none">
           {movie.year ? (
-            <span className="rounded bg-black/60 px-1.5 py-0.5 text-zinc-300 backdrop-blur-sm">
+            <span className="rounded bg-zinc-950/80 px-1.5 py-0.5 text-zinc-300">
               {movie.year}
             </span>
           ) : <span />}
 
           {movie.current_episode && (
-            <span className="rounded bg-black/70 px-2 py-0.5 font-medium text-white backdrop-blur-sm">
+            <span className="rounded bg-zinc-950/85 px-2 py-0.5 font-medium text-white">
               {normalizeEpisodeLabel(movie.current_episode)}
             </span>
           )}
@@ -249,3 +255,15 @@ export default function MovieCard({
     </Link>
   );
 }
+
+const MovieCard = memo(
+  MovieCardComponent,
+  (prev, next) =>
+    prev.movie.slug === next.movie.slug &&
+    prev.movie.current_episode === next.movie.current_episode &&
+    prev.variant === next.variant &&
+    prev.rank === next.rank &&
+    prev.priority === next.priority
+);
+
+export default MovieCard;

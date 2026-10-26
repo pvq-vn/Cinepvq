@@ -17,6 +17,7 @@ import {
   setProgressSyncListener,
 } from "@/services/userStore";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { normalizeEpisodeLabel } from "@/lib/format";
 import type {
   AppSettings,
   Movie,
@@ -44,7 +45,7 @@ let pendingProgress: {
  * Essential for mobile browsers (Safari ITP / Chrome Mobile) where third-party
  * or SSR cookies may not be reliably forwarded to Next.js route handlers.
  */
-async function getAuthHeaders(): Promise<HeadersInit> {
+export async function getAuthHeaders(): Promise<HeadersInit> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
@@ -107,7 +108,7 @@ export const userSyncManager = {
         if (res.ok) {
           const data = await res.json();
           if (data.status === "success" && data.user) {
-            if (data.user.id !== currentUser.id) {
+            if (data.user.id !== currentUser.id || data.user.role !== currentUser.role) {
               authStore.updateUser(data.user);
             }
           }
@@ -125,7 +126,6 @@ export const userSyncManager = {
 
       // Step 3: Two-way sync: Push local items (if first login migration) and pull remote items
       const localFavs = favoritesStore.getAll();
-      const localHist = historyStore.getAll();
       const localWatchlist = watchlistStore.getAll();
 
       await Promise.allSettled([
@@ -151,14 +151,17 @@ export const userSyncManager = {
           })
           .catch((err) => console.warn("[UserSync] Sync favorites failed", err)),
 
-        // Sync history: BẮT BUỘC fetch tiến độ mới nhất từ Supabase, so sánh timestamp và ghi đè local storage nếu DB mới hơn
+        // Sync history: fetch latest progress from Supabase, compare timestamp and merge
         fetch("/api/history", {
           headers: authHeaders,
         })
           .then((r) => r.json())
           .then((data) => {
             if (data.status === "success" && Array.isArray(data.history)) {
-              const remoteHistory: WatchHistoryItem[] = data.history;
+              const remoteHistory: WatchHistoryItem[] = data.history.map((r: WatchHistoryItem) => ({
+                ...r,
+                episodeName: normalizeEpisodeLabel(r.episodeName, r.episodeSlug) || r.episodeName,
+              }));
               const currentLocal = historyStore.getAll();
               const localMap = new Map<string, WatchHistoryItem>();
               currentLocal.forEach((item) => {
@@ -180,8 +183,6 @@ export const userSyncManager = {
                   : 0;
 
                 if (!local || timeRemote >= timeLocal) {
-                  // DB có dữ liệu mới hơn hoặc bằng (hoặc thiết bị này chưa có):
-                  // GHI ĐÈ local storage (cả historyStore lẫn episodeProgressStore)
                   mergedMap.set(remote.slug, remote);
 
                   if (remote.episodeSlug && typeof remote.currentTime === "number") {
@@ -196,8 +197,6 @@ export const userSyncManager = {
                     );
                   }
                 } else {
-                  // Dữ liệu local trên máy này mới hơn hẳn DB (xem offline hoặc vừa xem):
-                  // Giữ local và chuẩn bị đẩy lên DB
                   mergedMap.set(remote.slug, local);
                   itemsToPush.push(local);
                 }
@@ -326,7 +325,7 @@ export const userSyncManager = {
 
   async syncFavoriteToggle(movie: Movie | MovieDetail | FavoriteMovie, isAdded: boolean) {
     const user = authStore.getUser();
-    if (!user) return; // Keep purely local if not logged in
+    if (!user) return;
 
     try {
       const authHeaders = await getAuthHeaders();
@@ -409,12 +408,18 @@ export const userSyncManager = {
 
     try {
       const authHeaders = await getAuthHeaders();
+      const normalizedEpisode = episode
+        ? {
+            slug: episode.slug,
+            name: normalizeEpisodeLabel(episode.name, episode.slug),
+          }
+        : undefined;
       await fetch("/api/history", {
         method: "POST",
         headers: authHeaders,
         body: JSON.stringify({
           movie,
-          episode,
+          episode: normalizedEpisode,
           position: typeof position === "number" ? Math.floor(position) : 0,
           duration: typeof duration === "number" ? Math.floor(duration) : 0,
           updatedAt: new Date().toISOString(),
@@ -617,6 +622,13 @@ export const userSyncManager = {
       pendingProgress = null;
       try {
         const authHeaders = await getAuthHeaders();
+        const existingHist = historyStore.getAll().find((h) => h.slug === target.movieSlug);
+        const epLabel = normalizeEpisodeLabel(
+          existingHist && existingHist.episodeSlug === target.episodeSlug
+            ? existingHist.episodeName
+            : undefined,
+          target.episodeSlug
+        );
         await fetch("/api/history", {
           method: "POST",
           headers: authHeaders,
@@ -624,6 +636,7 @@ export const userSyncManager = {
             action: "upsert",
             movieSlug: target.movieSlug,
             episodeSlug: target.episodeSlug,
+            episodeName: epLabel,
             position: target.currentTime,
             duration: target.duration,
             updatedAt: target.updatedAt,
@@ -642,4 +655,3 @@ if (typeof window !== "undefined") {
     userSyncManager.debouncedSyncProgress.bind(userSyncManager)
   );
 }
-

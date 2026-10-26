@@ -19,8 +19,10 @@ import {
   Heart,
   History,
   User,
+  ShieldCheck,
 } from "lucide-react";
 import { GENRES, COUNTRIES } from "@/lib/taxonomy";
+import { useUserStore } from "@/hooks/useUserStore";
 import SearchModal from "@/components/SearchModal";
 import NotificationDropdown from "@/components/NotificationDropdown";
 import UserMenu from "@/components/UserMenu";
@@ -30,6 +32,12 @@ const emptySubscribe = () => () => {};
 
 export default function Navbar() {
   const pathname = usePathname();
+  const { user, mounted: userMounted } = useUserStore();
+  const isAdmin = Boolean(
+    userMounted &&
+      user &&
+      (user.email?.toLowerCase() === "vanquyetp823@gmail.com" || user.role === "admin")
+  );
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [searchModalOpen, setSearchModalOpen] = useState(false);
@@ -72,9 +80,12 @@ export default function Navbar() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  // Track scroll for backdrop blur styling
+  // Track scroll for backdrop blur styling without redundant state updates
   useEffect(() => {
-    const handleScroll = () => setScrolled(window.scrollY > 15);
+    const handleScroll = () => {
+      const next = window.scrollY > 15;
+      setScrolled((prev) => (prev !== next ? next : prev));
+    };
     window.addEventListener("scroll", handleScroll, { passive: true });
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
@@ -263,7 +274,7 @@ export default function Navbar() {
               <Link
                 href="/thinh-hanh"
                 className={`
-                  flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-lg transition-all duration-200
+                  flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-lg transition-colors duration-200
                   ${
                     pathname === "/thinh-hanh"
                       ? "bg-amber-500/15 text-amber-500 dark:text-amber-400 font-extrabold"
@@ -276,6 +287,26 @@ export default function Navbar() {
                 <Flame className="h-3.5 w-3.5 fill-current" />
                 Thịnh hành
               </Link>
+
+              {/* ── Quản trị Link (Only visible to Admin vanquyetp823@gmail.com) ── */}
+              {isAdmin && (
+                <Link
+                  href="/admin"
+                  className={`
+                    flex items-center gap-1 px-3 py-1.5 text-xs font-extrabold rounded-lg transition-colors duration-200
+                    ${
+                      pathname.startsWith("/admin")
+                        ? "bg-emerald-500/20 text-emerald-500 dark:text-emerald-400 ring-1 ring-emerald-500/40"
+                        : scrolled
+                          ? "text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10"
+                          : "text-emerald-400 hover:bg-white/10"
+                    }
+                  `}
+                >
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  Quản trị
+                </Link>
+              )}
             </nav>
 
             {/* ── Right action buttons ── */}
@@ -415,6 +446,16 @@ export default function Navbar() {
                 <Flame className="h-4 w-4 fill-current" />
                 Bảng xếp hạng Thịnh hành
               </Link>
+              {isAdmin && (
+                <Link
+                  href="/admin"
+                  onClick={() => setMobileOpen(false)}
+                  className="col-span-2 px-3 py-2 text-xs font-extrabold rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 flex items-center gap-1.5"
+                >
+                  <ShieldCheck className="h-4 w-4" />
+                  Bảng Quản Trị Hệ Thống (Admin)
+                </Link>
+              )}
             </div>
 
             {/* Quick Genres */}

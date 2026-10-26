@@ -10,6 +10,7 @@ import {
   Settings,
   LogOut,
   LogIn,
+  ShieldCheck,
 } from "lucide-react";
 import { useUserStore } from "@/hooks/useUserStore";
 
@@ -82,6 +83,16 @@ export default function UserMenu() {
 
           {/* Menu items */}
           <div className="p-1.5 space-y-0.5">
+            {(user.email?.toLowerCase() === "vanquyetp823@gmail.com" || user.role === "admin") && (
+              <Link
+                href="/admin"
+                onClick={() => setIsOpen(false)}
+                className="flex items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-extrabold text-amber-600 dark:text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 transition-colors mb-1"
+              >
+                <ShieldCheck className="h-4 w-4 text-amber-500" />
+                <span>Quản trị hệ thống</span>
+              </Link>
+            )}
             <Link
               href="/tai-khoan"
               onClick={() => setIsOpen(false)}

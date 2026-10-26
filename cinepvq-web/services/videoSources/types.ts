@@ -28,6 +28,7 @@ export interface ResolveSourceOptions {
   episode?: number;
   type?: "movie" | "series";
   nguoncEmbedUrl?: string;
+  knownHlsUrl?: string;
   serverName?: string;
   episodeSlug?: string;
 }

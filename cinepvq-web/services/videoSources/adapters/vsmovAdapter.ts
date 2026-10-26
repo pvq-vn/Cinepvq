@@ -1,12 +1,13 @@
 // ==============================================================================
 // services/videoSources/adapters/vsmovAdapter.ts
 // Fallback 1 Video Source Adapter: VSMOV Embed Iframe
+// Enforces strict audio-track matching when Thuyết Minh / Lồng Tiếng is requested
 // ==============================================================================
 
 import type { VideoSourceAdapter, ResolveSourceOptions, ResolvedSource } from "../types";
 
 const VSMOV_BASE = "https://vsmov.com/api";
-const TIMEOUT_MS = 8000;
+const TIMEOUT_MS = 3000;
 
 interface VsmovEpisodeItem {
   name: string;
@@ -32,6 +33,28 @@ interface VsmovMovieData {
   episodes?: VsmovEpisodeGroup[];
 }
 
+function matchTitle(candidateName: string, targetTitle: string, season = 1): boolean {
+  const norm = (s: string) =>
+    s
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[()\-:,._]/g, " ")
+      .replace(/\b(phan|season)\s*(\d+)\b/g, (_m, _g1, g2) => ` ${g2} `)
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const t = norm(targetTitle);
+  const parts = candidateName.split("/").map((p) => norm(p));
+  if (parts.some((p) => p === t)) return true;
+
+  if (!/\d+$/.test(t)) {
+    const seasonVariant = norm(`${targetTitle} ${season}`);
+    if (parts.some((p) => p === seasonVariant)) return true;
+  }
+  return false;
+}
+
 export class VsmovAdapter implements VideoSourceAdapter {
   readonly sourceId = "vsmov" as const;
   readonly name = "VSMOV Embed (Dự Phòng 1)";
@@ -49,7 +72,6 @@ export class VsmovAdapter implements VideoSourceAdapter {
 
     let movieData: VsmovMovieData | null = null;
 
-    // 1. Try direct slug lookup
     if (slug) {
       const cleanSlug = slug.trim().toLowerCase();
       const controller = new AbortController();
@@ -71,7 +93,6 @@ export class VsmovAdapter implements VideoSourceAdapter {
       }
     }
 
-    // 2. Try title search if slug lookup didn't yield movie
     if (!movieData && title) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -85,42 +106,27 @@ export class VsmovAdapter implements VideoSourceAdapter {
           const sData = await res.json();
           const items: Array<{ name: string; slug: string }> = sData.items || [];
           if (items.length > 0) {
-function matchTitle(candidateName: string, targetTitle: string, season = 1): boolean {
-  const norm = (s: string) =>
-    s
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[()\-:,._]/g, " ")
-      .replace(/\b(phan|season)\s*(\d+)\b/g, (_m, _g1, g2) => ` ${g2} `)
-      .replace(/\s+/g, " ")
-      .trim();
-
-  const t = norm(targetTitle);
-  const parts = candidateName.split("/").map((p) => norm(p));
-  if (parts.some((p) => p === t)) return true;
-
-  // If targetTitle has no trailing number, test with season
-  if (!/\d+$/.test(t)) {
-    const seasonVariant = norm(`${targetTitle} ${season}`);
-    if (parts.some((p) => p === seasonVariant)) return true;
-  }
-  return false;
-}
-
             const matched =
               items.find((i) => i.slug === slug) ||
               items.find((i) => matchTitle(i.name || "", title, options.season || 1));
 
             if (matched) {
-              const detailRes = await fetch(`${VSMOV_BASE}/phim/${matched.slug}`, {
-                headers,
-              });
-              if (detailRes.ok) {
-                const d: VsmovMovieData = await detailRes.json();
-                if (d.status && d.movie && d.episodes && d.episodes.length > 0) {
-                  movieData = d;
+              const detailController = new AbortController();
+              const detailTimer = setTimeout(() => detailController.abort(), TIMEOUT_MS);
+              try {
+                const detailRes = await fetch(`${VSMOV_BASE}/phim/${matched.slug}`, {
+                  headers,
+                  signal: detailController.signal,
+                });
+                clearTimeout(detailTimer);
+                if (detailRes.ok) {
+                  const d: VsmovMovieData = await detailRes.json();
+                  if (d.status && d.movie && d.episodes && d.episodes.length > 0) {
+                    movieData = d;
+                  }
                 }
+              } catch {
+                clearTimeout(detailTimer);
               }
             }
           }
@@ -135,36 +141,32 @@ function matchTitle(candidateName: string, targetTitle: string, season = 1): boo
     }
 
     const reqServer = (options.serverName || "").toLowerCase();
-    const isTM = /thuy[eế]t\s*minh|\btm\b/.test(reqServer);
-    const isLT = /l[oồ]ng\s*ti[eế]ng/.test(reqServer);
-    const isVS = /vietsub/.test(reqServer);
+    const isTM = /thuy[eế]t\s*minh|\btm\b/i.test(reqServer);
+    const isLT = /l[oồ]ng\s*ti[eế]ng/i.test(reqServer);
+    const isVS = /vietsub/i.test(reqServer);
 
-    // Sort episode groups to prioritize matching requested audio track
-    const sortedGroups = [...movieData.episodes].sort((a, b) => {
-      const aName = (a.server_name || "").toLowerCase();
-      const bName = (b.server_name || "").toLowerCase();
+    // Filter groups strictly when a specific translation is requested
+    let candidateGroups = movieData.episodes;
+    if (isTM) {
+      candidateGroups = movieData.episodes.filter((g) =>
+        /thuy[eế]t\s*minh|\btm\b/i.test(g.server_name || "")
+      );
+      if (candidateGroups.length === 0) return null;
+    } else if (isLT) {
+      candidateGroups = movieData.episodes.filter((g) =>
+        /l[oồ]ng\s*ti[eế]ng/i.test(g.server_name || "")
+      );
+      if (candidateGroups.length === 0) return null;
+    } else if (isVS) {
+      const vsGroups = movieData.episodes.filter(
+        (g) =>
+          /vietsub/i.test(g.server_name || "") ||
+          !/thuy[eế]t\s*minh|\btm\b|l[oồ]ng\s*ti[eế]ng/i.test(g.server_name || "")
+      );
+      if (vsGroups.length > 0) candidateGroups = vsGroups;
+    }
 
-      if (isTM) {
-        const aMatch = /thuy[eế]t\s*minh|\btm\b/.test(aName);
-        const bMatch = /thuy[eế]t\s*minh|\btm\b/.test(bName);
-        if (aMatch && !bMatch) return -1;
-        if (!aMatch && bMatch) return 1;
-      } else if (isLT) {
-        const aMatch = /l[oồ]ng\s*ti[eế]ng/.test(aName);
-        const bMatch = /l[oồ]ng\s*ti[eế]ng/.test(bName);
-        if (aMatch && !bMatch) return -1;
-        if (!aMatch && bMatch) return 1;
-      } else if (isVS) {
-        const aMatch = /vietsub/.test(aName);
-        const bMatch = /vietsub/.test(bName);
-        if (aMatch && !bMatch) return -1;
-        if (!aMatch && bMatch) return 1;
-      }
-      return 0;
-    });
-
-    // Match requested episode number
-    for (const group of sortedGroups) {
+    for (const group of candidateGroups) {
       const epItems = group.server_data || [];
       const ep = epItems.find((item) => {
         if (options.episodeSlug && item.slug.toLowerCase() === options.episodeSlug.toLowerCase()) {
@@ -183,20 +185,21 @@ function matchTitle(candidateName: string, targetTitle: string, season = 1): boo
         return num === episode;
       });
 
-      if (ep && ep.link_embed) {
+      if (ep && (ep.link_m3u8 || ep.link_embed)) {
         const groupIsTM = /thuy[eế]t\s*minh|\btm\b/i.test(group.server_name || "");
         const groupIsLT = /l[oồ]ng\s*ti[eế]ng/i.test(group.server_name || "");
+        const hasM3u8 = Boolean(ep.link_m3u8 && ep.link_m3u8.includes(".m3u8"));
 
         return {
           sourceId: this.sourceId,
-          name: this.name,
+          name: hasM3u8 ? "VSMOV Direct HLS (Dự Phòng 1)" : this.name,
           displayName: groupIsTM
             ? "VSMOV (Thuyết Minh)"
             : groupIsLT
             ? "VSMOV (Lồng Tiếng)"
             : "VSMOV",
-          type: "iframe",
-          url: ep.link_embed,
+          type: hasM3u8 ? "hls" : "iframe",
+          url: hasM3u8 ? ep.link_m3u8! : ep.link_embed!,
           priority: this.priority,
           quality: movieData.movie?.quality || "HD",
           serverName: group.server_name?.trim() || "VSMOV Server",

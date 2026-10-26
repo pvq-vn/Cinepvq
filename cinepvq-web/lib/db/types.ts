@@ -45,6 +45,14 @@ export interface MovieRow {
   metadata_status: "pending" | "ready" | "enriching" | "failed";
   ai_enriched: boolean;
   ai_enriched_at: Date | null;
+  tmdb_id?: string | null;
+  imdb_id?: string | null;
+  douban_id?: string | null;
+  cast_data?: unknown;
+  is_featured?: boolean;
+  is_hidden?: boolean;
+  pinned_rank?: number | null;
+  internal_views?: number | string;
   created_at: Date;
   updated_at: Date;
 }
@@ -180,11 +188,13 @@ export function mapMovieRowToDetail(
 }
 
 export function mapUserRowToProfile(row: UserRow): UserProfile {
+  const isSoleAdmin = row.email?.toLowerCase() === "vanquyetp823@gmail.com";
   return {
     id: row.id,
     email: row.email,
     username: row.username,
     avatarUrl: row.avatar_url ?? undefined,
+    role: isSoleAdmin ? "admin" : (row.role || "user"),
     createdAt: row.created_at.toISOString(),
   };
 }

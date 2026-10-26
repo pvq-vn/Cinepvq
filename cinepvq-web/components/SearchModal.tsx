@@ -14,10 +14,19 @@ import {
   SlidersHorizontal,
   Sparkles,
   RotateCcw,
+  Users,
 } from "lucide-react";
 import { searchMovies } from "@/services/api";
 import { GENRES, COUNTRIES } from "@/lib/taxonomy";
+import { normalizeEpisodeLabel } from "@/lib/format";
 import type { Movie } from "@/types/movie";
+
+interface ActorSearchHit {
+  name: string;
+  role: string;
+  movieCount: number;
+  samplePoster?: string;
+}
 
 const RECENT_SEARCHES_KEY = "cinepvq_recent_searches";
 const MAX_RECENT_SEARCHES = 10;
@@ -68,6 +77,7 @@ export default function SearchModal({ isOpen, onClose }: SearchModalProps) {
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Movie[]>([]);
+  const [actorResults, setActorResults] = useState<ActorSearchHit[]>([]);
   const [loading, setLoading] = useState(false);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [showAdvancedFilter, setShowAdvancedFilter] = useState(false);
@@ -117,6 +127,7 @@ export default function SearchModal({ isOpen, onClose }: SearchModalProps) {
   const handleClose = useCallback(() => {
     setQuery("");
     setResults([]);
+    setActorResults([]);
     onClose();
   }, [onClose]);
 
@@ -139,23 +150,50 @@ export default function SearchModal({ isOpen, onClose }: SearchModalProps) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isOpen, handleClose]);
 
-  // Debounced search
+  // Debounced search (Movies + Actors in parallel)
   useEffect(() => {
     const trimmed = query.trim();
     if (!trimmed) {
       setResults([]);
+      setActorResults([]);
       setLoading(false);
       return;
     }
 
     const timer = setTimeout(() => {
       setLoading(true);
-      searchMovies(trimmed, 1)
-        .then((res) => {
-          setResults(res.data.items?.slice(0, 6) ?? []);
+      Promise.allSettled([
+        searchMovies(trimmed, 1),
+        fetch(`/api/actors?q=${encodeURIComponent(trimmed)}`).then((r) => r.json()),
+      ])
+        .then(([moviesRes, actorsRes]) => {
+          const directMovies =
+            moviesRes.status === "fulfilled"
+              ? moviesRes.value.data.items?.slice(0, 6) ?? []
+              : [];
+          const actorData =
+            actorsRes.status === "fulfilled" && actorsRes.value?.status
+              ? actorsRes.value
+              : null;
+
+          setActorResults(actorData?.actors?.slice(0, 5) ?? []);
+
+          // Merge actor filmography movies if direct title search had fewer hits
+          const combined = [...directMovies];
+          const seen = new Set(combined.map((m) => m.slug));
+          if (Array.isArray(actorData?.movies)) {
+            for (const m of actorData.movies) {
+              if (!seen.has(m.slug) && combined.length < 6) {
+                seen.add(m.slug);
+                combined.push(m);
+              }
+            }
+          }
+          setResults(combined);
         })
         .catch(() => {
           setResults([]);
+          setActorResults([]);
         })
         .finally(() => {
           setLoading(false);
@@ -219,6 +257,7 @@ export default function SearchModal({ isOpen, onClose }: SearchModalProps) {
 
   const hasQuery = Boolean(query.trim());
   const displayResults = hasQuery ? results : [];
+  const displayActors = hasQuery ? actorResults : [];
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-12 sm:pt-20 px-3 sm:px-4">
@@ -253,6 +292,7 @@ export default function SearchModal({ isOpen, onClose }: SearchModalProps) {
               onClick={() => {
                 setQuery("");
                 setResults([]);
+                setActorResults([]);
               }}
               className="p-1 mr-1 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
               title="Xóa chữ"
@@ -411,42 +451,76 @@ export default function SearchModal({ isOpen, onClose }: SearchModalProps) {
 
         {/* Scrollable Content (Results / History / Filters / Suggestions) */}
         <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-4">
-          {hasQuery && displayResults.length > 0 ? (
-            <div className="space-y-1">
-              {displayResults.map((movie) => (
-                <Link
-                  key={movie.slug}
-                  href={`/phim/${movie.slug}`}
-                  onClick={() => {
-                    saveRecentSearch(query);
-                    handleClose();
-                  }}
-                  className="flex items-center gap-3.5 rounded-xl p-2.5 hover:bg-zinc-100 dark:hover:bg-zinc-800/80 transition-colors"
-                >
-                  <img
-                    src={movie.thumb_url || movie.poster_url}
-                    alt={movie.name}
-                    className="h-14 w-10 object-cover rounded-md bg-zinc-800 flex-shrink-0 shadow-sm"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <h4 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 truncate">
-                      {movie.name}
-                    </h4>
-                    {movie.original_name && (
-                      <p className="text-xs text-zinc-500 dark:text-zinc-400 truncate">
-                        {movie.original_name}
-                      </p>
-                    )}
-                    <div className="mt-1 flex items-center gap-2 text-[11px] text-zinc-400">
-                      {movie.year && <span>{movie.year}</span>}
-                      {movie.quality && <span>• {movie.quality}</span>}
-                      {movie.current_episode && (
-                        <span>• {movie.current_episode}</span>
-                      )}
-                    </div>
+          {hasQuery && (displayResults.length > 0 || displayActors.length > 0) ? (
+            <div className="space-y-3">
+              {/* Actor & Director matches */}
+              {displayActors.length > 0 && (
+                <div className="space-y-2 pb-2 border-b border-zinc-100 dark:border-zinc-800">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-violet-600 dark:text-violet-400 px-1">
+                    <Users className="h-3.5 w-3.5" />
+                    <span>Diễn viên & Đạo diễn</span>
                   </div>
-                </Link>
-              ))}
+                  <div className="flex flex-wrap gap-2">
+                    {displayActors.map((actor) => (
+                      <Link
+                        key={actor.name}
+                        href={`/dien-vien/${encodeURIComponent(actor.name)}`}
+                        onClick={() => {
+                          saveRecentSearch(actor.name);
+                          handleClose();
+                        }}
+                        className="flex items-center gap-2 rounded-xl bg-violet-500/10 hover:bg-violet-600 hover:text-white px-3 py-1.5 text-xs font-semibold text-violet-700 dark:text-violet-300 border border-violet-500/20 transition-all"
+                      >
+                        <span className="h-5 w-5 rounded-full bg-violet-600 text-white flex items-center justify-center text-[10px] font-bold">
+                          {actor.name.charAt(0).toUpperCase()}
+                        </span>
+                        <span>{actor.name}</span>
+                        <span className="text-[10px] opacity-75">
+                          ({actor.movieCount} phim)
+                        </span>
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Movie results */}
+              <div className="space-y-1">
+                {displayResults.map((movie) => (
+                  <Link
+                    key={movie.slug}
+                    href={`/phim/${movie.slug}`}
+                    onClick={() => {
+                      saveRecentSearch(query);
+                      handleClose();
+                    }}
+                    className="flex items-center gap-3.5 rounded-xl p-2.5 hover:bg-zinc-100 dark:hover:bg-zinc-800/80 transition-colors"
+                  >
+                    <img
+                      src={movie.thumb_url || movie.poster_url}
+                      alt={movie.name}
+                      className="h-14 w-10 object-cover rounded-md bg-zinc-800 flex-shrink-0 shadow-sm"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 truncate">
+                        {movie.name}
+                      </h4>
+                      {movie.original_name && (
+                        <p className="text-xs text-zinc-500 dark:text-zinc-400 truncate">
+                          {movie.original_name}
+                        </p>
+                      )}
+                      <div className="mt-1 flex items-center gap-2 text-[11px] text-zinc-400">
+                        {movie.year && <span>{movie.year}</span>}
+                        {movie.quality && <span>• {movie.quality}</span>}
+                        {movie.current_episode && (
+                          <span>• {normalizeEpisodeLabel(movie.current_episode)}</span>
+                        )}
+                      </div>
+                    </div>
+                  </Link>
+                ))}
+              </div>
 
               {/* View all button */}
               <button

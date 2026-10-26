@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Play, Info, ChevronLeft, ChevronRight, Heart } from "lucide-react";
 import type { Movie } from "@/types/movie";
 import { useUserStore } from "@/hooks/useUserStore";
+import { normalizeEpisodeLabel } from "@/lib/format";
 
 interface HeroCarouselProps {
   movies: Movie[];
@@ -40,8 +41,9 @@ export default function HeroCarousel({ movies }: HeroCarouselProps) {
 
   if (!featured || featured.length === 0) return null;
 
-  const currentMovie = featured[currentIndex];
+  const currentMovie = featured[currentIndex] || featured[0];
   const favorited = mounted && isFavorite(currentMovie.slug);
+  const bgImage = currentMovie.poster_url || currentMovie.thumb_url;
 
   return (
     <div
@@ -49,33 +51,21 @@ export default function HeroCarousel({ movies }: HeroCarouselProps) {
       onMouseEnter={() => setIsPaused(true)}
       onMouseLeave={() => setIsPaused(false)}
     >
-      {/* Background Slides with crossfade */}
-      {featured.map((movie, index) => {
-        const isActive = index === currentIndex;
-        const bgImage = movie.poster_url || movie.thumb_url;
+      {/* Active Background Slide Only (eliminates 6 simultaneous full-screen compositor layers) */}
+      <div className="absolute inset-0 z-10">
+        <img
+          key={currentMovie.slug}
+          src={bgImage}
+          alt={currentMovie.name}
+          fetchPriority="high"
+          decoding="async"
+          className="h-full w-full object-cover object-center animate-in fade-in duration-700"
+        />
 
-        return (
-          <div
-            key={movie.slug}
-            className={`absolute inset-0 transition-opacity duration-1000 ease-in-out ${
-              isActive ? "opacity-100 z-10" : "opacity-0 z-0 pointer-events-none"
-            }`}
-          >
-            {/* Background image */}
-            <img
-              src={bgImage}
-              alt={movie.name}
-              className="h-full w-full object-cover object-center transform scale-105 transition-transform duration-10000 ease-out"
-              loading={index === 0 ? "eager" : "lazy"}
-            />
-
-            {/* Gradient Overlays for Cinematic Readability */}
-            <div className="absolute inset-0 bg-gradient-to-r from-zinc-950 via-zinc-950/70 to-transparent" />
-            <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/30 to-zinc-950/40" />
-            <div className="absolute inset-0 bg-radial-gradient from-transparent via-zinc-950/30 to-zinc-950/80" />
-          </div>
-        );
-      })}
+        {/* Gradient Overlays for Cinematic Readability */}
+        <div className="absolute inset-0 bg-gradient-to-r from-zinc-950 via-zinc-950/70 to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/30 to-zinc-950/40" />
+      </div>
 
       {/* Content Overlay */}
       <div className="relative z-20 mx-auto max-w-7xl h-full flex flex-col justify-end px-4 sm:px-6 lg:px-8 pb-16 sm:pb-20">
@@ -88,17 +78,17 @@ export default function HeroCarousel({ movies }: HeroCarouselProps) {
               </span>
             )}
             {currentMovie.current_episode && (
-              <span className="rounded-md bg-white/15 backdrop-blur-md px-2.5 py-1 text-zinc-200">
-                {currentMovie.current_episode}
+              <span className="rounded-md bg-zinc-900/85 px-2.5 py-1 text-zinc-200 border border-white/10">
+                {normalizeEpisodeLabel(currentMovie.current_episode)}
               </span>
             )}
             {currentMovie.year && (
-              <span className="rounded-md bg-black/40 backdrop-blur-md px-2.5 py-1 text-zinc-300">
+              <span className="rounded-md bg-zinc-900/80 px-2.5 py-1 text-zinc-300 border border-white/10">
                 {currentMovie.year}
               </span>
             )}
             {currentMovie.time && (
-              <span className="rounded-md bg-black/40 backdrop-blur-md px-2.5 py-1 text-zinc-300">
+              <span className="rounded-md bg-zinc-900/80 px-2.5 py-1 text-zinc-300 border border-white/10">
                 ⏱ {currentMovie.time}
               </span>
             )}
@@ -118,7 +108,7 @@ export default function HeroCarousel({ movies }: HeroCarouselProps) {
 
           {/* Short Synopsis */}
           {currentMovie.description && (
-            <p className="text-xs sm:text-sm text-zinc-300 line-clamp-3 leading-relaxed max-w-xl text-shadow-sm">
+            <p className="text-xs sm:text-sm text-zinc-300 line-clamp-3 leading-relaxed max-w-xl">
               {currentMovie.description.replace(/<[^>]*>?/gm, "")}
             </p>
           )}
@@ -127,7 +117,7 @@ export default function HeroCarousel({ movies }: HeroCarouselProps) {
           <div className="pt-2 flex flex-wrap items-center gap-3 sm:gap-4">
             <Link
               href={`/phim/${currentMovie.slug}`}
-              className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-6 py-3 text-sm sm:text-base font-bold text-white shadow-lg shadow-violet-600/40 hover:bg-violet-500 active:scale-95 transition-all duration-200"
+              className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-6 py-3 text-sm sm:text-base font-bold text-white shadow-lg shadow-violet-600/40 hover:bg-violet-500 active:scale-95 transition-colors duration-200"
             >
               <Play className="h-5 w-5 fill-current" />
               Xem ngay
@@ -135,7 +125,7 @@ export default function HeroCarousel({ movies }: HeroCarouselProps) {
 
             <Link
               href={`/phim/${currentMovie.slug}`}
-              className="inline-flex items-center gap-2 rounded-xl bg-white/10 hover:bg-white/20 backdrop-blur-md px-5 py-3 text-sm sm:text-base font-semibold text-white active:scale-95 transition-all duration-200"
+              className="inline-flex items-center gap-2 rounded-xl bg-zinc-900/85 hover:bg-zinc-800 px-5 py-3 text-sm sm:text-base font-semibold text-white border border-white/15 active:scale-95 transition-colors duration-200"
             >
               <Info className="h-5 w-5" />
               Chi tiết
@@ -144,10 +134,10 @@ export default function HeroCarousel({ movies }: HeroCarouselProps) {
             <button
               onClick={() => toggleFavorite(currentMovie)}
               aria-label={favorited ? "Xóa khỏi yêu thích" : "Lưu vào yêu thích"}
-              className={`inline-flex items-center justify-center h-12 w-12 rounded-xl backdrop-blur-md transition-all duration-200 ${
+              className={`inline-flex items-center justify-center h-12 w-12 rounded-xl border border-white/15 transition-colors duration-200 ${
                 favorited
                   ? "bg-rose-600 text-white shadow-lg shadow-rose-600/30"
-                  : "bg-white/10 text-white hover:bg-white/20"
+                  : "bg-zinc-900/85 text-white hover:bg-zinc-800"
               }`}
             >
               <Heart className={`h-5 w-5 ${favorited ? "fill-current" : ""}`} />
@@ -161,14 +151,14 @@ export default function HeroCarousel({ movies }: HeroCarouselProps) {
         <button
           onClick={prevSlide}
           aria-label="Phim trước"
-          className="flex h-10 w-10 items-center justify-center rounded-full bg-black/40 text-white/80 backdrop-blur-md hover:bg-violet-600 hover:text-white transition-all duration-200"
+          className="flex h-10 w-10 items-center justify-center rounded-full bg-zinc-950/80 text-white/85 border border-white/10 hover:bg-violet-600 hover:text-white transition-colors duration-200"
         >
           <ChevronLeft className="h-5 w-5" />
         </button>
         <button
           onClick={nextSlide}
           aria-label="Phim sau"
-          className="flex h-10 w-10 items-center justify-center rounded-full bg-black/40 text-white/80 backdrop-blur-md hover:bg-violet-600 hover:text-white transition-all duration-200"
+          className="flex h-10 w-10 items-center justify-center rounded-full bg-zinc-950/80 text-white/85 border border-white/10 hover:bg-violet-600 hover:text-white transition-colors duration-200"
         >
           <ChevronRight className="h-5 w-5" />
         </button>

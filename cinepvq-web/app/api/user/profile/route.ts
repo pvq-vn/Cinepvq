@@ -34,6 +34,7 @@ export async function GET(request: NextRequest) {
   }
 
   if (!profile) {
+    const emailLower = (authUser.email || "").toLowerCase();
     profile = {
       id: userId,
       email: authUser.email || "",
@@ -43,8 +44,11 @@ export async function GET(request: NextRequest) {
         authUser.email?.split("@")[0] ||
         "User",
       avatarUrl: authUser.user_metadata?.avatar_url,
+      role: emailLower === "vanquyetp823@gmail.com" ? "admin" : "user",
       createdAt: authUser.created_at,
     };
+  } else if (profile.email.toLowerCase() === "vanquyetp823@gmail.com") {
+    profile.role = "admin";
   }
 
   return NextResponse.json({

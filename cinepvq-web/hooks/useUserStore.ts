@@ -41,6 +41,10 @@ function subscribe(callback: () => void) {
 
 const emptySubscribe = () => () => {};
 
+// Singleton guard so mounting 200 MovieCards does not invoke userSyncManager.sync() 200 times
+let lastSyncedUserEmail: string | null = null;
+let lastSyncTimestamp = 0;
+
 export function useUserStore() {
   // Subscribe to version changes in store
   useSyncExternalStore(subscribe, () => version, () => 0);
@@ -66,10 +70,17 @@ export function useUserStore() {
         preferredQuality: "auto",
       };
 
-  // Background sync on mount and when user session is active
+  // Background sync on mount and when user session is active (deduplicated globally)
   useEffect(() => {
     if (mounted && user?.email) {
-      userSyncManager.sync();
+      const now = Date.now();
+      if (lastSyncedUserEmail !== user.email || now - lastSyncTimestamp > 30_000) {
+        lastSyncedUserEmail = user.email;
+        lastSyncTimestamp = now;
+        userSyncManager.sync();
+      }
+    } else if (mounted && !user?.email) {
+      lastSyncedUserEmail = null;
     }
   }, [mounted, user?.email]);
 
@@ -166,7 +177,8 @@ export function useUserStore() {
   const login = useCallback(async (email: string, password?: string) => {
     const u = await authStore.login(email, password);
     notify();
-    // Trigger immediate background sync for the new session
+    lastSyncedUserEmail = u.email;
+    lastSyncTimestamp = Date.now();
     setTimeout(() => userSyncManager.sync(), 100);
     return u;
   }, []);
@@ -175,6 +187,8 @@ export function useUserStore() {
     async (email: string, password: string, username?: string) => {
       const u = await authStore.register(email, password, username);
       notify();
+      lastSyncedUserEmail = u.email;
+      lastSyncTimestamp = Date.now();
       setTimeout(() => userSyncManager.sync(), 100);
       return u;
     },
@@ -182,6 +196,7 @@ export function useUserStore() {
   );
 
   const logout = useCallback(async () => {
+    lastSyncedUserEmail = null;
     await authStore.logout();
     notify();
   }, []);
@@ -214,9 +229,14 @@ export function useUserStore() {
     []
   );
 
+  const isAdmin = Boolean(
+    mounted && user?.email?.toLowerCase() === "vanquyetp823@gmail.com"
+  );
+
   return {
     mounted,
     user,
+    isAdmin,
     favorites,
     watchlist,
     history,
@@ -245,3 +265,34 @@ export function useUserStore() {
   };
 }
 
+/**
+ * Lightweight hook for components that only need user playback/theme settings
+ */
+export function useUserSettings(): {
+  settings: AppSettings;
+  updateSettings: (partial: Partial<AppSettings>) => AppSettings;
+} {
+  useSyncExternalStore(subscribe, () => version, () => 0);
+  const mounted = useSyncExternalStore(
+    emptySubscribe,
+    () => true,
+    () => false
+  );
+  const settings: AppSettings = mounted
+    ? settingsStore.get()
+    : {
+        theme: "system",
+        autoPlay: true,
+        soundEnabled: true,
+        preferredQuality: "auto",
+      };
+
+  const updateSettings = useCallback((partial: Partial<AppSettings>) => {
+    const s = settingsStore.update(partial);
+    notify();
+    userSyncManager.syncSettings(partial);
+    return s;
+  }, []);
+
+  return { settings, updateSettings };
+}
