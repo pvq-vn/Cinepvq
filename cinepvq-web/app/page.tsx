@@ -259,7 +259,7 @@ export default function Home() {
       </section>
 
       {/* 3. Phim Mới Cập Nhật */}
-      <div>
+      <div className="cv-auto">
         {latestLoading ? (
           <div className="px-4 sm:px-6 lg:px-8">
             <MovieRowSkeleton />
@@ -275,7 +275,7 @@ export default function Home() {
       </div>
 
       {/* 4. Phim Bộ Mới */}
-      <div>
+      <div className="cv-auto">
         {seriesLoading ? (
           <div className="px-4 sm:px-6 lg:px-8">
             <MovieRowSkeleton />
@@ -297,7 +297,7 @@ export default function Home() {
       {isBatch2Active ? (
         <>
           {/* 5. Phim Lẻ Mới */}
-          <div>
+          <div className="cv-auto">
             {singleLoading ? (
               <div className="px-4 sm:px-6 lg:px-8 my-8">
                 <MovieRowSkeleton />
@@ -313,7 +313,7 @@ export default function Home() {
           </div>
 
           {/* 6. Hoạt Hình Mới */}
-          <div>
+          <div className="cv-auto">
             {animeLoading ? (
               <div className="px-4 sm:px-6 lg:px-8 my-8">
                 <MovieRowSkeleton />
@@ -329,7 +329,7 @@ export default function Home() {
           </div>
 
           {/* 7. TV Show Mới */}
-          <div>
+          <div className="cv-auto">
             {tvShowLoading ? (
               <div className="px-4 sm:px-6 lg:px-8 my-8">
                 <MovieRowSkeleton />
@@ -353,7 +353,7 @@ export default function Home() {
       {isBatch3Active ? (
         <>
           {/* 8. Phim Hành Động Kịch Tính */}
-          <div>
+          <div className="cv-auto">
             {actionLoading ? (
               <div className="px-4 sm:px-6 lg:px-8 my-8">
                 <MovieRowSkeleton />
@@ -369,7 +369,7 @@ export default function Home() {
           </div>
 
           {/* 9. Bom Tấn Âu Mỹ */}
-          <div>
+          <div className="cv-auto">
             {westernLoading ? (
               <div className="px-4 sm:px-6 lg:px-8 my-8">
                 <MovieRowSkeleton />
@@ -385,7 +385,7 @@ export default function Home() {
           </div>
 
           {/* 10. K-Drama Hàn Quốc */}
-          <div>
+          <div className="cv-auto">
             {koreanLoading ? (
               <div className="px-4 sm:px-6 lg:px-8 my-8">
                 <MovieRowSkeleton />

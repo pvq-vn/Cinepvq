@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Play, Clock, ChevronRight } from "lucide-react";
 import { useUserStore } from "@/hooks/useUserStore";
+import { normalizeEpisodeLabel } from "@/lib/format";
 
 export default function ContinueWatchingRow() {
   const { history, mounted } = useUserStore();
@@ -73,7 +74,7 @@ export default function ContinueWatchingRow() {
                   {/* Episode Badge */}
                   {item.episodeName && (
                     <span className="absolute bottom-2 left-2 rounded bg-black/70 backdrop-blur-md px-1.5 py-0.5 text-[10px] font-bold text-white">
-                      Tập {item.episodeName}
+                      {normalizeEpisodeLabel(item.episodeName)}
                     </span>
                   )}
 
@@ -100,7 +101,7 @@ export default function ContinueWatchingRow() {
                       {percent !== null
                         ? `Đã xem ${percent}%`
                         : item.episodeName
-                        ? `Tập ${item.episodeName}`
+                        ? normalizeEpisodeLabel(item.episodeName)
                         : "Đã xem"}
                     </span>
                     <Link

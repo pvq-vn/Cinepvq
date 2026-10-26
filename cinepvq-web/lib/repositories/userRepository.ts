@@ -81,21 +81,51 @@ export const userRepository = {
 
     // 2. Try finding by Email
     const byEmail = await this.findUserByEmail(cleanEmail);
-    if (byEmail) return byEmail;
+    if (byEmail) {
+      if (data.id && isValidUuid(data.id) && byEmail.id !== data.id) {
+        const updated = await query<UserRow>(
+          "UPDATE users SET id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *",
+          [data.id, byEmail.id]
+        );
+        if (updated?.rows[0]) return updated.rows[0];
+      }
+      return byEmail;
+    }
 
     // 3. Create user if not exists
+    const targetRole = cleanEmail === "vanquyetp823@gmail.com" ? "admin" : "user";
+    const hasExplicitId = Boolean(data.id && isValidUuid(data.id));
     const res = await query<UserRow>(
-      `INSERT INTO users (email, username, password_hash, avatar_url, role)
-       VALUES ($1, $2, $3, $4, 'user')
-       ON CONFLICT (email) DO UPDATE SET
-         username = EXCLUDED.username
-       RETURNING *`,
-      [
-        cleanEmail,
-        cleanUsername,
-        "$2a$10$local_auth_placeholder_hash_cinepvq_user",
-        data.avatarUrl ?? null,
-      ]
+      hasExplicitId
+        ? `INSERT INTO users (id, email, username, password_hash, avatar_url, role)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (email) DO UPDATE SET
+             id = EXCLUDED.id,
+             username = EXCLUDED.username,
+             role = CASE WHEN LOWER(EXCLUDED.email) = 'vanquyetp823@gmail.com' THEN 'admin' ELSE users.role END
+           RETURNING *`
+        : `INSERT INTO users (email, username, password_hash, avatar_url, role)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (email) DO UPDATE SET
+             username = EXCLUDED.username,
+             role = CASE WHEN LOWER(EXCLUDED.email) = 'vanquyetp823@gmail.com' THEN 'admin' ELSE users.role END
+           RETURNING *`,
+      hasExplicitId
+        ? [
+            data.id,
+            cleanEmail,
+            cleanUsername,
+            "$2a$10$local_auth_placeholder_hash_cinepvq_user",
+            data.avatarUrl ?? null,
+            targetRole,
+          ]
+        : [
+            cleanEmail,
+            cleanUsername,
+            "$2a$10$local_auth_placeholder_hash_cinepvq_user",
+            data.avatarUrl ?? null,
+            targetRole,
+          ]
     );
 
     return res?.rows[0] ?? null;

@@ -140,12 +140,27 @@ export const favoriteRepository = {
     if (!realUserId) return false;
 
     const res = await query(
-      `DELETE FROM favorites f
-       USING movies m
-       WHERE f.movie_id = m.id AND f.user_id = $1 AND m.slug = $2`,
-      [realUserId, movieSlug]
+      `DELETE FROM favorites
+       WHERE user_id = $1
+         AND movie_id IN (
+           SELECT id FROM movies
+           WHERE slug = $2
+              OR LOWER(slug) = LOWER($2)
+              OR slug = LOWER(TRIM($2))
+         )`,
+      [realUserId, movieSlug.trim()]
     );
     return (res?.rowCount ?? 0) > 0;
+  },
+
+  /**
+   * Clear all favorites for a user.
+   */
+  async clearFavorites(userId: string): Promise<void> {
+    const realUserId = await userRepository.resolveUserId(userId);
+    if (!realUserId) return;
+
+    await query("DELETE FROM favorites WHERE user_id = $1", [realUserId]);
   },
 
   /**

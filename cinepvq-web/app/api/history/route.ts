@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { isDbConfigured } from "@/lib/db/client";
 import { historyRepository } from "@/lib/repositories/historyRepository";
 import { getAuthenticatedUser } from "@/lib/supabase/server";
+import { normalizeEpisodeLabel } from "@/lib/format";
 
 export async function GET(request: NextRequest) {
   const user = await getAuthenticatedUser(request);
@@ -116,14 +117,30 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const targetEpisode = episode || episodeSlug;
+    const epSlug =
+      body.episode?.slug ||
+      body.episodeSlug ||
+      body.movie?.episodeSlug ||
+      (typeof episode === "string" ? episode : undefined);
+
+    const rawEpName =
+      body.episode?.name ||
+      body.episodeName ||
+      body.movie?.episodeName;
+
+    const epName = normalizeEpisodeLabel(rawEpName, epSlug);
+
+    const targetEpisode = epSlug ? { slug: epSlug, name: epName } : (episode || episodeSlug);
+
+    const posNum = typeof position === "number" ? position : typeof body.lastPositionSeconds === "number" ? body.lastPositionSeconds : 0;
+    const durNum = typeof duration === "number" ? duration : typeof body.durationSeconds === "number" ? body.durationSeconds : 0;
 
     const success = await historyRepository.upsertHistory(
       userId,
       targetMovie,
       targetEpisode,
-      typeof position === "number" ? Math.floor(position) : 0,
-      typeof duration === "number" ? Math.floor(duration) : 0,
+      Math.floor(posNum),
+      Math.floor(durNum),
       body.updatedAt
     );
 

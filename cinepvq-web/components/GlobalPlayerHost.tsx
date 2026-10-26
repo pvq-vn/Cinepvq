@@ -4,7 +4,8 @@ import React, { useEffect, useRef, useState, useSyncExternalStore, useCallback }
 import { createPortal } from "react-dom";
 import { useGlobalPlayer } from "@/contexts/GlobalPlayerContext";
 import VideoPlayer from "@/components/VideoPlayer";
-import { X, Maximize2, Tv, PictureInPicture, Play, Pause } from "lucide-react";
+import { normalizeEpisodeLabel } from "@/lib/format";
+import { X, Maximize2, Tv, Play, Pause } from "lucide-react";
 
 const emptySubscribe = () => () => {};
 const getClientSnapshot = () => true;
@@ -37,6 +38,7 @@ export default function GlobalPlayerHost() {
     videoRef,
     episodeHandlers,
     closeMiniPlayer,
+    minimizeToMini,
     restoreToDetail,
     handleTimeUpdate,
     handlePlayingChange,
@@ -67,12 +69,6 @@ export default function GlobalPlayerHost() {
   const slotObserverRef = useRef<ResizeObserver | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
 
-  const supportsPip =
-    isClient &&
-    typeof document !== "undefined" &&
-    "pictureInPictureEnabled" in document &&
-    Boolean(document.pictureInPictureEnabled);
-
   const togglePlay = () => {
     const video = videoRef.current;
     if (!video) return;
@@ -80,20 +76,6 @@ export default function GlobalPlayerHost() {
       video.play().catch(() => {});
     } else {
       video.pause();
-    }
-  };
-
-  const handleToggleBrowserPiP = async () => {
-    const video = videoRef.current;
-    if (!video || typeof document === "undefined" || !document.pictureInPictureEnabled) return;
-    try {
-      if (document.pictureInPictureElement) {
-        await document.exitPictureInPicture();
-      } else {
-        await video.requestPictureInPicture();
-      }
-    } catch (err) {
-      console.warn("[GlobalPlayerHost] PiP toggle error:", err);
     }
   };
 
@@ -141,23 +123,45 @@ export default function GlobalPlayerHost() {
     if (!isClient || !session) return;
 
     if (mode === "detail") {
-      // RAF measurement to sync after reflow
-      const rafId = requestAnimationFrame(() => {
-        updateSlotPosition();
-      });
-
-      // Watch for slot size changes and layout changes
-      const slot = document.getElementById("cinepvq-player-slot");
-      if (slot) {
-        const ro = new ResizeObserver(() => {
+      const attachSlot = () => {
+        const slot = document.getElementById("cinepvq-player-slot");
+        if (slot) {
           updateSlotPosition();
-        });
-        ro.observe(slot);
-        if (typeof document !== "undefined" && document.body) {
-          ro.observe(document.body);
+          if (!slotObserverRef.current) {
+            const ro = new ResizeObserver(() => {
+              updateSlotPosition();
+            });
+            ro.observe(slot);
+            if (typeof document !== "undefined" && document.body) {
+              ro.observe(document.body);
+            }
+            slotObserverRef.current = ro;
+          }
+          return true;
         }
-        slotObserverRef.current = ro;
+        return false;
+      };
+
+      // Try immediately
+      attachSlot();
+      const rafId = requestAnimationFrame(() => attachSlot());
+
+      // Watch for slot mounting in DOM via MutationObserver
+      let mo: MutationObserver | null = null;
+      if (typeof document !== "undefined" && document.body) {
+        mo = new MutationObserver(() => {
+          attachSlot();
+        });
+        mo.observe(document.body, { childList: true, subtree: true });
       }
+
+      // Fast polling fallback for the first 1.5s after entering detail mode
+      const pollInterval = setInterval(() => {
+        attachSlot();
+      }, 40);
+      const pollTimeout = setTimeout(() => {
+        clearInterval(pollInterval);
+      }, 1500);
 
       // Re-measure on resize, orientation changes, or fullscreen exit
       const onLayoutChange = () => {
@@ -177,6 +181,9 @@ export default function GlobalPlayerHost() {
 
       return () => {
         cancelAnimationFrame(rafId);
+        mo?.disconnect();
+        clearInterval(pollInterval);
+        clearTimeout(pollTimeout);
         slotObserverRef.current?.disconnect();
         slotObserverRef.current = null;
         window.removeEventListener("resize", onLayoutChange);
@@ -205,13 +212,30 @@ export default function GlobalPlayerHost() {
   const isDetail = mode === "detail";
 
   // Detail mode: absolute positioning matching slot position in document.
-  // Scrolls 100% naturally with document layout without JS scroll lagging, inertia, or spring.
-  const detailStyle: React.CSSProperties = slotPosition
+  // Synchronously resolves slot element if available to eliminate black screen flicker on expand
+  let activeDetailPos = slotPosition;
+  if (!activeDetailPos && isDetail && typeof document !== "undefined") {
+    const slot = document.getElementById("cinepvq-player-slot");
+    if (slot) {
+      const rect = slot.getBoundingClientRect();
+      if (rect.width > 0) {
+        const scrollY = window.scrollY || window.pageYOffset || 0;
+        const scrollX = window.scrollX || window.pageXOffset || 0;
+        activeDetailPos = {
+          top: rect.top + scrollY,
+          left: rect.left + scrollX,
+          width: rect.width,
+        };
+      }
+    }
+  }
+
+  const detailStyle: React.CSSProperties = activeDetailPos
     ? {
         position: "absolute",
-        top: slotPosition.top,
-        left: slotPosition.left,
-        width: slotPosition.width,
+        top: activeDetailPos.top,
+        left: activeDetailPos.left,
+        width: activeDetailPos.width,
         zIndex: 30,
         overflow: "visible",
         transition: "none",
@@ -231,9 +255,6 @@ export default function GlobalPlayerHost() {
     isNativePip ||
     Boolean(typeof document !== "undefined" && document.pictureInPictureElement);
 
-  // When native PiP is active:
-  // Render minimal 1px offscreen video wrapper so Chromium keeps PiP session alive
-  // Absolutely NO big popup in the website, NO internal mini player!
   const pipUnderlyingStyle: React.CSSProperties = {
     position: "fixed",
     bottom: 0,
@@ -246,7 +267,6 @@ export default function GlobalPlayerHost() {
     overflow: "hidden",
   };
 
-  // Mini mode: fixed bottom-right video overlay (video only; controls bar portaled separately below)
   const miniVideoStyle: React.CSSProperties = {
     position: "fixed",
     bottom: "calc(max(0.75rem, env(safe-area-inset-bottom, 0.75rem)) + 60px)",
@@ -279,6 +299,7 @@ export default function GlobalPlayerHost() {
         <VideoPlayer
           key={session.movieSlug}
           videoUrl={session.videoUrl}
+          knownHlsUrl={session.knownHlsUrl}
           movieSlug={session.movieSlug}
           movieTitle={session.movieTitle}
           imdbId={session.imdbId}
@@ -290,6 +311,7 @@ export default function GlobalPlayerHost() {
           initialTime={session.initialTime || 0}
           serverName={session.serverName}
           episodeSlug={session.episodeSlug}
+          episodes={session.episodes}
           isMini={isMini}
           onTimeUpdate={(cur, dur) => {
             handleTimeUpdate(cur, dur);
@@ -331,6 +353,8 @@ export default function GlobalPlayerHost() {
           activeServerIndex={activeServerIndex}
           onSwitchServer={switchServer}
           autoPlay={session.autoPlay ?? true}
+          onMinimize={minimizeToMini}
+          onExpand={restoreToDetail}
         />
       </div>
 
@@ -391,7 +415,12 @@ export default function GlobalPlayerHost() {
                   {session.movieTitle}
                 </p>
                 <p className="text-[11px] text-violet-400 font-medium truncate leading-tight">
-                  {session.type === "movie" ? "Bản Full" : `Tập ${session.episode || 1}`}
+                  {session.type === "movie"
+                    ? "Bản Full"
+                    : normalizeEpisodeLabel(
+                        session.episodeTitle,
+                        session.episodeSlug || (session.episode ? String(session.episode) : "1")
+                      )}
                 </p>
               </div>
             </div>
@@ -408,19 +437,7 @@ export default function GlobalPlayerHost() {
                 {isPlaying ? <Pause className="h-4 w-4 fill-current" /> : <Play className="h-4 w-4 fill-current" />}
               </button>
 
-              {/* Browser PiP */}
-              {supportsPip && (
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); handleToggleBrowserPiP(); }}
-                  className="p-1.5 sm:p-2 min-h-[36px] min-w-[36px] rounded-xl hover:bg-white/15 active:scale-95 text-zinc-200 hover:text-white transition-all flex items-center justify-center cursor-pointer bg-white/5"
-                  aria-label="Picture-in-Picture"
-                >
-                  <PictureInPicture className="h-4 w-4" />
-                </button>
-              )}
-
-              {/* Expand — navigate only, NO PiP call */}
+              {/* Expand — navigate back to detail mode */}
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); restoreToDetail(); }}

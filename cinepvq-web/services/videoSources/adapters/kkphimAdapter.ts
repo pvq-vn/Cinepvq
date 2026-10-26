@@ -1,12 +1,13 @@
 // ==============================================================================
 // services/videoSources/adapters/kkphimAdapter.ts
 // Fallback 2 Video Source Adapter: KKPhim1 Direct HLS (.m3u8) / Embed
+// Supports 0ms instant resolution via knownHlsUrl and strict audio-track matching
 // ==============================================================================
 
 import type { VideoSourceAdapter, ResolveSourceOptions, ResolvedSource } from "../types";
 
 const KKPHIM_BASE = "https://phimapi.com";
-const TIMEOUT_MS = 8000;
+const TIMEOUT_MS = 3000;
 
 interface KKPhimEpisodeItem {
   name: string;
@@ -32,13 +33,60 @@ interface KKPhimMovieData {
   episodes?: KKPhimEpisodeGroup[];
 }
 
+function matchTitle(candidateName: string, targetTitle: string, season = 1): boolean {
+  const norm = (s: string) =>
+    s
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[()\-:,._]/g, " ")
+      .replace(/\b(phan|season)\s*(\d+)\b/g, (_m, _g1, g2) => ` ${g2} `)
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const t = norm(targetTitle);
+  const parts = candidateName.split("/").map((p) => norm(p));
+  if (parts.some((p) => p === t)) return true;
+
+  if (!/\d+$/.test(t)) {
+    const seasonVariant = norm(`${targetTitle} ${season}`);
+    if (parts.some((p) => p === seasonVariant)) return true;
+  }
+  return false;
+}
+
 export class KKPhimAdapter implements VideoSourceAdapter {
   readonly sourceId = "kkphim" as const;
   readonly name = "KKPhim1 Direct HLS (Dự Phòng 2)";
   readonly priority = 3;
 
   async resolveStream(options: ResolveSourceOptions): Promise<ResolvedSource | null> {
-    const { slug, title, episode = 1 } = options;
+    const { slug, title, episode = 1, knownHlsUrl, serverName } = options;
+
+    const reqServer = (serverName || "").toLowerCase();
+    const isTM = /thuy[eế]t\s*minh|\btm\b/i.test(reqServer);
+    const isLT = /l[oồ]ng\s*ti[eế]ng/i.test(reqServer);
+    const isVS = /vietsub/i.test(reqServer);
+
+    // Fast path: if client already provided the exact .m3u8 URL from movie detail for this server/episode
+    if (knownHlsUrl && knownHlsUrl.includes(".m3u8")) {
+      return {
+        sourceId: this.sourceId,
+        name: this.name,
+        displayName: isTM
+          ? "KKPhim1 (Thuyết Minh)"
+          : isLT
+          ? "KKPhim1 (Lồng Tiếng)"
+          : "KKPhim1 Direct",
+        type: "hls",
+        url: knownHlsUrl,
+        priority: this.priority,
+        quality: "FHD",
+        serverName: serverName || "KKPhim Direct CDN",
+        isAvailable: true,
+      };
+    }
+
     if (!slug && !title) return null;
 
     const headers: Record<string, string> = {
@@ -49,7 +97,6 @@ export class KKPhimAdapter implements VideoSourceAdapter {
 
     let movieData: KKPhimMovieData | null = null;
 
-    // 1. Try direct slug lookup
     if (slug) {
       const cleanSlug = slug.trim().toLowerCase();
       const controller = new AbortController();
@@ -71,7 +118,6 @@ export class KKPhimAdapter implements VideoSourceAdapter {
       }
     }
 
-    // 2. Try title search if slug lookup didn't yield movie
     if (!movieData && title) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -85,42 +131,27 @@ export class KKPhimAdapter implements VideoSourceAdapter {
           const sData = await res.json();
           const items: Array<{ name: string; slug: string }> = sData.data?.items || [];
           if (items.length > 0) {
-function matchTitle(candidateName: string, targetTitle: string, season = 1): boolean {
-  const norm = (s: string) =>
-    s
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[()\-:,._]/g, " ")
-      .replace(/\b(phan|season)\s*(\d+)\b/g, (_m, _g1, g2) => ` ${g2} `)
-      .replace(/\s+/g, " ")
-      .trim();
-
-  const t = norm(targetTitle);
-  const parts = candidateName.split("/").map((p) => norm(p));
-  if (parts.some((p) => p === t)) return true;
-
-  // If targetTitle has no trailing number, test with season
-  if (!/\d+$/.test(t)) {
-    const seasonVariant = norm(`${targetTitle} ${season}`);
-    if (parts.some((p) => p === seasonVariant)) return true;
-  }
-  return false;
-}
-
             const matched =
               items.find((i) => i.slug === slug) ||
               items.find((i) => matchTitle(i.name || "", title, options.season || 1));
 
             if (matched) {
-              const detailRes = await fetch(`${KKPHIM_BASE}/phim/${matched.slug}`, {
-                headers,
-              });
-              if (detailRes.ok) {
-                const d: KKPhimMovieData = await detailRes.json();
-                if (d.status && d.movie && d.episodes && d.episodes.length > 0) {
-                  movieData = d;
+              const detailController = new AbortController();
+              const detailTimer = setTimeout(() => detailController.abort(), TIMEOUT_MS);
+              try {
+                const detailRes = await fetch(`${KKPHIM_BASE}/phim/${matched.slug}`, {
+                  headers,
+                  signal: detailController.signal,
+                });
+                clearTimeout(detailTimer);
+                if (detailRes.ok) {
+                  const d: KKPhimMovieData = await detailRes.json();
+                  if (d.status && d.movie && d.episodes && d.episodes.length > 0) {
+                    movieData = d;
+                  }
                 }
+              } catch {
+                clearTimeout(detailTimer);
               }
             }
           }
@@ -134,36 +165,28 @@ function matchTitle(candidateName: string, targetTitle: string, season = 1): boo
       return null;
     }
 
-    const reqServer = (options.serverName || "").toLowerCase();
-    const isTM = /thuy[eế]t\s*minh|\btm\b/.test(reqServer);
-    const isLT = /l[oồ]ng\s*ti[eế]ng/.test(reqServer);
-    const isVS = /vietsub/.test(reqServer);
+    // Filter groups strictly when a specific translation is requested
+    let candidateGroups = movieData.episodes;
+    if (isTM) {
+      candidateGroups = movieData.episodes.filter((g) =>
+        /thuy[eế]t\s*minh|\btm\b/i.test(g.server_name || "")
+      );
+      if (candidateGroups.length === 0) return null;
+    } else if (isLT) {
+      candidateGroups = movieData.episodes.filter((g) =>
+        /l[oồ]ng\s*ti[eế]ng/i.test(g.server_name || "")
+      );
+      if (candidateGroups.length === 0) return null;
+    } else if (isVS) {
+      const vsGroups = movieData.episodes.filter(
+        (g) =>
+          /vietsub/i.test(g.server_name || "") ||
+          !/thuy[eế]t\s*minh|\btm\b|l[oồ]ng\s*ti[eế]ng/i.test(g.server_name || "")
+      );
+      if (vsGroups.length > 0) candidateGroups = vsGroups;
+    }
 
-    // Sort episode groups to prioritize matching requested audio track
-    const sortedGroups = [...movieData.episodes].sort((a, b) => {
-      const aName = (a.server_name || "").toLowerCase();
-      const bName = (b.server_name || "").toLowerCase();
-
-      if (isTM) {
-        const aMatch = /thuy[eế]t\s*minh|\btm\b/.test(aName);
-        const bMatch = /thuy[eế]t\s*minh|\btm\b/.test(bName);
-        if (aMatch && !bMatch) return -1;
-        if (!aMatch && bMatch) return 1;
-      } else if (isLT) {
-        const aMatch = /l[oồ]ng\s*ti[eế]ng/.test(aName);
-        const bMatch = /l[oồ]ng\s*ti[eế]ng/.test(bName);
-        if (aMatch && !bMatch) return -1;
-        if (!aMatch && bMatch) return 1;
-      } else if (isVS) {
-        const aMatch = /vietsub/.test(aName);
-        const bMatch = /vietsub/.test(bName);
-        if (aMatch && !bMatch) return -1;
-        if (!aMatch && bMatch) return 1;
-      }
-      return 0;
-    });
-
-    for (const group of sortedGroups) {
+    for (const group of candidateGroups) {
       const epItems = group.server_data || [];
       const ep = epItems.find((item) => {
         if (options.episodeSlug && item.slug.toLowerCase() === options.episodeSlug.toLowerCase()) {

@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const supabase = await createServerSupabase();
+  const supabase = await createServerSupabase(request);
   if (!supabase) {
     return NextResponse.json(
       { status: "error", message: "Failed to initialize server auth client" },
@@ -172,7 +172,7 @@ export async function DELETE(request: NextRequest) {
     );
   }
 
-  const supabase = await createServerSupabase();
+  const supabase = await createServerSupabase(request);
   if (!supabase) {
     return NextResponse.json(
       { status: "error", message: "Failed to initialize server auth client" },

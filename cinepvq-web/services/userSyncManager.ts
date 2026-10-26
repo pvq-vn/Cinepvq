@@ -13,8 +13,11 @@ import {
   historyStore,
   settingsStore,
   notificationStore,
+  episodeProgressStore,
+  setProgressSyncListener,
 } from "@/services/userStore";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { normalizeEpisodeLabel } from "@/lib/format";
 import type {
   AppSettings,
   Movie,
@@ -27,12 +30,22 @@ import type {
 let isSyncing = false;
 let syncScheduled = false;
 
+let progressTimer: NodeJS.Timeout | null = null;
+let pendingProgress: {
+  movieSlug: string;
+  episodeSlug: string;
+  season: number;
+  currentTime: number;
+  duration: number;
+  updatedAt: string;
+} | null = null;
+
 /**
  * Returns authenticated HTTP headers including Supabase Bearer token if available.
  * Essential for mobile browsers (Safari ITP / Chrome Mobile) where third-party
  * or SSR cookies may not be reliably forwarded to Next.js route handlers.
  */
-async function getAuthHeaders(): Promise<HeadersInit> {
+export async function getAuthHeaders(): Promise<HeadersInit> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
@@ -95,7 +108,7 @@ export const userSyncManager = {
         if (res.ok) {
           const data = await res.json();
           if (data.status === "success" && data.user) {
-            if (data.user.id !== currentUser.id) {
+            if (data.user.id !== currentUser.id || data.user.role !== currentUser.role) {
               authStore.updateUser(data.user);
             }
           }
@@ -106,18 +119,18 @@ export const userSyncManager = {
 
       // Step 2: Mark migration flag so new users never inherit stale guest caches
       const migrationKey = `cinepvq_migrated_${currentUser.email.toLowerCase()}`;
-      if (localStorage.getItem(migrationKey) !== "true") {
+      const isFirstLogin = localStorage.getItem(migrationKey) !== "true";
+      if (isFirstLogin) {
         localStorage.setItem(migrationKey, "true");
       }
 
-      // Step 3: Two-way sync: Push local items (if any) and pull remote items
+      // Step 3: Two-way sync: Push local items (if first login migration) and pull remote items
       const localFavs = favoritesStore.getAll();
-      const localHist = historyStore.getAll();
       const localWatchlist = watchlistStore.getAll();
 
       await Promise.allSettled([
-        // Sync favorites (push local if exists, else pull)
-        (localFavs.length > 0
+        // Sync favorites: only migrate guest favorites on first login; otherwise always pull authoritative list from server
+        (isFirstLogin && localFavs.length > 0
           ? fetch("/api/favorites", {
               method: "POST",
               headers: authHeaders,
@@ -138,58 +151,86 @@ export const userSyncManager = {
           })
           .catch((err) => console.warn("[UserSync] Sync favorites failed", err)),
 
-        // Sync history (push local if exists, else pull)
-        (localHist.length > 0
-          ? fetch("/api/history", {
-              method: "POST",
-              headers: authHeaders,
-              body: JSON.stringify({ action: "sync", history: localHist }),
-            })
-          : fetch("/api/history", {
-              headers: authHeaders,
-            })
-        )
+        // Sync history: fetch latest progress from Supabase, compare timestamp and merge
+        fetch("/api/history", {
+          headers: authHeaders,
+        })
           .then((r) => r.json())
           .then((data) => {
             if (data.status === "success" && Array.isArray(data.history)) {
+              const remoteHistory: WatchHistoryItem[] = data.history.map((r: WatchHistoryItem) => ({
+                ...r,
+                episodeName: normalizeEpisodeLabel(r.episodeName, r.episodeSlug) || r.episodeName,
+              }));
               const currentLocal = historyStore.getAll();
-              if (currentLocal.length === 0 && data.history.length > 0) {
-                // Device had no local history (e.g. freshly logged in on mobile):
-                // Directly hydrate store from cloud
-                historyStore.setAll(data.history);
-                if (typeof window !== "undefined") {
-                  window.dispatchEvent(new Event("cinepvq_storage_update"));
-                }
-              } else {
-                // Two-way merge: reconcile local & remote by slug and most recent updatedAt/progress
-                const mergedMap = new Map<string, WatchHistoryItem>();
-                data.history.forEach((h: WatchHistoryItem) => {
-                  if (h && h.slug) mergedMap.set(h.slug, h);
-                });
-                currentLocal.forEach((loc) => {
-                  if (!loc || !loc.slug) return;
-                  if (!mergedMap.has(loc.slug)) {
-                    mergedMap.set(loc.slug, loc);
-                  } else {
-                    const remote = mergedMap.get(loc.slug)!;
-                    const timeLoc = loc.updatedAt ? new Date(loc.updatedAt).getTime() : 0;
-                    const timeRemote = remote.updatedAt ? new Date(remote.updatedAt).getTime() : 0;
-                    if (timeLoc > timeRemote) {
-                      mergedMap.set(loc.slug, loc);
-                    } else if (timeLoc === timeRemote && (loc.currentTime || 0) > (remote.currentTime || 0)) {
-                      mergedMap.set(loc.slug, loc);
-                    }
+              const localMap = new Map<string, WatchHistoryItem>();
+              currentLocal.forEach((item) => {
+                if (item && item.slug) localMap.set(item.slug, item);
+              });
+
+              const mergedMap = new Map<string, WatchHistoryItem>();
+              const itemsToPush: WatchHistoryItem[] = [];
+
+              // 1. Duyệt toàn bộ lịch sử từ DB
+              remoteHistory.forEach((remote) => {
+                if (!remote || !remote.slug) return;
+                const local = localMap.get(remote.slug);
+                const timeRemote = remote.updatedAt
+                  ? new Date(remote.updatedAt).getTime()
+                  : 0;
+                const timeLocal = local?.updatedAt
+                  ? new Date(local.updatedAt).getTime()
+                  : 0;
+
+                if (!local || timeRemote >= timeLocal) {
+                  mergedMap.set(remote.slug, remote);
+
+                  if (remote.episodeSlug && typeof remote.currentTime === "number") {
+                    episodeProgressStore.save(
+                      remote.slug,
+                      remote.episodeSlug,
+                      1,
+                      remote.currentTime,
+                      remote.duration || 0,
+                      remote.updatedAt,
+                      true // skipRemoteSync to avoid echo
+                    );
                   }
-                });
-                const mergedList = Array.from(mergedMap.values()).sort((a, b) => {
-                  const timeA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-                  const timeB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-                  return timeB - timeA;
-                });
-                historyStore.setAll(mergedList);
-                if (typeof window !== "undefined") {
-                  window.dispatchEvent(new Event("cinepvq_storage_update"));
+                } else {
+                  mergedMap.set(remote.slug, local);
+                  itemsToPush.push(local);
                 }
+              });
+
+              // 2. Duyệt các phim chỉ có ở local mà DB chưa có
+              currentLocal.forEach((loc) => {
+                if (loc && loc.slug && !mergedMap.has(loc.slug)) {
+                  mergedMap.set(loc.slug, loc);
+                  itemsToPush.push(loc);
+                }
+              });
+
+              const mergedList = Array.from(mergedMap.values()).sort((a, b) => {
+                const timeA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+                const timeB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+                return timeB - timeA;
+              });
+
+              historyStore.setAll(mergedList);
+
+              // 3. Nếu có item local mới hơn, đồng bộ đẩy lên DB
+              if (itemsToPush.length > 0) {
+                fetch("/api/history", {
+                  method: "POST",
+                  headers: authHeaders,
+                  body: JSON.stringify({ action: "sync", history: itemsToPush }),
+                }).catch((err) =>
+                  console.warn("[UserSync] Push local history to remote failed", err)
+                );
+              }
+
+              if (typeof window !== "undefined") {
+                window.dispatchEvent(new Event("cinepvq_storage_update"));
               }
             }
           })
@@ -284,7 +325,7 @@ export const userSyncManager = {
 
   async syncFavoriteToggle(movie: Movie | MovieDetail | FavoriteMovie, isAdded: boolean) {
     const user = authStore.getUser();
-    if (!user) return; // Keep purely local if not logged in
+    if (!user) return;
 
     try {
       const authHeaders = await getAuthHeaders();
@@ -319,6 +360,43 @@ export const userSyncManager = {
     }
   },
 
+  async syncFavoriteRemove(movieSlug: string) {
+    const user = authStore.getUser();
+    if (!user) return;
+
+    try {
+      const authHeaders = await getAuthHeaders();
+      await fetch("/api/favorites", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          action: "remove",
+          movieSlug,
+        }),
+      });
+    } catch (err) {
+      console.warn("[UserSync] Favorite remove sync failed", err);
+    }
+  },
+
+  async syncFavoriteClear() {
+    const user = authStore.getUser();
+    if (!user) return;
+
+    try {
+      const authHeaders = await getAuthHeaders();
+      await fetch("/api/favorites", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          action: "clear",
+        }),
+      });
+    } catch (err) {
+      console.warn("[UserSync] Favorite clear sync failed", err);
+    }
+  },
+
   async syncHistoryAdd(
     movie: { slug: string; name: string; original_name?: string; thumb_url: string },
     episode?: { slug: string; name: string },
@@ -330,12 +408,18 @@ export const userSyncManager = {
 
     try {
       const authHeaders = await getAuthHeaders();
+      const normalizedEpisode = episode
+        ? {
+            slug: episode.slug,
+            name: normalizeEpisodeLabel(episode.name, episode.slug),
+          }
+        : undefined;
       await fetch("/api/history", {
         method: "POST",
         headers: authHeaders,
         body: JSON.stringify({
           movie,
-          episode,
+          episode: normalizedEpisode,
           position: typeof position === "number" ? Math.floor(position) : 0,
           duration: typeof duration === "number" ? Math.floor(duration) : 0,
           updatedAt: new Date().toISOString(),
@@ -505,4 +589,69 @@ export const userSyncManager = {
       console.warn("[UserSync] Watchlist clear sync failed", err);
     }
   },
+
+  /**
+   * Debounced sync playback progress directly to Supabase DB.
+   * Prevents API flood during rapid playback updates while guaranteeing
+   * cross-device synchronicity.
+   */
+  debouncedSyncProgress(
+    movieSlug: string,
+    episodeSlug: string,
+    season = 1,
+    currentTime = 0,
+    duration = 0
+  ) {
+    if (typeof window === "undefined") return;
+    const user = authStore.getUser();
+    if (!user || !user.email) return;
+
+    pendingProgress = {
+      movieSlug,
+      episodeSlug,
+      season,
+      currentTime: Math.floor(currentTime),
+      duration: Math.floor(duration),
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (progressTimer) clearTimeout(progressTimer);
+    progressTimer = setTimeout(async () => {
+      if (!pendingProgress) return;
+      const target = pendingProgress;
+      pendingProgress = null;
+      try {
+        const authHeaders = await getAuthHeaders();
+        const existingHist = historyStore.getAll().find((h) => h.slug === target.movieSlug);
+        const epLabel = normalizeEpisodeLabel(
+          existingHist && existingHist.episodeSlug === target.episodeSlug
+            ? existingHist.episodeName
+            : undefined,
+          target.episodeSlug
+        );
+        await fetch("/api/history", {
+          method: "POST",
+          headers: authHeaders,
+          body: JSON.stringify({
+            action: "upsert",
+            movieSlug: target.movieSlug,
+            episodeSlug: target.episodeSlug,
+            episodeName: epLabel,
+            position: target.currentTime,
+            duration: target.duration,
+            updatedAt: target.updatedAt,
+          }),
+        });
+      } catch (err) {
+        console.warn("[UserSync] Debounced progress sync failed", err);
+      }
+    }, 1500);
+  },
 };
+
+// Wire userStore's episodeProgressStore.save to debouncedSyncProgress
+if (typeof window !== "undefined") {
+  setProgressSyncListener(
+    userSyncManager.debouncedSyncProgress.bind(userSyncManager)
+  );
+}

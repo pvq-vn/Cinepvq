@@ -14,6 +14,7 @@ import {
   Layers,
 } from "lucide-react";
 import { useUserStore } from "@/hooks/useUserStore";
+import { normalizeEpisodeLabel } from "@/lib/format";
 
 export default function WatchlistPage() {
   const { user, watchlist, mounted, removeFromWatchlist, clearWatchlist } =
@@ -265,8 +266,8 @@ export default function WatchlistPage() {
                     </span>
                   )}
                   {movie.current_episode && (
-                    <span className="absolute bottom-2 left-2 rounded-md bg-black/70 backdrop-blur-sm px-2 py-0.5 text-[10px] font-medium text-zinc-200">
-                      {movie.current_episode}
+                    <span className="absolute bottom-2 left-2 rounded-md bg-zinc-950/85 px-2 py-0.5 text-[10px] font-medium text-zinc-200">
+                      {normalizeEpisodeLabel(movie.current_episode)}
                     </span>
                   )}
                 </Link>

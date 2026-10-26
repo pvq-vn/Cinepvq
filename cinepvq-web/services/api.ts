@@ -104,6 +104,67 @@ export const getMoviesByYear = async (
   };
 };
 
+export interface FilteredMoviesParams {
+  category?: string; // phim-bo | phim-le | hoat-hinh | tv-shows | phim-moi-cap-nhat
+  genre?: string;    // hanh-dong, tinh-cam, co-trang, ...
+  country?: string;  // han-quoc, trung-quoc, au-my, ...
+  year?: number | string;
+  sortField?: "modified.time" | "year" | "_id";
+  sortType?: "desc" | "asc";
+  page?: number;
+  limit?: number;
+}
+
+/**
+ * Truy vấn phim kết hợp nhiều bộ lọc (Danh mục + Thể loại + Quốc gia + Năm + Sắp xếp)
+ */
+export const getMoviesFiltered = async ({
+  category,
+  genre,
+  country,
+  year,
+  sortField = "modified.time",
+  sortType = "desc",
+  page = 1,
+  limit = 24,
+}: FilteredMoviesParams): Promise<AxiosResponse<PaginatedResponse>> => {
+  const mappedGenre = genre ? mapGenreSlugToKKPhim(genre) : undefined;
+  const yearParam = year ? Number(year) : undefined;
+
+  const queryParams: Record<string, string | number> = {
+    page,
+    limit,
+    sort_field: sortField,
+    sort_type: sortType,
+  };
+  if (mappedGenre) queryParams.category = mappedGenre;
+  if (country) queryParams.country = country;
+  if (yearParam && !isNaN(yearParam)) queryParams.year = yearParam;
+
+  let endpoint = "v1/api/danh-sach/phim-moi-cap-nhat";
+  if (category) {
+    const mappedCat = mapCategorySlugToKKPhim(category);
+    endpoint = `v1/api/danh-sach/${mappedCat}`;
+  } else if (mappedGenre) {
+    endpoint = `v1/api/the-loai/${mappedGenre}`;
+    delete queryParams.category;
+  } else if (country) {
+    endpoint = `v1/api/quoc-gia/${country}`;
+    delete queryParams.country;
+  } else if (yearParam && !isNaN(yearParam)) {
+    endpoint = `v1/api/nam/${yearParam}`;
+    delete queryParams.year;
+  }
+
+  const res = await directApi.get<KKPhimRawV1ListResponse>(endpoint, {
+    params: queryParams,
+  });
+  return {
+    ...res,
+    data: kkphimCatalogAdapter.normalizeV1ListResponse(res.data),
+  };
+};
+
 // ─── Search Endpoint ─────────────────────────────────────────────────────────
 
 /** Tìm kiếm phim theo từ khóa */

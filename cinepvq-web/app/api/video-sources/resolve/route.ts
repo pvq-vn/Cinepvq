@@ -22,8 +22,10 @@ export async function GET(request: NextRequest) {
   const episode = searchParams.get("episode")
     ? parseInt(searchParams.get("episode")!)
     : 1;
-  const type = (searchParams.get("type") as "movie" | "series") || "series";
+  const rawType = searchParams.get("type") || "series";
+  const type: "movie" | "series" = rawType === "movie" ? "movie" : "series";
   const nguoncEmbedUrl = searchParams.get("nguoncEmbedUrl") || undefined;
+  const knownHlsUrl = searchParams.get("knownHlsUrl") || undefined;
   const serverName = searchParams.get("serverName") || undefined;
   const episodeSlug = searchParams.get("episodeSlug") || undefined;
 
@@ -37,6 +39,7 @@ export async function GET(request: NextRequest) {
       episode,
       type,
       nguoncEmbedUrl,
+      knownHlsUrl,
       serverName,
       episodeSlug,
     });
@@ -57,7 +60,7 @@ export async function GET(request: NextRequest) {
                 sourceId: "nguonc",
                 name: "Server Dự Phòng (StreamC)",
                 displayName: "Server Dự Phòng",
-                type: "iframe",
+                type: nguoncEmbedUrl.includes(".m3u8") ? "hls" : "iframe",
                 url: nguoncEmbedUrl,
                 priority: 4,
                 isAvailable: true,

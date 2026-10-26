@@ -1,9 +1,8 @@
 // ==============================================================================
 // services/k20Resolver.ts
 // K20 Stream Resolver: Resolves direct .m3u8 HLS streams from K20 / KKPhim CDN
-// When called from the browser, routes through /api/k20/stream to bypass browser
-// CORS restrictions on the sc.k-20.xyz JSON endpoint.
-// The resulting .m3u8 and .ts segments are streamed DIRECTLY by the browser from CDN.
+// Optimized with parallel candidate probing, strict audio-track matching,
+// and in-memory caching for sub-second episode transitions.
 // ==============================================================================
 
 export interface K20ResolveOptions {
@@ -25,7 +24,7 @@ export interface ResolvedStream {
 }
 
 const K20_BASE_URL = "https://sc.k-20.xyz";
-const TIMEOUT_MS = 6000;
+const TIMEOUT_MS = 2500;
 
 interface RawStream {
   name?: string;
@@ -39,7 +38,6 @@ function parseDirectStream(
   episode: number,
   serverName?: string
 ): ResolvedStream | null {
-  // If episode > 1, reject streams whose title or name explicitly declares a different episode (e.g. "Tập 01" when episode is 5)
   const isEpisodeMismatch = (str?: string) => {
     if (!str || episode <= 1) return false;
     const match = str.match(/t[ậa]p\s*0*(\d+)/i);
@@ -56,13 +54,13 @@ function parseDirectStream(
     (s) => !isEpisodeMismatch(s.title) && !isEpisodeMismatch(s.name)
   );
 
-  // Audio track targeting based on serverName
   const normServer = (serverName || "").toLowerCase();
   const isTM = /thuy[eế]t\s*minh|\btm\b/i.test(normServer);
   const isLT = /l[oồ]ng\s*ti[eế]ng/i.test(normServer);
   const isVS = /vietsub/i.test(normServer);
 
-  // 1. If user requested Thuyết Minh, look specifically for Thuyết Minh / TM stream
+  // 1. If user explicitly requested Thuyết Minh, ONLY match Thuyết Minh stream.
+  // Do NOT fall back to a Vietsub stream (which would override real Thuyết Minh on KKPhim/VSMOV).
   if (isTM) {
     const tmStream = validStreams.find(
       (s) =>
@@ -80,9 +78,10 @@ function parseDirectStream(
         name: tmStream.name,
       };
     }
+    return null;
   }
 
-  // 2. If user requested Lồng Tiếng, look specifically for Lồng Tiếng stream
+  // 2. If user explicitly requested Lồng Tiếng, ONLY match Lồng Tiếng stream.
   if (isLT) {
     const ltStream = validStreams.find(
       (s) =>
@@ -100,9 +99,10 @@ function parseDirectStream(
         name: ltStream.name,
       };
     }
+    return null;
   }
 
-  // 3. If user requested Vietsub, look specifically for Vietsub stream
+  // 3. If user requested Vietsub, look specifically for Vietsub stream first
   if (isVS) {
     const vsStream = validStreams.find(
       (s) =>
@@ -121,9 +121,18 @@ function parseDirectStream(
     }
   }
 
-  // 4. Default priority if no audio-specific stream matched or no serverName specified:
-  // Prioritize KKPhim streams with Direct CDN & .m3u8
-  const kkphimDirect = validStreams.find(
+  // 4. Default priority (Vietsub or unspecified serverName):
+  // Exclude streams explicitly marked as Thuyết Minh / Lồng Tiếng when Vietsub is requested
+  const nonDubbedStreams = isVS
+    ? validStreams.filter(
+        (s) =>
+          !/thuy[eế]t\s*minh|\btm\b|l[oồ]ng\s*ti[eế]ng/i.test(
+            `${s.title || ""} ${s.name || ""}`
+          )
+      )
+    : validStreams;
+
+  const kkphimDirect = nonDubbedStreams.find(
     (s) =>
       s.url &&
       s.url.includes(".m3u8") &&
@@ -141,8 +150,7 @@ function parseDirectStream(
     };
   }
 
-  // 5. Any KKPhim stream with .m3u8
-  const kkphimAny = validStreams.find(
+  const kkphimAny = nonDubbedStreams.find(
     (s) =>
       s.url &&
       s.url.includes(".m3u8") &&
@@ -159,8 +167,7 @@ function parseDirectStream(
     };
   }
 
-  // 6. Fallback to any direct .m3u8 that is not an embed iframe
-  const anyM3u8 = validStreams.find(
+  const anyM3u8 = nonDubbedStreams.find(
     (s) =>
       s.url &&
       s.url.includes(".m3u8") &&
@@ -181,8 +188,38 @@ function parseDirectStream(
   return null;
 }
 
+async function probeK20Endpoint(
+  endpoint: string,
+  episode: number,
+  serverName?: string
+): Promise<ResolvedStream | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(endpoint, {
+      method: "GET",
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data && Array.isArray(data.streams) && data.streams.length > 0) {
+      return parseDirectStream(data.streams, episode, serverName);
+    }
+    return null;
+  } catch {
+    clearTimeout(timer);
+    return null;
+  }
+}
+
 /**
- * Server-side implementation: Queries K20 API directly.
+ * Server-side implementation: Queries K20 API endpoints in parallel for minimal latency.
  */
 export async function resolveK20StreamServer(
   options: K20ResolveOptions
@@ -193,119 +230,57 @@ export async function resolveK20StreamServer(
     return null;
   }
 
-  const headers: Record<string, string> = {
-    Accept: "application/json, text/plain, */*",
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  };
+  const endpoints: string[] = [];
 
-  // 1. Primary: Attempt K20 IMDb endpoint if IMDb ID is provided
   if (imdbId && typeof imdbId === "string" && imdbId.trim().startsWith("tt")) {
     const cleanImdb = imdbId.trim();
-    const imdbEndpoints =
-      type === "movie"
-        ? [
-            `${K20_BASE_URL}/stream/movie/${encodeURIComponent(cleanImdb)}.json`,
-            ...(episode === 1
-              ? [`${K20_BASE_URL}/stream/series/${cleanImdb}%3A${season}%3A1.json`]
-              : []),
-          ]
-        : [
-            `${K20_BASE_URL}/stream/series/${cleanImdb}%3A${season}%3A${episode}.json`,
-            `${K20_BASE_URL}/stream/series/${cleanImdb}:${season}:${episode}.json`,
-            ...(episode === 1
-              ? [`${K20_BASE_URL}/stream/movie/${encodeURIComponent(cleanImdb)}.json`]
-              : []),
-          ];
+    if (type === "movie") {
+      endpoints.push(`${K20_BASE_URL}/stream/movie/${encodeURIComponent(cleanImdb)}.json`);
+    } else {
+      endpoints.push(`${K20_BASE_URL}/stream/series/${cleanImdb}%3A${season}%3A${episode}.json`);
+    }
+  }
 
-    for (const endpoint of imdbEndpoints) {
-      console.log("[K20 RESOLVER SERVER] Trying primary IMDb endpoint:", endpoint);
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-      try {
-        const res = await fetch(endpoint, {
-          method: "GET",
-          headers,
-          signal: controller.signal,
-        });
-        clearTimeout(timer);
-        if (res.ok) {
-          const data = await res.json();
-          if (data && Array.isArray(data.streams) && data.streams.length > 0) {
-            const stream = parseDirectStream(data.streams, episode, options.serverName);
-            if (stream) {
-              console.log("[K20 RESOLVER SERVER] Successfully resolved via IMDb endpoint:", stream.url);
-              return stream;
-            }
-          }
-        } else {
-          console.warn(`[K20 RESOLVER SERVER] IMDb endpoint returned status ${res.status}`);
-        }
-      } catch (err: unknown) {
-        clearTimeout(timer);
-        if (err instanceof Error && err.name !== "AbortError") {
-          console.warn("[K20 RESOLVER SERVER] IMDb endpoint fetch error:", err.message);
-        }
+  if (slug) {
+    const cleanSlug = slug.trim().toLowerCase();
+    const ep2Digit = String(episode).padStart(2, "0");
+    if (type === "movie") {
+      endpoints.push(
+        `${K20_BASE_URL}/stream/movie/kkphim:${cleanSlug}.json`,
+        `${K20_BASE_URL}/stream/series/kkphim:${cleanSlug}:tap-01.json`
+      );
+    } else {
+      if (options.episodeSlug) {
+        endpoints.push(
+          `${K20_BASE_URL}/stream/series/kkphim:${cleanSlug}:${options.episodeSlug.trim().toLowerCase()}.json`
+        );
+      }
+      const tapPaddedUrl = `${K20_BASE_URL}/stream/series/kkphim:${cleanSlug}:tap-${ep2Digit}.json`;
+      if (!endpoints.includes(tapPaddedUrl)) {
+        endpoints.push(tapPaddedUrl);
+      }
+      const tapRawUrl = `${K20_BASE_URL}/stream/series/kkphim:${cleanSlug}:tap-${episode}.json`;
+      if (!endpoints.includes(tapRawUrl)) {
+        endpoints.push(tapRawUrl);
+      }
+      if (episode === 1) {
+        endpoints.push(`${K20_BASE_URL}/stream/movie/kkphim:${cleanSlug}.json`);
       }
     }
   }
 
-  // 2. Resilient Fallback: Query K20 direct provider endpoints on sc.k-20.xyz
-  // When K20's Cinemeta worker throws Error 1101 on complex IMDb lookups,
-  // K20's own direct KKPhim provider on sc.k-20.xyz serves the exact same Direct CDN stream.
-  if (slug) {
-    const cleanSlug = slug.trim().toLowerCase();
-    const ep2Digit = String(episode).padStart(2, "0");
-    const directEndpoints =
-      type === "movie"
-        ? [
-            `${K20_BASE_URL}/stream/movie/kkphim:${cleanSlug}.json`,
-            `${K20_BASE_URL}/stream/movie/nguonc:${cleanSlug}.json`,
-            `${K20_BASE_URL}/stream/series/kkphim:${cleanSlug}:tap-01.json`,
-            `${K20_BASE_URL}/stream/series/kkphim:${cleanSlug}:tap-1.json`,
-            `${K20_BASE_URL}/stream/series/kkphim:${cleanSlug}.json`,
-          ]
-        : [
-            ...(options.episodeSlug
-              ? [`${K20_BASE_URL}/stream/series/kkphim:${cleanSlug}:${options.episodeSlug.trim().toLowerCase()}.json`]
-              : []),
-            `${K20_BASE_URL}/stream/series/kkphim:${cleanSlug}:tap-${ep2Digit}.json`,
-            `${K20_BASE_URL}/stream/series/kkphim:${cleanSlug}:tap-${episode}.json`,
-            ...(episode === 1
-              ? [
-                  `${K20_BASE_URL}/stream/series/kkphim:${cleanSlug}.json`,
-                  `${K20_BASE_URL}/stream/movie/kkphim:${cleanSlug}.json`,
-                ]
-              : []),
-          ];
+  if (endpoints.length === 0) return null;
 
-    for (const endpoint of directEndpoints) {
-      console.log("[K20 RESOLVER SERVER] Trying K20 direct provider endpoint:", endpoint);
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-      try {
-        const res = await fetch(endpoint, {
-          method: "GET",
-          headers,
-          signal: controller.signal,
-        });
-        clearTimeout(timer);
-        if (res.ok) {
-          const data = await res.json();
-          if (data && Array.isArray(data.streams) && data.streams.length > 0) {
-            const stream = parseDirectStream(data.streams, episode, options.serverName);
-            if (stream) {
-              console.log("[K20 RESOLVER SERVER] Successfully resolved via K20 direct provider:", stream.url);
-              return stream;
-            }
-          }
-        }
-      } catch (err: unknown) {
-        clearTimeout(timer);
-        if (err instanceof Error && err.name !== "AbortError") {
-          console.warn("[K20 RESOLVER SERVER] Direct endpoint fetch error:", err.message);
-        }
-      }
+  // Probe top candidate endpoints in parallel so we never chain timeouts sequentially
+  const results = await Promise.allSettled(
+    endpoints.slice(0, 4).map((epUrl) =>
+      probeK20Endpoint(epUrl, episode, options.serverName)
+    )
+  );
+
+  for (const res of results) {
+    if (res.status === "fulfilled" && res.value) {
+      return res.value;
     }
   }
 
@@ -332,17 +307,13 @@ export async function resolveK20Stream(
       const cleanSlug = slug ? encodeURIComponent(slug.trim()) : "";
       const cleanServer = serverName ? encodeURIComponent(serverName.trim()) : "";
       const apiUrl = `/api/k20/stream?imdbId=${cleanImdb}&season=${season}&episode=${episode}&type=${type}&slug=${cleanSlug}&serverName=${cleanServer}`;
-      console.log("[K20 CLIENT RESOLVER] Requesting via internal API route:", apiUrl);
       const res = await fetch(apiUrl);
       if (!res.ok) {
-        console.warn("[K20 CLIENT RESOLVER] API route returned error status:", res.status);
         return null;
       }
       const data = await res.json();
-      console.log("[K20 CLIENT RESOLVER] API route returned:", data);
       return data.stream || null;
-    } catch (err) {
-      console.warn("[K20 CLIENT RESOLVER] Error calling internal API route:", err);
+    } catch {
       return null;
     }
   }

@@ -2,6 +2,7 @@
 
 import { Suspense, useState, useEffect, useCallback, useMemo } from "react";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
+import Link from "next/link";
 import { useMovieDiscovery } from "@/hooks/useMovies";
 import MovieCard from "@/components/MovieCard";
 import { MovieGridSkeleton } from "@/components/Skeleton";
@@ -16,9 +17,18 @@ import {
   RotateCcw,
   Sparkles,
   ChevronDown,
+  Users,
 } from "lucide-react";
 import { GENRES, COUNTRIES, GENRE_MAP, COUNTRY_MAP } from "@/lib/taxonomy";
+import { saveRecentSearch } from "@/components/SearchModal";
 import type { Movie } from "@/types/movie";
+
+interface ActorSearchHit {
+  name: string;
+  role: string;
+  movieCount: number;
+  samplePoster?: string;
+}
 
 const CATEGORIES = [
   { name: "Phim Bộ", slug: "phim-bo" },
@@ -61,25 +71,19 @@ function SearchDiscoveryContent() {
   const rawSort = searchParams.get("sort") ?? "latest";
   const queryPage = Math.max(1, parseInt(searchParams.get("page") ?? "1", 10));
 
-  // ─── Mutual Exclusivity: Only ONE primary filter can be active ────────────
-  // NguonC API endpoints are strictly separate (films/search, films/danh-sach,
-  // films/the-loai, films/quoc-gia, films/nam-phat-hanh). Combining them is not
-  // supported by backend and causes silent ignore bugs.
-  // Priority: keyword > category > genre > country > year
+  // ─── Multi-faceted Filters (KKPhim V1 supports combining category + genre + country + year) ───
   const activeCategory = !queryKeyword ? rawCategory : "";
-  const activeGenre = !queryKeyword && !activeCategory ? rawGenre : "";
-  const activeCountry =
-    !queryKeyword && !activeCategory && !activeGenre ? rawCountry : "";
-  const activeYear =
-    !queryKeyword && !activeCategory && !activeGenre && !activeCountry
-      ? rawYear
-      : "";
+  const activeGenre = !queryKeyword ? rawGenre : "";
+  const activeCountry = !queryKeyword ? rawCountry : "";
+  const activeYear = !queryKeyword ? rawYear : "";
   const activeSort =
     rawSort === "name" || rawSort === "year" ? rawSort : "latest";
 
-  // ─── Local Search Input State ─────────────────────────────────────────────
+  // ─── Local Search Input State & Actor Results ─────────────────────────────
   const [inputVal, setInputVal] = useState(queryKeyword);
   const [filtersOpenMobile, setFiltersOpenMobile] = useState(false);
+  const [matchedActors, setMatchedActors] = useState<ActorSearchHit[]>([]);
+  const [actorMovies, setActorMovies] = useState<Movie[]>([]);
 
   // Sync input value if URL changes externally (back/forward navigation)
   const [prevUrlKeyword, setPrevUrlKeyword] = useState(queryKeyword);
@@ -88,43 +92,53 @@ function SearchDiscoveryContent() {
     setInputVal(queryKeyword);
   }
 
+  // Save keyword to recent searches & query matching actors
+  useEffect(() => {
+    if (queryKeyword) {
+      saveRecentSearch(queryKeyword);
+      let cancelled = false;
+      fetch(`/api/actors?q=${encodeURIComponent(queryKeyword)}`)
+        .then((r) => r.json())
+        .then((res) => {
+          if (cancelled) return;
+          if (res?.status) {
+            setMatchedActors(res.actors ?? []);
+            setActorMovies(res.movies ?? []);
+          } else {
+            setMatchedActors([]);
+            setActorMovies([]);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setMatchedActors([]);
+            setActorMovies([]);
+          }
+        });
+      return () => {
+        cancelled = true;
+      };
+    } else {
+      setMatchedActors([]);
+      setActorMovies([]);
+    }
+  }, [queryKeyword]);
+
   // ─── URL Sanitization Effect ─────────────────────────────────────────────
-  // Automatically purges invalid states from URL:
-  // - Conflicting filters (e.g., genre=X&country=Y or q=X&genre=Y)
-  // - sort=latest (default sort should not pollute URL)
-  // - legacy keyword parameter (normalized to q)
-  // - quality parameter (quality filter is removed)
   useEffect(() => {
     const hasLegacyKeyword = searchParams.has("keyword");
     const hasQuality = searchParams.has("quality");
     const hasDefaultSort = searchParams.get("sort") === "latest";
 
-    // Count how many mutually exclusive filter criteria are present in URL
-    const criteriaCount = [
-      Boolean(queryKeyword),
-      Boolean(rawCategory),
-      Boolean(rawGenre),
-      Boolean(rawCountry),
-      Boolean(rawYear),
-    ].filter(Boolean).length;
-
-    if (
-      hasLegacyKeyword ||
-      hasQuality ||
-      hasDefaultSort ||
-      criteriaCount > 1
-    ) {
+    if (hasLegacyKeyword || hasQuality || hasDefaultSort) {
       const params = new URLSearchParams();
       if (queryKeyword) {
         params.set("q", queryKeyword);
-      } else if (activeCategory) {
-        params.set("category", activeCategory);
-      } else if (activeGenre) {
-        params.set("genre", activeGenre);
-      } else if (activeCountry) {
-        params.set("country", activeCountry);
-      } else if (activeYear) {
-        params.set("year", activeYear);
+      } else {
+        if (activeCategory) params.set("category", activeCategory);
+        if (activeGenre) params.set("genre", activeGenre);
+        if (activeCountry) params.set("country", activeCountry);
+        if (activeYear) params.set("year", activeYear);
       }
 
       if (activeSort !== "latest") {
@@ -141,10 +155,6 @@ function SearchDiscoveryContent() {
   }, [
     searchParams,
     queryKeyword,
-    rawCategory,
-    rawGenre,
-    rawCountry,
-    rawYear,
     activeCategory,
     activeGenre,
     activeCountry,
@@ -261,9 +271,18 @@ function SearchDiscoveryContent() {
     page: queryPage,
   });
 
-  // ─── Client-side Sorting (Applied on current API page) ────────────────────
+  // ─── Client-side Sorting & Actor Movie Merging ────────────────────────────
   const displayMovies = useMemo(() => {
     const list: Movie[] = [...rawMovies];
+    if (queryKeyword && actorMovies.length > 0 && queryPage === 1) {
+      const seen = new Set(list.map((m) => m.slug));
+      for (const m of actorMovies) {
+        if (!seen.has(m.slug)) {
+          seen.add(m.slug);
+          list.push(m);
+        }
+      }
+    }
 
     // Sort within current page
     if (activeSort === "name") {
@@ -277,7 +296,7 @@ function SearchDiscoveryContent() {
     }
 
     return list;
-  }, [rawMovies, activeSort]);
+  }, [rawMovies, actorMovies, queryKeyword, queryPage, activeSort]);
 
   // ─── Count Active Filters ────────────────────────────────────────────────
   const activeFiltersCount = useMemo(() => {
@@ -436,9 +455,6 @@ function SearchDiscoveryContent() {
                 const val = e.target.value;
                 updateUrlParams({
                   category: val || null,
-                  genre: null,
-                  country: null,
-                  year: null,
                   q: null,
                 });
                 if (val) setInputVal("");
@@ -463,9 +479,6 @@ function SearchDiscoveryContent() {
                 const val = e.target.value;
                 updateUrlParams({
                   genre: val || null,
-                  category: null,
-                  country: null,
-                  year: null,
                   q: null,
                 });
                 if (val) setInputVal("");
@@ -490,9 +503,6 @@ function SearchDiscoveryContent() {
                 const val = e.target.value;
                 updateUrlParams({
                   country: val || null,
-                  category: null,
-                  genre: null,
-                  year: null,
                   q: null,
                 });
                 if (val) setInputVal("");
@@ -517,9 +527,6 @@ function SearchDiscoveryContent() {
                 const val = e.target.value;
                 updateUrlParams({
                   year: val || null,
-                  category: null,
-                  genre: null,
-                  country: null,
                   q: null,
                 });
                 if (val) setInputVal("");
@@ -637,6 +644,35 @@ function SearchDiscoveryContent() {
       </div>
 
       {/* ── Content States ── */}
+
+      {/* 0. Matched Actors & Directors Section */}
+      {queryKeyword && matchedActors.length > 0 && (
+        <div className="rounded-2xl bg-zinc-50 dark:bg-zinc-900/60 p-4 sm:p-5 border border-violet-500/20 space-y-3">
+          <div className="flex items-center gap-2 text-sm font-bold text-zinc-900 dark:text-zinc-100">
+            <Users className="h-4 w-4 text-violet-500" />
+            <span>Diễn viên & Đạo diễn phù hợp ({matchedActors.length})</span>
+          </div>
+          <div className="flex flex-wrap gap-2.5">
+            {matchedActors.map((actor) => (
+              <Link
+                key={actor.name}
+                href={`/dien-vien/${encodeURIComponent(actor.name)}`}
+                className="flex items-center gap-2.5 rounded-xl bg-white dark:bg-zinc-800/90 hover:bg-violet-600 hover:text-white px-3.5 py-2 text-xs font-semibold text-zinc-800 dark:text-zinc-200 border border-zinc-200/80 dark:border-zinc-700/80 hover:border-violet-500 transition-all shadow-sm group"
+              >
+                <span className="h-6 w-6 rounded-full bg-gradient-to-br from-violet-500 to-indigo-600 text-white flex items-center justify-center text-[11px] font-extrabold shrink-0">
+                  {actor.name.charAt(0).toUpperCase()}
+                </span>
+                <div>
+                  <span className="block">{actor.name}</span>
+                  <span className="text-[10px] text-zinc-400 group-hover:text-violet-200">
+                    {actor.role === "director" ? "Đạo diễn" : "Diễn viên"} • {actor.movieCount} phim
+                  </span>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 1. Error State */}
       {isError && (

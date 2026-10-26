@@ -35,6 +35,12 @@
   scrollbar-width: none;
 }
 
+/* Defer off-screen rendering for smooth scrolling (Modern Web Guidance) */
+.cv-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto none auto 340px;
+}
+
 /* Smooth transitions for theme switching */
 html {
   color-scheme: dark light;
