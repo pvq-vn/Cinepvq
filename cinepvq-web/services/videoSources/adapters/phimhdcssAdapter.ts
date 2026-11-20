@@ -264,7 +264,7 @@ export class PhimHdcssAdapter implements VideoSourceAdapter {
           name: "PhimHDCSS Direct HLS (Đã cắt QC)",
           displayName: "PhimHDCSS (HD)",
           type: "hls",
-          url: `/api/hls-proxy?url=${encodeURIComponent(directM3u8)}&stripAds=1`,
+          url: directM3u8,
           rawUrl: directM3u8,
           priority: this.priority,
           quality: "FHD",

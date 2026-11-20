@@ -1,7 +1,7 @@
 // ==============================================================================
 // services/videoSources/index.ts
 // Multi-Source Video Engine: Central Resolver & Orchestration
-// Priority: 1. VSMOV Native HLS -> 2. PhimHDCSS (FHDC) -> 3. K20 -> 4. KKPhim1 (Ad-Free) -> 5. ChoPhim -> 6. NguonC
+// Priority: 1. KKPhim1 (Direct HLS, Ad-Free) -> 2. PhimHDCSS (FHDC / HD) -> 3. K20 -> 4. ChoPhim -> 5. VSMOV -> 6. NguonC
 // Includes in-memory TTL cache + strict per-adapter deadline for sub-3s resolution & 0ms cached switching.
 // ==============================================================================
 
@@ -16,15 +16,16 @@ import { PhimHdcssAdapter } from "./adapters/phimhdcssAdapter";
 import { ChoPhimAdapter } from "./adapters/chophimAdapter";
 import { KKPhimAdapter } from "./adapters/kkphimAdapter";
 import { NguonCAdapter } from "./adapters/nguoncAdapter";
+import { isDirectM3u8Url } from "@/lib/hlsCleaner";
 
 export * from "./types";
 
 const adapters: VideoSourceAdapter[] = [
-  new VsmovAdapter(),
+  new KKPhimAdapter(),
   new PhimHdcssAdapter(),
   new K20Adapter(),
-  new KKPhimAdapter(),
   new ChoPhimAdapter(),
+  new VsmovAdapter(),
   new NguonCAdapter(),
 ];
 
@@ -160,6 +161,90 @@ export async function resolveAllAvailableSourcesServer(
   return resolved;
 }
 
+async function fetchNguoncDirectClient(
+  options: ResolveSourceOptions
+): Promise<ResolvedSource | null> {
+  if (!options.slug || typeof window === "undefined") return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 2500);
+  try {
+    const cleanSlug = options.slug.trim().toLowerCase();
+    const res = await fetch(
+      `https://phim.nguonc.com/api/film/${encodeURIComponent(cleanSlug)}`,
+      { headers: { Accept: "application/json" }, signal: controller.signal }
+    );
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const servers: Array<{
+      server_name?: string;
+      items?: Array<{ name?: string; slug?: string; embed?: string; m3u8?: string }>;
+    }> = data?.movie?.episodes || [];
+    if (servers.length === 0) return null;
+
+    const reqServer = (options.serverName || "").toLowerCase();
+    const isTM = /thuy[eế]t\s*minh|\btm\b/i.test(reqServer);
+    const isLT = /l[oồ]ng\s*ti[eế]ng/i.test(reqServer);
+    const isVS = /vietsub/i.test(reqServer);
+    const episode = options.episode || 1;
+
+    let candidateGroups = servers;
+    if (isTM) {
+      candidateGroups = servers.filter((g) => /thuy[eế]t\s*minh|\btm\b/i.test(g.server_name || ""));
+    } else if (isLT) {
+      candidateGroups = servers.filter((g) => /l[oồ]ng\s*ti[eế]ng/i.test(g.server_name || ""));
+    } else if (isVS) {
+      const vs = servers.filter(
+        (g) =>
+          /vietsub/i.test(g.server_name || "") ||
+          !/thuy[eế]t\s*minh|\btm\b|l[oồ]ng\s*ti[eế]ng/i.test(g.server_name || "")
+      );
+      if (vs.length > 0) candidateGroups = vs;
+    }
+
+    for (const group of candidateGroups) {
+      const items = group.items || [];
+      const ep = items.find((item) => {
+        if (options.episodeSlug && item.slug?.toLowerCase() === options.episodeSlug.toLowerCase()) {
+          return true;
+        }
+        const isFull =
+          (item.name || "").toLowerCase().includes("full") ||
+          (item.slug || "").toLowerCase().includes("full");
+        if ((isFull || items.length === 1) && episode === 1) return true;
+        const num =
+          parseInt((item.name || "").replace(/\D/g, ""), 10) ||
+          parseInt((item.slug || "").replace(/\D/g, ""), 10) ||
+          0;
+        return num === episode;
+      });
+      const streamUrl = ep?.m3u8 || ep?.embed;
+      if (streamUrl) {
+        const isHls = isDirectM3u8Url(streamUrl);
+        return {
+          sourceId: "nguonc",
+          name: "Server Dự Phòng (StreamC)",
+          displayName: isTM
+            ? "StreamC (Thuyết Minh)"
+            : isLT
+            ? "StreamC (Lồng Tiếng)"
+            : "Server Dự Phòng (StreamC)",
+          type: isHls ? "hls" : "iframe",
+          url: streamUrl,
+          priority: 6,
+          quality: "FHD",
+          serverName: group.server_name || "StreamC",
+          isAvailable: true,
+        };
+      }
+    }
+    return null;
+  } catch {
+    clearTimeout(timer);
+    return null;
+  }
+}
+
 /**
  * Universal Client/Server Resolver:
  * In browser: calls `/api/video-sources/resolve` to bypass CORS.
@@ -198,16 +283,20 @@ export async function resolveAllSources(
 
       const res = await fetch(`/api/video-sources/resolve?${params.toString()}`, reqInit);
       if (!res.ok) {
-        if (options.knownHlsUrl && options.knownHlsUrl.includes(".m3u8")) {
+        const directKnown =
+          options.knownHlsUrl && isDirectM3u8Url(options.knownHlsUrl)
+            ? options.knownHlsUrl.trim()
+            : "";
+        if (directKnown) {
           return [
             {
               sourceId: "kkphim",
               name: "KKPhim1 Direct HLS (Đã cắt QC)",
               displayName: "KKPhim1 Direct",
               type: "hls",
-              url: `/api/hls-proxy?url=${encodeURIComponent(options.knownHlsUrl.trim())}&stripAds=1`,
-              rawUrl: options.knownHlsUrl.trim(),
-              priority: 5,
+              url: directKnown,
+              rawUrl: directKnown,
+              priority: 1,
               isAvailable: true,
               adFree: true,
             },
@@ -219,7 +308,7 @@ export async function resolveAllSources(
               sourceId: "nguonc",
               name: "Server Dự Phòng (StreamC)",
               displayName: "Server Dự Phòng",
-              type: options.nguoncEmbedUrl.includes(".m3u8") ? "hls" : "iframe",
+              type: isDirectM3u8Url(options.nguoncEmbedUrl) ? "hls" : "iframe",
               url: options.nguoncEmbedUrl,
               priority: 6,
               isAvailable: true,
@@ -230,7 +319,31 @@ export async function resolveAllSources(
       }
 
       const data = await res.json();
-      const sources = (data.sources as ResolvedSource[]) || [];
+      const sources: ResolvedSource[] = [...((data.sources as ResolvedSource[]) || [])];
+
+      // phim.nguonc.com returns 403 to Vercel US IPs but 200 (ACAO: *) directly in browser
+      const existingNguonc = sources.find((s) => s.sourceId === "nguonc");
+      const hasGenuineNguonc = Boolean(
+        existingNguonc &&
+          (existingNguonc.url.includes("streamc") || existingNguonc.url.includes("nguonc"))
+      );
+      if (!hasGenuineNguonc && options.slug) {
+        const clientNguonc = await fetchNguoncDirectClient(options);
+        if (clientNguonc) {
+          const idx = sources.findIndex((s) => s.sourceId === "nguonc");
+          if (idx >= 0) {
+            sources[idx] = clientNguonc;
+          } else {
+            sources.push(clientNguonc);
+          }
+          sources.sort((a, b) => {
+            if (a.type === "hls" && b.type !== "hls") return -1;
+            if (a.type !== "hls" && b.type === "hls") return 1;
+            return a.priority - b.priority;
+          });
+        }
+      }
+
       if (sources.length > 0) {
         streamResolveCache.set(cacheKey, {
           sources,
@@ -239,16 +352,20 @@ export async function resolveAllSources(
       }
       return sources;
     } catch {
-      if (options.knownHlsUrl && options.knownHlsUrl.includes(".m3u8")) {
+      const directKnown =
+        options.knownHlsUrl && isDirectM3u8Url(options.knownHlsUrl)
+          ? options.knownHlsUrl.trim()
+          : "";
+      if (directKnown) {
         return [
           {
             sourceId: "kkphim",
             name: "KKPhim1 Direct HLS (Đã cắt QC)",
             displayName: "KKPhim1 Direct",
             type: "hls",
-            url: `/api/hls-proxy?url=${encodeURIComponent(options.knownHlsUrl.trim())}&stripAds=1`,
-            rawUrl: options.knownHlsUrl.trim(),
-            priority: 5,
+            url: directKnown,
+            rawUrl: directKnown,
+            priority: 1,
             isAvailable: true,
             adFree: true,
           },
@@ -260,7 +377,7 @@ export async function resolveAllSources(
             sourceId: "nguonc",
             name: "Server Dự Phòng (StreamC)",
             displayName: "Server Dự Phòng",
-            type: options.nguoncEmbedUrl.includes(".m3u8") ? "hls" : "iframe",
+            type: isDirectM3u8Url(options.nguoncEmbedUrl) ? "hls" : "iframe",
             url: options.nguoncEmbedUrl,
             priority: 6,
             isAvailable: true,

@@ -32,10 +32,6 @@ interface KKPhimMovieData {
   episodes?: KKPhimEpisodeGroup[];
 }
 
-function buildAdFreeHlsUrl(rawM3u8: string): string {
-  return `/api/hls-proxy?url=${encodeURIComponent(rawM3u8)}&stripAds=1`;
-}
-
 function matchTitle(candidateName: string, targetTitle: string, season = 1): boolean {
   const norm = (s: string) =>
     s
@@ -61,7 +57,7 @@ function matchTitle(candidateName: string, targetTitle: string, season = 1): boo
 export class KKPhimAdapter implements VideoSourceAdapter {
   readonly sourceId = "kkphim" as const;
   readonly name = "KKPhim1 Direct HLS (Đã cắt QC)";
-  readonly priority = 4;
+  readonly priority = 1;
 
   async resolveStream(options: ResolveSourceOptions): Promise<ResolvedSource | null> {
     const { slug, title, episode = 1, knownHlsUrl, serverName } = options;
@@ -71,7 +67,7 @@ export class KKPhimAdapter implements VideoSourceAdapter {
     const isLT = /l[oồ]ng\s*ti[eế]ng/i.test(reqServer);
     const isVS = /vietsub/i.test(reqServer);
 
-    // Fast path: if client already provided the exact .m3u8 URL from movie detail
+    // Fast path: return direct CDN .m3u8 URL (ad stripping runs client-side in hls.js pLoader)
     if (knownHlsUrl && knownHlsUrl.includes(".m3u8")) {
       const cleanRaw = knownHlsUrl.trim();
       return {
@@ -83,7 +79,7 @@ export class KKPhimAdapter implements VideoSourceAdapter {
           ? "KKPhim1 (Lồng Tiếng)"
           : "KKPhim1 Direct",
         type: "hls",
-        url: buildAdFreeHlsUrl(cleanRaw),
+        url: cleanRaw,
         rawUrl: cleanRaw,
         priority: this.priority,
         quality: "FHD",
@@ -225,7 +221,7 @@ export class KKPhimAdapter implements VideoSourceAdapter {
               ? "KKPhim1 (Lồng Tiếng)"
               : "KKPhim1 Direct",
             type: "hls",
-            url: buildAdFreeHlsUrl(cleanRaw),
+            url: cleanRaw,
             rawUrl: cleanRaw,
             priority: this.priority,
             quality: movieData.movie?.quality || "HD",

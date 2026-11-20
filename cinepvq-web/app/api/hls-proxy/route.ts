@@ -11,6 +11,7 @@ import {
   extractSingleVariantUrl,
   findTsSyncOffsetInHeader,
   rewriteHlsManifest,
+  stripPngPrefixFromTs,
 } from "@/lib/hlsCleaner";
 
 export const dynamic = "force-dynamic";
@@ -400,12 +401,22 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Binary video segment: stream directly with zero full-segment memory buffering!
+    // Binary video segment (Safari native HLS fallback when stripPng=1)
+    if (stripPng) {
+      const peekBuf = new Uint8Array(await upstream.arrayBuffer());
+      const cleaned = stripPngPrefixFromTs(peekBuf);
+      return new NextResponse(Buffer.from(cleaned), {
+        status: 200,
+        headers: {
+          ...CORS_HEADERS,
+          "Content-Type": "video/mp2t",
+          "Cache-Control": "public, max-age=3600, s-maxage=3600",
+        },
+      });
+    }
+
     if (upstream.body) {
-      const outputStream = stripPng
-        ? createStreamingPngUnwrapStream(upstream.body)
-        : upstream.body;
-      return new NextResponse(outputStream, {
+      return new NextResponse(upstream.body, {
         status: 200,
         headers: {
           ...CORS_HEADERS,

@@ -97,9 +97,7 @@ function extractDirectHlsUrl(knownHlsUrl?: string, videoUrl?: string): string {
 function buildInstantKkphimSource(directHlsUrl: string, serverName?: string): ResolvedSource {
   const isTM = /thuy[eế]t\s*minh|\btm\b|l[oồ]ng\s*ti[eế]ng/i.test(serverName || "");
   const isLT = /l[oồ]ng\s*ti[eế]ng|\blt\b/i.test(serverName || "");
-  const proxiedUrl = directHlsUrl.startsWith("/api/hls-proxy")
-    ? directHlsUrl
-    : `/api/hls-proxy?url=${encodeURIComponent(directHlsUrl)}&stripAds=1`;
+  const cleanDirect = directHlsUrl.trim();
   return {
     sourceId: "kkphim",
     name: isLT
@@ -113,9 +111,9 @@ function buildInstantKkphimSource(directHlsUrl: string, serverName?: string): Re
       ? "KKPhim1 (Thuyết Minh)"
       : "KKPhim1 (Vietsub)",
     type: "hls",
-    url: proxiedUrl,
-    rawUrl: directHlsUrl,
-    priority: 5,
+    url: cleanDirect,
+    rawUrl: cleanDirect,
+    priority: 1,
     quality: "FHD",
     serverName: serverName || "KKPhim1 Direct",
     isAvailable: true,
@@ -819,17 +817,14 @@ export default function VideoPlayer({
             Ưu tiên Direct HLS tốc độ cao • Không quảng cáo
           </p>
         </div>
-      ) : activeSource?.type === "hls" || directHlsUrl ? (
+      ) : (activeSource ? activeSource.type === "hls" : Boolean(directHlsUrl)) ? (
         <CustomHlsPlayer
           key="cinepvq-active-hls"
-          src={
-            activeSource?.type === "hls"
-              ? activeSource.url
-              : `/api/hls-proxy?url=${encodeURIComponent(directHlsUrl)}&stripAds=1`
-          }
+          src={activeSource?.type === "hls" ? activeSource.url : directHlsUrl}
           poster={poster}
           subtitles={activeSource?.subtitles}
-          stripPng={activeSource?.stripPng}
+          stripPng={Boolean(activeSource?.stripPng)}
+          stripAds={activeSource?.type === "hls" ? (activeSource.adFree ?? true) : true}
           initialTime={resumeTime}
           autoPlay={currentAutoPlay}
           initialPlaybackRate={settings?.playbackSpeed || 1}

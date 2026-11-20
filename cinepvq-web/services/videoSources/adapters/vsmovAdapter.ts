@@ -166,8 +166,8 @@ async function extractVsmovDirectHls(embedUrl: string): Promise<{
 
 export class VsmovAdapter implements VideoSourceAdapter {
   readonly sourceId = "vsmov" as const;
-  readonly name = "VSMOV Native HLS (Siêu mượt • Không QC)";
-  readonly priority = 1;
+  readonly name = "VSMOV Native HLS (Có phụ đề)";
+  readonly priority = 5;
 
   async resolveStream(options: ResolveSourceOptions): Promise<ResolvedSource | null> {
     const { slug, title, episode = 1 } = options;
@@ -318,7 +318,7 @@ export class VsmovAdapter implements VideoSourceAdapter {
           : "VSMOV";
 
         // Case 1: API already gave direct .m3u8
-        // Segments allow direct browser CORS -> unwrap PNG-TS client-side in hls.js for 0ms server hop!
+        // v8.streamvsmov.com sends ACAO: * -> load master.m3u8 directly in browser & unwrap PNG client-side!
         if (ep.link_m3u8 && ep.link_m3u8.includes(".m3u8")) {
           const rawM3u8 = ep.link_m3u8.trim();
           return {
@@ -326,7 +326,7 @@ export class VsmovAdapter implements VideoSourceAdapter {
             name: this.name,
             displayName,
             type: "hls",
-            url: `/api/hls-proxy?url=${encodeURIComponent(rawM3u8)}`,
+            url: rawM3u8,
             rawUrl: rawM3u8,
             priority: this.priority,
             quality: movieData.movie?.quality || "HD",
@@ -338,20 +338,16 @@ export class VsmovAdapter implements VideoSourceAdapter {
         }
 
         // Case 2: Extract real master.m3u8 + VTT subtitles from VSMOV embed page!
-        // VSMOV edge CDN supports CORS directly: browser fetches segments straight from edge
-        // and unwraps 478B PNG headers in PngUnwrapFragmentLoader (Safari native adds proxySegments=1).
+        // VSMOV master/edge CDN supports direct browser CORS (ACAO: *); unwrap PNG-TS client-side in PngUnwrapFragmentLoader.
         if (ep.link_embed) {
           const extracted = await extractVsmovDirectHls(ep.link_embed);
           if (extracted?.masterUrl) {
-            const proxyUrl =
-              `/api/hls-proxy?url=${encodeURIComponent(extracted.masterUrl)}` +
-              `&ref=${encodeURIComponent(ep.link_embed)}`;
             return {
               sourceId: this.sourceId,
               name: this.name,
               displayName,
               type: "hls",
-              url: proxyUrl,
+              url: extracted.masterUrl,
               rawUrl: extracted.masterUrl,
               priority: this.priority,
               quality: movieData.movie?.quality || "FHD",

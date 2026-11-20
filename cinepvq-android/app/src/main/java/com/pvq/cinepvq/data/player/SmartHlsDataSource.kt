@@ -408,9 +408,109 @@ object HlsAdAndPngProcessor {
     }
 
     /**
-     * Unwraps fake image/PNG header prefix and non-188 trailing footer from disguised MPEG-TS segments.
+     * Unwraps multi-chunk PNG `stEg` containers (used by PhimHDCSS FHDC / ibyteimg):
+     * extracts every `stEg` chunk payload (skipping the 12-byte custom header) into
+     * a continuous 188-byte-aligned MPEG-TS byte array. Returns null if no `stEg` chunk exists.
+     */
+    fun unwrapStegPngChunks(buf: ByteArray): ByteArray? {
+        if (buf.size < 24) return null
+        val isPng = (buf[0].toInt() and 0xFF) == 0x89 &&
+            (buf[1].toInt() and 0xFF) == 0x50 &&
+            (buf[2].toInt() and 0xFF) == 0x4E &&
+            (buf[3].toInt() and 0xFF) == 0x47 &&
+            (buf[4].toInt() and 0xFF) == 0x0D &&
+            (buf[5].toInt() and 0xFF) == 0x0A &&
+            (buf[6].toInt() and 0xFF) == 0x1A &&
+            (buf[7].toInt() and 0xFF) == 0x0A
+        if (!isPng) return null
+
+        val parts = mutableListOf<Pair<Int, Int>>()
+        var pos = 8
+        while (pos + 12 <= buf.size) {
+            val len = (((buf[pos].toInt() and 0xFF) shl 24) or
+                ((buf[pos + 1].toInt() and 0xFF) shl 16) or
+                ((buf[pos + 2].toInt() and 0xFF) shl 8) or
+                (buf[pos + 3].toInt() and 0xFF)).toLong()
+            val b4 = buf[pos + 4].toInt() and 0xFF
+            val b5 = buf[pos + 5].toInt() and 0xFF
+            val b6 = buf[pos + 6].toInt() and 0xFF
+            val b7 = buf[pos + 7].toInt() and 0xFF
+            val isAscii = isAsciiLetter(b4) && isAsciiLetter(b5) && isAsciiLetter(b6) && isAsciiLetter(b7)
+            if (!isAscii || len < 0 || pos + 12L + len > buf.size) break
+
+            val chunkLen = len.toInt()
+            // "stEg" = 0x73, 0x74, 0x45, 0x67
+            if (b4 == 0x73 && b5 == 0x74 && b6 == 0x45 && b7 == 0x67 && chunkLen > 12) {
+                parts.add((pos + 20) to (chunkLen - 12))
+            }
+            pos += 12 + chunkLen
+            // "IEND" = 0x49, 0x45, 0x4E, 0x44
+            if (b4 == 0x49 && b5 == 0x45 && b6 == 0x4E && b7 == 0x44) break
+        }
+        if (parts.isEmpty()) return null
+
+        val total = parts.sumOf { it.second }
+        val aligned = total - (total % 188)
+        if (aligned <= 0) return null
+        val out = ByteArray(aligned)
+        var outOffset = 0
+        for ((srcOff, srcLen) in parts) {
+            val toCopy = min(srcLen, aligned - outOffset)
+            if (toCopy <= 0) break
+            System.arraycopy(buf, srcOff, out, outOffset, toCopy)
+            outOffset += toCopy
+        }
+        return out
+    }
+
+    /**
+     * Peeks an initial header probe buffer to detect whether this PNG stream uses `stEg` chunks.
+     * Returns Pair(payloadStartOffset, firstChunkRemainingBytes) or null if not a `stEg` PNG.
+     */
+    fun detectFirstStegChunk(buf: ByteArray, validLen: Int): Pair<Int, Int>? {
+        if (validLen < 80) return null
+        val isPng = (buf[0].toInt() and 0xFF) == 0x89 &&
+            (buf[1].toInt() and 0xFF) == 0x50 &&
+            (buf[2].toInt() and 0xFF) == 0x4E &&
+            (buf[3].toInt() and 0xFF) == 0x47
+        if (!isPng) return null
+
+        var pos = 8
+        while (pos + 20 <= validLen) {
+            val len = (((buf[pos].toInt() and 0xFF) shl 24) or
+                ((buf[pos + 1].toInt() and 0xFF) shl 16) or
+                ((buf[pos + 2].toInt() and 0xFF) shl 8) or
+                (buf[pos + 3].toInt() and 0xFF)).toLong()
+            val b4 = buf[pos + 4].toInt() and 0xFF
+            val b5 = buf[pos + 5].toInt() and 0xFF
+            val b6 = buf[pos + 6].toInt() and 0xFF
+            val b7 = buf[pos + 7].toInt() and 0xFF
+            val isAscii = isAsciiLetter(b4) && isAsciiLetter(b5) && isAsciiLetter(b6) && isAsciiLetter(b7)
+            if (!isAscii || len < 0) break
+
+            val chunkLen = len.toInt()
+            if (b4 == 0x73 && b5 == 0x74 && b6 == 0x45 && b7 == 0x67 && chunkLen > 12) {
+                val payloadStart = pos + 20
+                if (payloadStart <= validLen) {
+                    return payloadStart to (chunkLen - 12)
+                }
+                return null
+            }
+            if (pos + 12L + chunkLen > validLen) break
+            pos += 12 + chunkLen
+            if (b4 == 0x49 && b5 == 0x45 && b6 == 0x4E && b7 == 0x44) break
+        }
+        return null
+    }
+
+    private fun isAsciiLetter(b: Int): Boolean = (b in 65..90) || (b in 97..122)
+
+    /**
+     * Unwraps PNG-disguised MPEG-TS (both multi-chunk PNG `stEg` containers and single-header PNGs).
      */
     fun stripPngPrefixFromTs(buf: ByteArray): ByteArray {
+        unwrapStegPngChunks(buf)?.let { return it }
+
         val tsOffset = findTsSyncOffsetInHeader(buf, buf.size)
         if (tsOffset <= 0) return buf
 
@@ -495,10 +595,13 @@ private class SmartHlsDataSource(
     private var readOffset: Int = 0
     private var bytesRemaining: Int = 0
 
-    // Mode B: Low-latency streaming prefix buffer for PNG-TS header unwrap
+    // Mode B: Low-latency streaming prefix buffer for PNG-TS header unwrap & stEg chunk streaming
     private var streamPrefixBytes: ByteArray? = null
     private var streamPrefixOffset: Int = 0
     private var streamPrefixRemaining: Int = 0
+    private var isStegStream: Boolean = false
+    private var stegRemainingInChunk: Int = 0
+    private var stegEof: Boolean = false
 
     private var currentUri: Uri? = null
     private var responseHeaders: Map<String, List<String>> = emptyMap()
@@ -688,35 +791,44 @@ private class SmartHlsDataSource(
         if (isPotentialPngSegment) {
             val headerProbe = ByteArray(8192)
             var filled = 0
-            var tsOffset = 0
             while (filled < 2048) {
                 val n = inputStream.read(headerProbe, filled, headerProbe.size - filled)
                 if (n <= 0) break
                 filled += n
-                if (filled >= 1024) {
-                    tsOffset = HlsAdAndPngProcessor.findTsSyncOffsetInHeader(headerProbe, filled)
-                    if (tsOffset > 0) break
+                val earlySteg = HlsAdAndPngProcessor.detectFirstStegChunk(headerProbe, filled)
+                if (earlySteg != null) break
+                if (filled >= 1024 && HlsAdAndPngProcessor.findTsSyncOffsetInHeader(headerProbe, filled) > 0) {
+                    break
                 }
             }
-            if (tsOffset == 0) {
-                tsOffset = HlsAdAndPngProcessor.findTsSyncOffsetInHeader(headerProbe, filled)
-            }
-            if (tsOffset > 0 && tsOffset < filled) {
-                streamPrefixBytes = headerProbe
-                streamPrefixOffset = tsOffset
-                streamPrefixRemaining = filled - tsOffset
-            } else if (filled > 0) {
-                streamPrefixBytes = headerProbe
-                streamPrefixOffset = 0
-                streamPrefixRemaining = filled
+
+            val stegInfo = HlsAdAndPngProcessor.detectFirstStegChunk(headerProbe, filled)
+            if (stegInfo != null) {
+                isStegStream = true
+                stegEof = false
+                val (payloadStart, chunkPayloadLen) = stegInfo
+                stegRemainingInChunk = chunkPayloadLen
+                if (payloadStart < filled) {
+                    streamPrefixBytes = headerProbe
+                    streamPrefixOffset = payloadStart
+                    streamPrefixRemaining = filled - payloadStart
+                }
+            } else {
+                isStegStream = false
+                val tsOffset = HlsAdAndPngProcessor.findTsSyncOffsetInHeader(headerProbe, filled)
+                if (tsOffset > 0 && tsOffset < filled) {
+                    streamPrefixBytes = headerProbe
+                    streamPrefixOffset = tsOffset
+                    streamPrefixRemaining = filled - tsOffset
+                } else if (filled > 0) {
+                    streamPrefixBytes = headerProbe
+                    streamPrefixOffset = 0
+                    streamPrefixRemaining = filled
+                }
             }
             opened = true
             transferListeners.forEach { it.onTransferStart(this, dataSpec, true) }
-            return if (contentLen > 0L && tsOffset >= 0 && contentLen > tsOffset) {
-                C.LENGTH_UNSET.toLong() // Let ExoPlayer stream smoothly until EOF
-            } else {
-                C.LENGTH_UNSET.toLong()
-            }
+            return C.LENGTH_UNSET.toLong()
         }
 
         // ── Mode C: Direct Pooled HTTP/2 Streaming Passthrough (KKPhim1 / K20 / ChoPhim .ts) ──
@@ -748,6 +860,42 @@ private class SmartHlsDataSource(
             return toCopy
         }
 
+        // Mode B streaming stEg chunk unwrapper (PhimHDCSS FHDC: strips 4B CRC + next chunk headers every 1 MiB)
+        if (isStegStream) {
+            if (stegEof) return C.RESULT_END_OF_INPUT
+            while (stegRemainingInChunk <= 0) {
+                if (!advanceToNextStegChunk()) {
+                    stegEof = true
+                    return C.RESULT_END_OF_INPUT
+                }
+            }
+            val maxWant = min(length, stegRemainingInChunk)
+            val prefix = streamPrefixBytes
+            val got = if (prefix != null && streamPrefixRemaining > 0) {
+                val n = min(maxWant, streamPrefixRemaining)
+                System.arraycopy(prefix, streamPrefixOffset, buffer, offset, n)
+                streamPrefixOffset += n
+                streamPrefixRemaining -= n
+                if (streamPrefixRemaining == 0) streamPrefixBytes = null
+                n
+            } else {
+                val stream = activeStream ?: return C.RESULT_END_OF_INPUT
+                val n = stream.read(buffer, offset, maxWant)
+                if (n == -1) {
+                    stegEof = true
+                    return C.RESULT_END_OF_INPUT
+                }
+                n
+            }
+            if (got > 0) {
+                stegRemainingInChunk -= got
+                activeDataSpec?.let { spec ->
+                    transferListeners.forEach { it.onBytesTransferred(this, spec, true, got) }
+                }
+            }
+            return got
+        }
+
         // Mode B prefix drain (post-PNG header bytes)
         val prefix = streamPrefixBytes
         if (prefix != null && streamPrefixRemaining > 0) {
@@ -776,6 +924,77 @@ private class SmartHlsDataSource(
         return readBytes
     }
 
+    private fun readRawExact(dst: ByteArray, dstLen: Int): Boolean {
+        var filled = 0
+        while (filled < dstLen) {
+            val prefix = streamPrefixBytes
+            if (prefix != null && streamPrefixRemaining > 0) {
+                val n = min(dstLen - filled, streamPrefixRemaining)
+                System.arraycopy(prefix, streamPrefixOffset, dst, filled, n)
+                streamPrefixOffset += n
+                streamPrefixRemaining -= n
+                if (streamPrefixRemaining == 0) streamPrefixBytes = null
+                filled += n
+            } else {
+                val stream = activeStream ?: return false
+                val n = stream.read(dst, filled, dstLen - filled)
+                if (n <= 0) return false
+                filled += n
+            }
+        }
+        return true
+    }
+
+    private fun skipRawExact(bytesToSkip: Int): Boolean {
+        var remaining = bytesToSkip
+        val scratch = ByteArray(min(maxOf(bytesToSkip, 1), 4096))
+        while (remaining > 0) {
+            val prefix = streamPrefixBytes
+            if (prefix != null && streamPrefixRemaining > 0) {
+                val n = min(remaining, streamPrefixRemaining)
+                streamPrefixOffset += n
+                streamPrefixRemaining -= n
+                if (streamPrefixRemaining == 0) streamPrefixBytes = null
+                remaining -= n
+            } else {
+                val stream = activeStream ?: return false
+                val n = stream.read(scratch, 0, min(remaining, scratch.size))
+                if (n <= 0) return false
+                remaining -= n
+            }
+        }
+        return true
+    }
+
+    private fun advanceToNextStegChunk(): Boolean {
+        val hdr = ByteArray(8)
+        while (true) {
+            // Skip 4-byte CRC of previous chunk, then read 8-byte [len + type] of next PNG chunk
+            if (!skipRawExact(4)) return false
+            if (!readRawExact(hdr, 8)) return false
+            val len = (((hdr[0].toInt() and 0xFF) shl 24) or
+                ((hdr[1].toInt() and 0xFF) shl 16) or
+                ((hdr[2].toInt() and 0xFF) shl 8) or
+                (hdr[3].toInt() and 0xFF))
+            val b4 = hdr[4].toInt() and 0xFF
+            val b5 = hdr[5].toInt() and 0xFF
+            val b6 = hdr[6].toInt() and 0xFF
+            val b7 = hdr[7].toInt() and 0xFF
+            // "IEND"
+            if (b4 == 0x49 && b5 == 0x45 && b6 == 0x4E && b7 == 0x44) {
+                return false
+            }
+            if (len < 0) return false
+            // "stEg"
+            if (b4 == 0x73 && b5 == 0x74 && b6 == 0x45 && b7 == 0x67 && len > 12) {
+                if (!skipRawExact(12)) return false
+                stegRemainingInChunk = len - 12
+                return true
+            }
+            if (!skipRawExact(len)) return false
+        }
+    }
+
     override fun getUri(): Uri? = currentUri
 
     override fun getResponseHeaders(): Map<String, List<String>> = responseHeaders
@@ -787,6 +1006,9 @@ private class SmartHlsDataSource(
         streamPrefixBytes = null
         streamPrefixOffset = 0
         streamPrefixRemaining = 0
+        isStegStream = false
+        stegRemainingInChunk = 0
+        stegEof = false
         try {
             activeStream?.close()
         } catch (_: Exception) {}

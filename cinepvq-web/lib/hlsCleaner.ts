@@ -4,6 +4,27 @@
 // Used by /api/hls-proxy for KKPhim1 ad removal, VSMOV native HLS, and PhimHDCSS
 // ==============================================================================
 
+export function isDirectM3u8Url(rawUrl?: string | null): boolean {
+  if (!rawUrl || typeof rawUrl !== "string") return false;
+  try {
+    const parsed = new URL(rawUrl.trim());
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return false;
+    }
+    const pathLower = parsed.pathname.toLowerCase();
+    if (
+      pathLower.includes("/player") ||
+      pathLower.includes("/embed") ||
+      pathLower.includes("/share")
+    ) {
+      return false;
+    }
+    return pathLower.includes(".m3u8");
+  } catch {
+    return false;
+  }
+}
+
 export interface AdStripResult {
   cleaned: string;
   removedSegments: number;
@@ -440,11 +461,77 @@ export function findTsSyncOffsetInHeader(buf: Uint8Array): number {
 }
 
 /**
- * Unwraps PNG-disguised MPEG-TS segments (used by VSMOV & PhimHDCSS FHDC).
- * Scans the initial bytes for a genuine 188-byte-aligned MPEG-TS sync triplet
- * (`0x47` at `i`, `i + 188`, `i + 376`) and trims any fake PNG header/footer.
+ * Unwraps PNG-disguised MPEG-TS segments:
+ * 1. Multi-chunk PNG stEg containers (used by PhimHDCSS FHDC / ibyteimg):
+ *    Extracts every `stEg` chunk payload (skipping the 12-byte custom stEg header)
+ *    and concatenates them into a continuous 188-byte-aligned MPEG-TS stream.
+ * 2. Single-header PNG/image disguised MPEG-TS (used by VSMOV):
+ *    Scans the initial bytes for a genuine 188-byte-aligned MPEG-TS sync triplet
+ *    (`0x47` at `i`, `i + 188`, `i + 376`) and trims any fake image header/footer.
  */
 export function stripPngPrefixFromTs(buf: Uint8Array): Uint8Array {
+  if (
+    buf.length > 24 &&
+    buf[0] === 0x89 &&
+    buf[1] === 0x50 &&
+    buf[2] === 0x4e &&
+    buf[3] === 0x47 &&
+    buf[4] === 0x0d &&
+    buf[5] === 0x0a &&
+    buf[6] === 0x1a &&
+    buf[7] === 0x0a
+  ) {
+    const stegParts: Uint8Array[] = [];
+    let pos = 8;
+    while (pos + 12 <= buf.length) {
+      const len =
+        ((buf[pos] << 24) |
+          (buf[pos + 1] << 16) |
+          (buf[pos + 2] << 8) |
+          buf[pos + 3]) >>>
+        0;
+      const b4 = buf[pos + 4];
+      const b5 = buf[pos + 5];
+      const b6 = buf[pos + 6];
+      const b7 = buf[pos + 7];
+      const isAscii =
+        ((b4 >= 65 && b4 <= 90) || (b4 >= 97 && b4 <= 122)) &&
+        ((b5 >= 65 && b5 <= 90) || (b5 >= 97 && b5 <= 122)) &&
+        ((b6 >= 65 && b6 <= 90) || (b6 >= 97 && b6 <= 122)) &&
+        ((b7 >= 65 && b7 <= 90) || (b7 >= 97 && b7 <= 122));
+
+      if (!isAscii || pos + 12 + len > buf.length) {
+        break;
+      }
+
+      // Check for "stEg" (0x73, 0x74, 0x45, 0x67)
+      if (b4 === 0x73 && b5 === 0x74 && b6 === 0x45 && b7 === 0x67 && len > 12) {
+        stegParts.push(buf.subarray(pos + 20, pos + 8 + len));
+      }
+
+      pos += 12 + len;
+      // Check for "IEND" (0x49, 0x45, 0x4e, 0x44)
+      if (b4 === 0x49 && b5 === 0x45 && b6 === 0x4e && b7 === 0x44) {
+        break;
+      }
+    }
+
+    if (stegParts.length > 0) {
+      let totalLen = 0;
+      for (const part of stegParts) totalLen += part.byteLength;
+      const alignedTotal = totalLen - (totalLen % 188);
+      if (alignedTotal > 0) {
+        const merged = new Uint8Array(totalLen);
+        let offset = 0;
+        for (const part of stegParts) {
+          merged.set(part, offset);
+          offset += part.byteLength;
+        }
+        return alignedTotal === totalLen ? merged : merged.subarray(0, alignedTotal);
+      }
+    }
+  }
+
   const tsOffset = findTsSyncOffsetInHeader(buf);
   if (tsOffset <= 0) return buf;
 

@@ -30,10 +30,43 @@ import {
 } from "lucide-react";
 import { exitFullscreenSafely, type AudioServerInfo } from "@/contexts/GlobalPlayerContext";
 import { episodeProgressStore } from "@/services/userStore";
-import { stripPngPrefixFromTs } from "@/lib/hlsCleaner";
+import { stripAdsFromM3u8, stripPngPrefixFromTs } from "@/lib/hlsCleaner";
 import type { SubtitleTrack } from "@/services/videoSources/types";
 
 const DefaultHlsLoader = Hls.DefaultConfig.loader;
+
+class AdStripPlaylistLoader extends DefaultHlsLoader {
+  load(
+    context: Parameters<InstanceType<typeof DefaultHlsLoader>["load"]>[0],
+    config: Parameters<InstanceType<typeof DefaultHlsLoader>["load"]>[1],
+    callbacks: Parameters<InstanceType<typeof DefaultHlsLoader>["load"]>[2]
+  ) {
+    const origOnSuccess = callbacks.onSuccess;
+    const wrappedCallbacks = {
+      ...callbacks,
+      onSuccess: (
+        response: Parameters<typeof origOnSuccess>[0],
+        stats: Parameters<typeof origOnSuccess>[1],
+        ctx: Parameters<typeof origOnSuccess>[2],
+        networkDetails: Parameters<typeof origOnSuccess>[3]
+      ) => {
+        if (typeof response.data === "string" && response.data.includes("#EXTINF:")) {
+          try {
+            const mediaUrl = response.url || ctx.url || "";
+            const res = stripAdsFromM3u8(response.data, mediaUrl);
+            if (res.removedSegments > 0) {
+              response.data = res.cleaned;
+            }
+          } catch {
+            // Preserve original manifest on any parse edge case
+          }
+        }
+        origOnSuccess(response, stats, ctx, networkDetails);
+      },
+    };
+    super.load(context, config, wrappedCallbacks);
+  }
+}
 
 class PngUnwrapFragmentLoader extends DefaultHlsLoader {
   load(
@@ -52,7 +85,15 @@ class PngUnwrapFragmentLoader extends DefaultHlsLoader {
       ) => {
         if (response.data instanceof ArrayBuffer) {
           const stripped = stripPngPrefixFromTs(new Uint8Array(response.data));
-          if (stripped.byteOffset !== 0 || stripped.byteLength !== response.data.byteLength) {
+          if (stripped.buffer !== response.data) {
+            response.data =
+              stripped.byteOffset === 0 && stripped.byteLength === stripped.buffer.byteLength
+                ? (stripped.buffer as ArrayBuffer)
+                : (stripped.buffer.slice(
+                    stripped.byteOffset,
+                    stripped.byteOffset + stripped.byteLength
+                  ) as ArrayBuffer);
+          } else if (stripped.byteOffset !== 0 || stripped.byteLength !== response.data.byteLength) {
             response.data = response.data.slice(
               stripped.byteOffset,
               stripped.byteOffset + stripped.byteLength
@@ -71,6 +112,7 @@ export interface CustomHlsPlayerProps {
   poster?: string;
   subtitles?: SubtitleTrack[];
   stripPng?: boolean;
+  stripAds?: boolean;
   initialTime?: number;
   autoPlay?: boolean;
   initialPlaybackRate?: number;
@@ -160,6 +202,7 @@ export default function CustomHlsPlayer({
   poster,
   subtitles = [],
   stripPng = false,
+  stripAds = true,
   initialTime = 0,
   autoPlay = true,
   initialPlaybackRate = 1,
@@ -601,23 +644,10 @@ export default function CustomHlsPlayer({
       hlsInstance = new Hls({
         enableWorker: true,
         lowLatencyMode: false,
-        startFragPrefetch: true,
-        maxBufferLength: 30,
-        maxMaxBufferLength: 60,
-        maxBufferSize: 60 * 1000 * 1000,
-        maxBufferHole: 0.8,
-        nudgeOffset: 0.2,
-        nudgeMaxRetry: 8,
-        backBufferLength: 30,
-        manifestLoadingTimeOut: 15000,
-        manifestLoadingMaxRetry: 4,
-        manifestLoadingRetryDelay: 800,
-        levelLoadingTimeOut: 15000,
-        levelLoadingMaxRetry: 4,
-        levelLoadingRetryDelay: 800,
-        fragLoadingTimeOut: 20000,
-        fragLoadingMaxRetry: 6,
-        fragLoadingRetryDelay: 800,
+        backBufferLength: 90,
+        ...(stripAds
+          ? { pLoader: AdStripPlaylistLoader as unknown as HlsConfig["pLoader"] }
+          : {}),
         ...(stripPng
           ? { fLoader: PngUnwrapFragmentLoader as unknown as HlsConfig["fLoader"] }
           : {}),
@@ -751,11 +781,14 @@ export default function CustomHlsPlayer({
         }
       });
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      // Native Safari/iOS support: route PNG-disguised segments (VSMOV & FHDC) via streaming server unwrapper
-      const nativeSrc =
-        stripPng && src.startsWith("/api/hls-proxy") && !src.includes("proxySegments=1")
-          ? `${src}&proxySegments=1&stripPng=1`
-          : src;
+      // Native Safari/iOS support: route PNG-disguised streams through server streaming unwrapper
+      const nativeSrc = stripPng
+        ? src.startsWith("/api/hls-proxy")
+          ? src.includes("proxySegments=1")
+            ? src
+            : `${src}&proxySegments=1&stripPng=1`
+          : `/api/hls-proxy?url=${encodeURIComponent(src)}&proxySegments=1&stripPng=1`
+        : src;
       video.src = nativeSrc;
       video.playbackRate = playbackRateRef.current;
       syncMediaAudio(video);
@@ -829,7 +862,7 @@ export default function CustomHlsPlayer({
     // playbackRate, preferredQuality, and autoPlay are decoupled via refs to prevent
     // destroying and recreating the active Hls instance during playback speed or quality changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src, episodeSlug, stripPng]);
+  }, [src, episodeSlug, stripPng, stripAds]);
 
   // Safety timeout: automatically dismiss episode transition overlay if still active after 8s
   useEffect(() => {

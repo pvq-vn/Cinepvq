@@ -214,19 +214,34 @@ export const searchMovies = async (
 export const getMovieDetail = async (
   slug: string
 ): Promise<AxiosResponse<MovieDetailResponse>> => {
-  if (typeof window !== "undefined") {
-    try {
-      const res = await axios.get<MovieDetailResponse>(
-        `/api/movies/${encodeURIComponent(slug)}`,
-        { timeout: 12_000 }
-      );
-      if (res.data?.status === "success" && res.data.movie) {
-        return res;
-      }
-    } catch {
-      // Fall through to direct KKPhim API
+  // Primary fast direct KKPhim API (~100ms from Vietnam with ACAO: *)
+  try {
+    const res = await directApi.get<KKPhimRawDetailResponse>(
+      `phim/${encodeURIComponent(slug)}`
+    );
+    const normalized = kkphimCatalogAdapter.normalizeDetailResponse(res.data);
+    if (
+      normalized.status === "success" &&
+      normalized.movie &&
+      normalized.movie.episodes &&
+      normalized.movie.episodes.length > 0
+    ) {
+      return {
+        ...res,
+        data: normalized,
+      };
     }
+  } catch {
+    // Fall back to unified 6-dataset backend resolver
   }
+
+  if (typeof window !== "undefined") {
+    return axios.get<MovieDetailResponse>(
+      `/api/movies/${encodeURIComponent(slug)}`,
+      { timeout: 12_000 }
+    );
+  }
+
   const res = await directApi.get<KKPhimRawDetailResponse>(
     `phim/${encodeURIComponent(slug)}`
   );

@@ -6,6 +6,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { resolveAllAvailableSourcesServer } from "@/services/videoSources";
+import { isDirectM3u8Url } from "@/lib/hlsCleaner";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -60,7 +61,7 @@ export async function GET(request: NextRequest) {
                 sourceId: "nguonc",
                 name: "Server Dự Phòng (StreamC)",
                 displayName: "Server Dự Phòng",
-                type: nguoncEmbedUrl.includes(".m3u8") ? "hls" : "iframe",
+                type: isDirectM3u8Url(nguoncEmbedUrl) ? "hls" : "iframe",
                 url: nguoncEmbedUrl,
                 priority: 4,
                 isAvailable: true,

@@ -5,6 +5,7 @@
 // ==============================================================================
 
 import type { VideoSourceAdapter, ResolveSourceOptions, ResolvedSource } from "../types";
+import { isDirectM3u8Url } from "@/lib/hlsCleaner";
 
 const NGUONC_BASE = "https://phim.nguonc.com/api";
 const TIMEOUT_MS = 2200;
@@ -104,7 +105,7 @@ export class NguonCAdapter implements VideoSourceAdapter {
 
               const streamUrl = ep?.m3u8 || ep?.embed;
               if (streamUrl) {
-                const isHls = streamUrl.includes(".m3u8");
+                const isHls = isDirectM3u8Url(streamUrl);
                 return {
                   sourceId: this.sourceId,
                   name: this.name,
@@ -130,12 +131,15 @@ export class NguonCAdapter implements VideoSourceAdapter {
       return null;
     }
 
-    const isHlsUrl = nguoncEmbedUrl.includes(".m3u8");
+    const isHlsUrl = isDirectM3u8Url(nguoncEmbedUrl);
+    const isKkphimIframe = nguoncEmbedUrl.includes("phimapi.com") || nguoncEmbedUrl.includes("kkphim");
 
     return {
       sourceId: this.sourceId,
-      name: this.name,
-      displayName: isTM
+      name: isKkphimIframe ? "KKPhim1 (Iframe Dự Phòng)" : this.name,
+      displayName: isKkphimIframe
+        ? "KKPhim1 (Iframe Dự Phòng)"
+        : isTM
         ? "Server Dự Phòng (Thuyết Minh)"
         : isLT
         ? "Server Dự Phòng (Lồng Tiếng)"

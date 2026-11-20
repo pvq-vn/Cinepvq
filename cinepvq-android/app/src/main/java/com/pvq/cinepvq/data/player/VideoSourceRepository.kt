@@ -140,7 +140,7 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
                 type = StreamType.HLS_DIRECT,
                 url = m3u8Url,
                 rawUrl = m3u8Url,
-                priority = 4,
+                priority = 1,
                 quality = "FHD",
                 serverName = serverName ?: "KKphim1",
                 isAvailable = true,
@@ -395,11 +395,15 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
                         val isIframeDeclared = s.type.equals("iframe", ignoreCase = true) ||
                             s.type.equals("embed", ignoreCase = true)
 
+                        val isUrlDirectM3u8 = !s.url.contains("/player/", ignoreCase = true) &&
+                            !s.url.contains("/embed/", ignoreCase = true) &&
+                            s.url.substringBefore("?").contains(".m3u8", ignoreCase = true)
+
                         val streamType = when {
                             !s.isAvailable -> StreamType.UNAVAILABLE
                             isHlsDeclared -> StreamType.HLS_DIRECT
                             isIframeDeclared -> StreamType.EMBED
-                            s.url.contains(".m3u8") -> StreamType.HLS_DIRECT
+                            isUrlDirectM3u8 -> StreamType.HLS_DIRECT
                             else -> StreamType.EMBED
                         }
 
@@ -428,11 +432,11 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
                         )
 
                         val p = when (cleanName) {
-                            "VSMOV" -> if (streamType == StreamType.HLS_DIRECT) 1 else 6
+                            "KKphim1" -> 1
                             "PhimHDCSS" -> 2
                             "K20" -> 3
-                            "KKphim1" -> 4
-                            "ChoPhim" -> 5
+                            "ChoPhim" -> 4
+                            "VSMOV" -> if (streamType == StreamType.HLS_DIRECT) 5 else 6
                             "NguonC" -> 6
                             else -> s.priority
                         }
@@ -537,7 +541,7 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
                     type = StreamType.HLS_DIRECT,
                     url = matchedM3u8,
                     rawUrl = matchedM3u8,
-                    priority = 1,
+                    priority = 5,
                     quality = "FHD",
                     serverName = matchedGroupName,
                     isAvailable = true,
@@ -619,7 +623,7 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
                 type = StreamType.HLS_DIRECT,
                 url = masterUrl,
                 rawUrl = masterUrl,
-                priority = 1,
+                priority = 5,
                 quality = "FHD",
                 serverName = matchedGroupName,
                 isAvailable = true,
@@ -798,7 +802,7 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
                                 type = StreamType.HLS_DIRECT,
                                 url = m3u8,
                                 rawUrl = m3u8,
-                                priority = 5,
+                                priority = 4,
                                 quality = "FHD",
                                 serverName = gName,
                                 isAvailable = true,

@@ -367,4 +367,46 @@ class BugFixesUnitTest {
             )
         )
     }
+
+    @Test
+    fun testStegPngMultiChunkUnwrapper_extractsExactMpegTsAcrossChunkBoundaries() {
+        fun putBeInt(arr: ByteArray, off: Int, value: Int) {
+            arr[off] = ((value ushr 24) and 0xFF).toByte()
+            arr[off + 1] = ((value ushr 16) and 0xFF).toByte()
+            arr[off + 2] = ((value ushr 8) and 0xFF).toByte()
+            arr[off + 3] = (value and 0xFF).toByte()
+        }
+        fun makeChunk(type: String, payload: ByteArray): ByteArray {
+            val out = ByteArray(12 + payload.size)
+            putBeInt(out, 0, payload.size)
+            for (i in 0..3) out[4 + i] = type[i].code.toByte()
+            System.arraycopy(payload, 0, out, 8, payload.size)
+            return out // trailing 4 zero bytes = mock CRC
+        }
+
+        val magic = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
+        val ihdr = makeChunk("IHDR", ByteArray(13))
+        val idat = makeChunk("IDAT", ByteArray(11))
+
+        val totalPackets = 12
+        val tsData = ByteArray(totalPackets * 188)
+        for (p in 0 until totalPackets) {
+            tsData[p * 188] = 0x47.toByte()
+            tsData[p * 188 + 1] = (p + 10).toByte()
+        }
+        // Split TS data at non-188-aligned boundary across 2 stEg chunks, each with a 12-byte custom header!
+        val splitPoint = 1000
+        val steg1Payload = ByteArray(12) { 0x55 } + tsData.copyOfRange(0, splitPoint)
+        val steg2Payload = ByteArray(12) { 0x66 } + tsData.copyOfRange(splitPoint, tsData.size)
+        val steg1 = makeChunk("stEg", steg1Payload)
+        val steg2 = makeChunk("stEg", steg2Payload)
+        val iend = makeChunk("IEND", ByteArray(0))
+
+        val container = magic + ihdr + idat + steg1 + steg2 + iend
+        val unwrapped = HlsAdAndPngProcessor.stripPngPrefixFromTs(container)
+
+        assertEquals(tsData.size, unwrapped.size)
+        assertArrayEquals(tsData, unwrapped)
+        assertNotNull(HlsAdAndPngProcessor.detectFirstStegChunk(container, container.size))
+    }
 }

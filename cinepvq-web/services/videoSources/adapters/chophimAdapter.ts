@@ -105,7 +105,7 @@ function parseChoPhimServers(html: string): ChoPhimServerGroup[] {
   return groups;
 }
 
-async function fetchChoPhimWatchHtml(slug: string): Promise<string | null> {
+async function fetchChoPhimWatchHtml(slug: string): Promise<{ html: string | null; blocked: boolean }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
@@ -118,11 +118,12 @@ async function fetchChoPhimWatchHtml(slug: string): Promise<string | null> {
       signal: controller.signal,
     });
     clearTimeout(timer);
-    if (!res.ok) return null;
-    return await res.text();
+    if (res.status === 403) return { html: null, blocked: true };
+    if (!res.ok) return { html: null, blocked: false };
+    return { html: await res.text(), blocked: false };
   } catch {
     clearTimeout(timer);
-    return null;
+    return { html: null, blocked: false };
   }
 }
 
@@ -171,7 +172,7 @@ async function findChoPhimAlternateSlug(
 export class ChoPhimAdapter implements VideoSourceAdapter {
   readonly sourceId = "chophim" as const;
   readonly name = "ChoPhim Direct HLS";
-  readonly priority = 5;
+  readonly priority = 4;
 
   async resolveStream(options: ResolveSourceOptions): Promise<ResolvedSource | null> {
     const { slug, title, episode = 1, episodeSlug, serverName, knownHlsUrl } = options;
@@ -186,17 +187,19 @@ export class ChoPhimAdapter implements VideoSourceAdapter {
     if (cachedGroups && cachedGroups.expiresAt > Date.now()) {
       groups = cachedGroups.groups;
     } else {
+      let blocked = false;
       if (primarySlug) {
-        const html = await fetchChoPhimWatchHtml(primarySlug);
-        if (html) groups = parseChoPhimServers(html);
+        const res = await fetchChoPhimWatchHtml(primarySlug);
+        blocked = res.blocked;
+        if (res.html) groups = parseChoPhimServers(res.html);
       }
 
-      // Fallback: search ChoPhim by title/slug when direct `/xem/{slug}` slug differs!
-      if (groups.length === 0) {
+      // Fallback: search ChoPhim by title/slug when direct `/xem/{slug}` slug differs (skip if 403 Cloudflare blocked)!
+      if (groups.length === 0 && !blocked) {
         const altSlug = await findChoPhimAlternateSlug(slug, title);
         if (altSlug && altSlug !== primarySlug) {
-          const html = await fetchChoPhimWatchHtml(altSlug);
-          if (html) groups = parseChoPhimServers(html);
+          const res = await fetchChoPhimWatchHtml(altSlug);
+          if (res.html) groups = parseChoPhimServers(res.html);
         }
       }
 
@@ -288,7 +291,7 @@ export class ChoPhimAdapter implements VideoSourceAdapter {
               ? "ChoPhim (Lồng Tiếng)"
               : "ChoPhim Direct",
           type: "hls",
-          url: `/api/hls-proxy?url=${encodeURIComponent(directM3u8)}&stripAds=1`,
+          url: directM3u8,
           rawUrl: directM3u8,
           priority: this.priority,
           quality: "FHD",
