@@ -31,6 +31,7 @@ import com.pvq.cinepvq.features.search.SearchScreen
 import com.pvq.cinepvq.features.section.SectionDetailScreen
 import com.pvq.cinepvq.core.designsystem.components.UpdateDialog
 import com.pvq.cinepvq.core.update.UpdateUiState
+import com.pvq.cinepvq.features.admin.AdminScreen
 import com.pvq.cinepvq.features.settings.SettingsScreen
 import com.pvq.cinepvq.features.trending.TrendingScreen
 import com.pvq.cinepvq.ui.theme.CinepvqBackground
@@ -594,6 +595,14 @@ fun CinepvqAppRoot(
             // Settings Screen
             composable(Screen.Settings.route) {
                 SettingsScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    onNavigateToAdmin = { navController.navigate(Screen.Admin.route) }
+                )
+            }
+
+            // Admin Portal Screen (Sole Admin only)
+            composable(Screen.Admin.route) {
+                AdminScreen(
                     onNavigateBack = { navController.popBackStack() }
                 )
             }
@@ -633,6 +642,9 @@ fun CinepvqAppRoot(
                     },
                     onNavigateToSettings = {
                         navController.navigate(Screen.Settings.route)
+                    },
+                    onNavigateToAdmin = {
+                        navController.navigate(Screen.Admin.route)
                     },
                     onBarsVisibilityChanged = { isBarsVisible = it }
                 )

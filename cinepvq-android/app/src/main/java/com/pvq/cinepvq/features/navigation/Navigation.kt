@@ -37,6 +37,7 @@ sealed class Screen(val route: String) {
     object History : Screen("history")
     object Auth : Screen("auth")
     object Settings : Screen("settings")
+    object Admin : Screen("admin")
     object SectionDetail : Screen("section/{type}?title={title}") {
         fun createRoute(type: String, title: String? = null): String {
             val encodedType = java.net.URLEncoder.encode(type, "UTF-8")

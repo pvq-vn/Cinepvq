@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.pvq.cinepvq.features.admin.AdminViewModel
 import com.pvq.cinepvq.ui.theme.*
 import kotlinx.coroutines.launch
 
@@ -29,10 +30,13 @@ import kotlinx.coroutines.launch
 @Composable
 fun SettingsScreen(
     onNavigateBack: () -> Unit,
+    onNavigateToAdmin: () -> Unit = {},
     viewModel: SettingsViewModel = viewModel()
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val settings by viewModel.playerSettings.collectAsStateWithLifecycle()
+    val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
+    val isSoleAdmin = AdminViewModel.isAdminEmail(currentUser?.email)
 
     var showSpeedDialog by remember { mutableStateOf(false) }
     var showSourceDialog by remember { mutableStateOf(false) }
@@ -150,6 +154,25 @@ fun SettingsScreen(
             }
 
             Spacer(modifier = Modifier.height(24.dp))
+
+            if (isSoleAdmin) {
+                SettingsSectionHeader(title = "Quản trị hệ thống")
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = CinepvqSurface),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, CinepvqBorderViolet),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    SettingsItemRow(
+                        icon = Icons.Default.AdminPanelSettings,
+                        title = "Trang Quản Trị (Admin Portal)",
+                        value = "Thống kê, quản lý phim, crawler, người dùng & bình luận",
+                        onClick = onNavigateToAdmin
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+            }
 
             // Group 3: Information
             val coroutineScope = rememberCoroutineScope()

@@ -20,6 +20,23 @@ interface CinepvqApiService {
         @Query("nguoncEmbedUrl") nguoncEmbedUrl: String? = null
     ): Response<VideoSourcesResponse>
 
+    // ── Unified 6-Dataset Catalog Endpoints ───────────────────────────────────
+    @GET("api/catalog/search")
+    suspend fun searchUnifiedCatalog(
+        @Query("q") keyword: String,
+        @Query("page") page: Int = 1
+    ): Response<UnifiedCatalogListResponseDto>
+
+    @GET("api/catalog/latest")
+    suspend fun getUnifiedLatestMovies(
+        @Query("page") page: Int = 1
+    ): Response<UnifiedCatalogListResponseDto>
+
+    @GET("api/movies/{slug}")
+    suspend fun getUnifiedMovieDetail(
+        @Path("slug") slug: String
+    ): Response<UnifiedMovieDetailResponseDto>
+
     // ── Trending BXH Multi-Platform Rankings ──────────────────────────────────
     @GET("api/trending")
     suspend fun getTrendingRankings(
@@ -27,6 +44,7 @@ interface CinepvqApiService {
         @Query("country") country: String = "vn",
         @Query("netflixType") netflixType: String = "tv",
         @Query("doubanCategory") doubanCategory: String = "all",
+        @Query("doubanOffset") doubanOffset: Int? = null,
         @Query("refresh") refresh: Boolean? = null
     ): Response<TrendingRankingsResponseDto>
 
@@ -98,4 +116,51 @@ interface CinepvqApiService {
     // ── App Version & Updates ─────────────────────────────────────────────────
     @GET("api/app/version")
     suspend fun getAppVersion(): Response<AppVersionDto>
+
+    // ── Admin Portal Endpoints (Sole Admin Only) ──────────────────────────────
+    @GET("api/admin/stats")
+    suspend fun getAdminStats(): Response<AdminStatsResponseDto>
+
+    @GET("api/admin/movies")
+    suspend fun getAdminMovies(
+        @Query("q") query: String = "",
+        @Query("page") page: Int = 1,
+        @Query("limit") limit: Int = 15
+    ): Response<AdminMoviesListResponseDto>
+
+    @POST("api/admin/movies")
+    suspend fun postAdminMovieAction(
+        @Body request: AdminMovieActionRequest
+    ): Response<AdminActionResponseDto>
+
+    @GET("api/admin/crawler")
+    suspend fun getAdminCrawlerStatus(): Response<AdminCrawlerStatusResponseDto>
+
+    @POST("api/admin/crawler")
+    suspend fun postAdminCrawlerAction(
+        @Body request: AdminCrawlerActionRequest
+    ): Response<AdminActionResponseDto>
+
+    @GET("api/admin/users")
+    suspend fun getAdminUsers(
+        @Query("q") query: String = ""
+    ): Response<AdminUsersResponseDto>
+
+    @PATCH("api/admin/users")
+    suspend fun patchAdminUser(
+        @Body request: AdminUserPatchRequest
+    ): Response<AdminActionResponseDto>
+
+    @GET("api/admin/comments")
+    suspend fun getAdminComments(): Response<AdminCommentsResponseDto>
+
+    @DELETE("api/admin/comments")
+    suspend fun deleteAdminComment(
+        @Query("id") id: String
+    ): Response<AdminActionResponseDto>
+
+    @POST("api/admin/notifications")
+    suspend fun sendAdminNotification(
+        @Body request: AdminNotificationRequest
+    ): Response<AdminActionResponseDto>
 }

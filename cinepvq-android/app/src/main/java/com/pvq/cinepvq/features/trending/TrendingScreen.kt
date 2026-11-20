@@ -69,6 +69,7 @@ fun TrendingScreen(
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val isUpdatingFilter by viewModel.isUpdatingFilter.collectAsStateWithLifecycle()
+    val isLoadingMoreDouban by viewModel.isLoadingMoreDouban.collectAsStateWithLifecycle()
     val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
 
     val listState = rememberLazyListState()
@@ -121,6 +122,23 @@ fun TrendingScreen(
     val visibleSections = remember(allSections, activeTab) {
         if (activeTab == TrendingTab.ALL) allSections
         else allSections.filter { it.id == activeTab.platformId }
+    }
+    val doubanSection = remember(allSections) { allSections.find { it.id == "douban" } }
+
+    // Infinite scroll trigger for Douban BXH when user reaches near bottom of the Douban tab
+    LaunchedEffect(listState, activeTab, doubanSection?.hasMore, doubanSection?.items?.size, isLoadingMoreDouban) {
+        if (activeTab != TrendingTab.DOUBAN || doubanSection?.hasMore != true || isLoadingMoreDouban) {
+            return@LaunchedEffect
+        }
+        snapshotFlow {
+            val layoutInfo = listState.layoutInfo
+            val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            lastVisible >= (layoutInfo.totalItemsCount - 2).coerceAtLeast(0) && layoutInfo.totalItemsCount > 0
+        }.collect { atBottom ->
+            if (atBottom && activeTab == TrendingTab.DOUBAN && doubanSection.hasMore && !isLoadingMoreDouban) {
+                viewModel.loadMoreDouban()
+            }
+        }
     }
     val netflixCountries = rankingsData?.netflixCountries ?: DEFAULT_NETFLIX_COUNTRIES
     val doubanCategories = rankingsData?.doubanCategories ?: DEFAULT_DOUBAN_CATEGORIES
@@ -363,7 +381,11 @@ fun TrendingScreen(
                                         viewModel.selectTab(it)
                                     }
                                 },
-                                onItemClick = handleItemClick
+                                onItemClick = handleItemClick,
+                                isLoadingMore = section.id == "douban" && isLoadingMoreDouban,
+                                onLoadMore = if (section.id == "douban") {
+                                    { viewModel.loadMoreDouban() }
+                                } else null
                             )
                         }
 
@@ -552,11 +574,13 @@ private fun PlatformSectionCard(
     selectedDoubanCategory: String,
     onSelectDoubanCategory: (String) -> Unit,
     onExpandPlatform: (String) -> Unit,
-    onItemClick: (TrendingRankItem) -> Unit
+    onItemClick: (TrendingRankItem) -> Unit,
+    isLoadingMore: Boolean = false,
+    onLoadMore: (() -> Unit)? = null
 ) {
     val grad = platformGradient(section.id)
     val top3 = section.items.take(3)
-    val rest = if (expanded) section.items.drop(3).take(9) else section.items.drop(3).take(6)
+    val rest = if (expanded) section.items.drop(3) else section.items.drop(3).take(6)
 
     Surface(
         shape = RoundedCornerShape(20.dp),
@@ -737,7 +761,7 @@ private fun PlatformSectionCard(
                 if (rest.isNotEmpty()) {
                     HorizontalDivider(color = CinepvqBorderSubtle, modifier = Modifier.padding(vertical = 2.dp))
                     Text(
-                        text = "Hạng #4 – #${3 + rest.size}",
+                        text = "Hạng #${rest.first().rank} – #${rest.last().rank}",
                         color = CinepvqTextSecondary,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
@@ -761,6 +785,61 @@ private fun PlatformSectionCard(
                         }
                     }
                 }
+
+                // Douban infinite scroll loading indicator & load-more button
+                if (section.id == "douban" && expanded) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    if (isLoadingMore) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 10.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = Color(0xFF10B981),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Đang cào thêm phim Douban...",
+                                color = CinepvqTextSecondary,
+                                fontSize = 12.sp
+                            )
+                        }
+                    } else if (section.hasMore && onLoadMore != null) {
+                        Button(
+                            onClick = onLoadMore,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF059669),
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Tải thêm phim Douban",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    } else if (section.items.isNotEmpty()) {
+                        Text(
+                            text = "Đã hiển thị toàn bộ ${section.items.size} phim khả dụng",
+                            color = CinepvqTextMuted,
+                            fontSize = 11.sp,
+                            modifier = Modifier.align(Alignment.CenterHorizontally)
+                        )
+                    }
+                }
             }
         }
     }
@@ -775,7 +854,8 @@ private fun TrendingPodiumRowCard(
     val medalColors = when (item.rank) {
         1 -> listOf(Color(0xFFFBBF24), Color(0xFFF59E0B))
         2 -> listOf(Color(0xFFE2E8F0), Color(0xFF94A3B8))
-        else -> listOf(Color(0xFFD97706), Color(0xFF92400E))
+        3 -> listOf(Color(0xFFD97706), Color(0xFF92400E))
+        else -> listOf(Color(0xFF059669), Color(0xFF0F766E))
     }
     val medalTextColor = if (item.rank <= 2) Color.Black else Color.White
     val poster = item.thumbUrl.ifBlank { item.posterUrl }

@@ -62,7 +62,11 @@ class NetworkModule(private val secureStorageManager: SecureStorageManager) {
     }
 
     private val loggingInterceptor = HttpLoggingInterceptor().apply {
-        level = HttpLoggingInterceptor.Level.BODY
+        level = if (com.pvq.cinepvq.BuildConfig.DEBUG) {
+            HttpLoggingInterceptor.Level.BASIC
+        } else {
+            HttpLoggingInterceptor.Level.NONE
+        }
     }
 
     private val tokenAuthenticator = okhttp3.Authenticator { _, response ->
@@ -148,6 +152,17 @@ class NetworkModule(private val secureStorageManager: SecureStorageManager) {
         .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(12, TimeUnit.SECONDS)
         .addInterceptor(loggingInterceptor)
+        .build()
+
+    // ── Dedicated Pooled HTTP/2 Client for ExoPlayer HLS Streaming (ZERO body logging!) ──
+    val mediaOkHttpClient: OkHttpClient = OkHttpClient.Builder()
+        .connectionPool(okhttp3.ConnectionPool(16, 5, TimeUnit.MINUTES))
+        .connectTimeout(12, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .writeTimeout(12, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .retryOnConnectionFailure(true)
         .build()
 
     // ── Retrofit Services ───────────────────────────────────────────────────

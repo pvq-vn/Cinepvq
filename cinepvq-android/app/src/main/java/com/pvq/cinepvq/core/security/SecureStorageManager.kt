@@ -311,45 +311,53 @@ class SecureStorageManager(context: Context) {
     // ── Watch History Tombstones & Pending Sync (Two-way sync reconciliation) ──
 
     fun getDeletedHistorySlugs(userId: String): Set<String> {
-        return prefs.getStringSet("deleted_hist_$userId", emptySet()) ?: emptySet()
+        return (prefs.getStringSet("deleted_hist_$userId", emptySet()) ?: emptySet()).toSet()
     }
 
     fun addDeletedHistorySlug(userId: String, slug: String) {
         val current = getDeletedHistorySlugs(userId).toMutableSet()
         current.add(slug)
-        prefs.edit().putStringSet("deleted_hist_$userId", current).apply()
+        prefs.edit().putStringSet("deleted_hist_$userId", current).commit()
     }
 
     fun removeDeletedHistorySlug(userId: String, slug: String) {
         val current = getDeletedHistorySlugs(userId).toMutableSet()
         if (current.remove(slug)) {
-            prefs.edit().putStringSet("deleted_hist_$userId", current).apply()
+            prefs.edit().putStringSet("deleted_hist_$userId", current).commit()
         }
     }
 
     fun clearDeletedHistorySlugs(userId: String) {
-        prefs.edit().remove("deleted_hist_$userId").apply()
+        prefs.edit().remove("deleted_hist_$userId").commit()
+    }
+
+    fun isHistoryClearPending(userId: String): Boolean {
+        return prefs.getBoolean("clear_hist_pending_$userId", false)
+    }
+
+    fun setHistoryClearPending(userId: String, pending: Boolean) {
+        prefs.edit().putBoolean("clear_hist_pending_$userId", pending).commit()
     }
 
     fun getPendingSyncHistorySlugs(userId: String): Set<String> {
-        return prefs.getStringSet("pending_sync_hist_$userId", emptySet()) ?: emptySet()
+        return (prefs.getStringSet("pending_sync_hist_$userId", emptySet()) ?: emptySet()).toSet()
     }
 
     fun addPendingSyncHistorySlug(userId: String, slug: String) {
         val current = getPendingSyncHistorySlugs(userId).toMutableSet()
         current.add(slug)
-        prefs.edit().putStringSet("pending_sync_hist_$userId", current).apply()
+        prefs.edit().putStringSet("pending_sync_hist_$userId", current).commit()
     }
 
     fun removePendingSyncHistorySlug(userId: String, slug: String) {
         val current = getPendingSyncHistorySlugs(userId).toMutableSet()
         if (current.remove(slug)) {
-            prefs.edit().putStringSet("pending_sync_hist_$userId", current).apply()
+            prefs.edit().putStringSet("pending_sync_hist_$userId", current).commit()
         }
     }
 
     fun clearPendingSyncHistorySlugs(userId: String) {
-        prefs.edit().remove("pending_sync_hist_$userId").apply()
+        prefs.edit().remove("pending_sync_hist_$userId").commit()
     }
 
 

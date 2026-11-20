@@ -50,6 +50,7 @@ fun PlayerControls(
     movie: MovieDetail?,
     episode: EpisodeItem?,
     isPlaying: Boolean,
+    isBuffering: Boolean = false,
     currentPositionMs: Long,
     durationMs: Long,
     isFullscreen: Boolean,
@@ -251,7 +252,7 @@ fun PlayerControls(
                         )
                     }
 
-                    // Play / Pause Hero Button (Prominent violet gradient treatment)
+                    // Play / Pause / Buffering Hero Button (Prominent violet gradient treatment)
                     IconButton(
                         onClick = onTogglePlayPause,
                         modifier = Modifier
@@ -266,12 +267,20 @@ fun PlayerControls(
                                 shape = CircleShape
                             )
                     ) {
-                        Icon(
-                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            contentDescription = if (isPlaying) "Tạm dừng" else "Phát",
-                            tint = Color.White,
-                            modifier = Modifier.size(36.dp)
-                        )
+                        if (isBuffering) {
+                            CircularProgressIndicator(
+                                color = Color.White,
+                                strokeWidth = 3.dp,
+                                modifier = Modifier.size(30.dp)
+                            )
+                        } else {
+                            Icon(
+                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                contentDescription = if (isPlaying) "Tạm dừng" else "Phát",
+                                tint = Color.White,
+                                modifier = Modifier.size(36.dp)
+                            )
+                        }
                     }
 
                     // Next Episode Button (Clean, no circle border)

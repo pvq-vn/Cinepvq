@@ -157,6 +157,7 @@ export interface MovieDetail {
   language: string;
   director: string;
   casts: string;
+  year?: string | number;
   category: Category[] | CategoryDict;
   country?: Country[];
   episodes: EpisodeServer[];

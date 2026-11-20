@@ -190,6 +190,10 @@ data class TrendingPlatformSectionDto(
     val countryLabel: String? = null,
     val categoryKey: String? = null,
     val metricLabel: String? = null,
+    val hasMore: Boolean? = null,
+    val nextCursor: Int? = null,
+    val totalScanned: Int? = null,
+    val totalAvailable: Int? = null,
     val items: List<TrendingRankItemDto> = emptyList()
 )
 
@@ -390,4 +394,231 @@ data class SupabaseUserDto(
     val email: String? = null,
     @SerialName("user_metadata") val userMetadata: Map<String, JsonElement> = emptyMap(),
     @SerialName("created_at") val createdAt: String? = null
+)
+
+// ─── Unified 6-Dataset Catalog Models ────────────────────────────────────────
+
+@Serializable
+data class UnifiedCatalogListResponseDto(
+    val status: String = "",
+    val items: List<UnifiedMovieItemDto> = emptyList()
+)
+
+@Serializable
+data class UnifiedMovieItemDto(
+    val slug: String = "",
+    val name: String = "",
+    @SerialName("original_name") val originalName: String? = null,
+    @SerialName("thumb_url") val thumbUrl: String = "",
+    @SerialName("poster_url") val posterUrl: String = "",
+    val year: JsonElement? = null,
+    @SerialName("current_episode") val currentEpisode: String = "",
+    val quality: String = "HD",
+    val time: String = ""
+)
+
+@Serializable
+data class UnifiedMovieDetailResponseDto(
+    val status: String = "",
+    val movie: UnifiedMovieDetailDto? = null
+)
+
+@Serializable
+data class UnifiedEpisodeItemDto(
+    val name: String = "",
+    val slug: String = "",
+    val embed: String = "",
+    val m3u8: String? = null
+)
+
+@Serializable
+data class UnifiedEpisodeServerDto(
+    @SerialName("server_name") val serverName: String = "Vietsub",
+    val items: List<UnifiedEpisodeItemDto> = emptyList()
+)
+
+@Serializable
+data class UnifiedMovieDetailDto(
+    val slug: String = "",
+    val name: String = "",
+    @SerialName("original_name") val originalName: String? = null,
+    @SerialName("thumb_url") val thumbUrl: String = "",
+    @SerialName("poster_url") val posterUrl: String = "",
+    val description: String = "",
+    val year: JsonElement? = null,
+    @SerialName("current_episode") val currentEpisode: String = "",
+    @SerialName("total_episodes") val totalEpisodes: JsonElement? = null,
+    val quality: String = "FHD",
+    val language: String = "Vietsub",
+    val time: String = "",
+    val director: String = "",
+    val casts: String = "",
+    val episodes: List<UnifiedEpisodeServerDto> = emptyList()
+)
+
+// ─── Admin Portal Models (/api/admin/*) ──────────────────────────────────────
+
+@Serializable
+data class AdminActionResponseDto(
+    val status: Boolean = false,
+    val message: String? = null
+)
+
+@Serializable
+data class AdminCountsDto(
+    val users: Int = 0,
+    val movies: Int = 0,
+    val episodes: Int = 0,
+    val watchHistory: Int = 0,
+    val favorites: Int = 0,
+    val watchlist: Int = 0,
+    val comments: Int = 0,
+    val notifications: Int = 0,
+    val cachedPlatforms: Int = 0
+)
+
+@Serializable
+data class AdminHealthItemDto(
+    val name: String = "",
+    val status: String = "offline",
+    val latencyMs: Long = 0L,
+    val detail: String = ""
+)
+
+@Serializable
+data class AdminRecentActivityDto(
+    val id: String = "",
+    @SerialName("movie_slug") val movieSlug: String = "",
+    @SerialName("episode_slug") val episodeSlug: String = "",
+    @SerialName("episode_name") val episodeName: String? = null,
+    @SerialName("watched_at") val watchedAt: String = "",
+    val email: String = "",
+    val username: String? = null,
+    @SerialName("movie_name") val movieName: String? = null
+)
+
+@Serializable
+data class AdminStatsResponseDto(
+    val status: Boolean = false,
+    val adminEmail: String? = null,
+    val counts: AdminCountsDto = AdminCountsDto(),
+    val health: List<AdminHealthItemDto> = emptyList(),
+    val recentActivity: List<AdminRecentActivityDto> = emptyList(),
+    val message: String? = null
+)
+
+@Serializable
+data class AdminMovieRowDto(
+    val id: String = "",
+    val slug: String = "",
+    val name: String = "",
+    @SerialName("original_name") val originalName: String? = null,
+    @SerialName("thumb_url") val thumbUrl: String? = null,
+    val year: Int? = null,
+    val quality: String? = null,
+    @SerialName("current_episode") val currentEpisode: String? = null,
+    @SerialName("is_featured") val isFeatured: Boolean = false,
+    @SerialName("is_hidden") val isHidden: Boolean = false,
+    @SerialName("internal_views") val internalViews: Int = 0,
+    @SerialName("episode_count") val episodeCount: Int = 0
+)
+
+@Serializable
+data class AdminPaginateDto(
+    @SerialName("current_page") val currentPage: Int = 1,
+    @SerialName("total_page") val totalPage: Int = 1,
+    @SerialName("total_items") val totalItems: Int = 0
+)
+
+@Serializable
+data class AdminMoviesListResponseDto(
+    val status: Boolean = false,
+    val items: List<AdminMovieRowDto> = emptyList(),
+    val paginate: AdminPaginateDto = AdminPaginateDto(),
+    val message: String? = null
+)
+
+@Serializable
+data class AdminMovieActionRequest(
+    val action: String,
+    val slug: String? = null,
+    @SerialName("is_featured") val isFeatured: Boolean? = null,
+    @SerialName("is_hidden") val isHidden: Boolean? = null
+)
+
+@Serializable
+data class AdminCrawlerCacheDto(
+    val platformId: String = "",
+    val platformName: String = "",
+    val categoryLabel: String = "",
+    val itemCount: Int = 0,
+    val updatedAt: String = ""
+)
+
+@Serializable
+data class AdminCrawlerStatusResponseDto(
+    val status: Boolean = false,
+    val caches: List<AdminCrawlerCacheDto> = emptyList(),
+    val message: String? = null
+)
+
+@Serializable
+data class AdminCrawlerActionRequest(
+    val action: String,
+    val limit: Int? = null
+)
+
+@Serializable
+data class AdminUserRowDto(
+    val id: String = "",
+    val email: String = "",
+    val username: String? = null,
+    val role: String = "user",
+    val status: String = "active",
+    @SerialName("created_at") val createdAt: String = "",
+    val historyCount: Int = 0,
+    val favoritesCount: Int = 0,
+    val watchlistCount: Int = 0,
+    val commentsCount: Int = 0
+)
+
+@Serializable
+data class AdminUsersResponseDto(
+    val status: Boolean = false,
+    val users: List<AdminUserRowDto> = emptyList(),
+    val message: String? = null
+)
+
+@Serializable
+data class AdminUserPatchRequest(
+    val userId: String,
+    val status: String? = null
+)
+
+@Serializable
+data class AdminCommentRowDto(
+    val id: String = "",
+    @SerialName("movie_slug") val movieSlug: String = "",
+    val content: String = "",
+    val rating: Int? = null,
+    @SerialName("created_at") val createdAt: String = "",
+    val email: String = "",
+    val username: String? = null,
+    @SerialName("movie_name") val movieName: String? = null
+)
+
+@Serializable
+data class AdminCommentsResponseDto(
+    val status: Boolean = false,
+    val comments: List<AdminCommentRowDto> = emptyList(),
+    val message: String? = null
+)
+
+@Serializable
+data class AdminNotificationRequest(
+    val title: String,
+    val message: String,
+    val type: String = "system",
+    val movieSlug: String? = null,
+    val targetUserId: String = "all"
 )

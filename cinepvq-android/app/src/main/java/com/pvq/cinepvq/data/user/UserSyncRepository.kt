@@ -326,6 +326,11 @@ class UserSyncRepository(
                 delay(1500)
                 val target = pendingProgressMap.remove(movieSlug) ?: return@launch
                 progressJobs.remove(movieSlug)
+                if (secureStorageManager.isHistoryClearPending(currentUid) ||
+                    movieSlug in secureStorageManager.getDeletedHistorySlugs(currentUid)
+                ) {
+                    return@launch
+                }
                 try {
                     val res = networkModule.cinepvqApi.updateHistory(target)
                     if (res.isSuccessful) {
@@ -344,10 +349,18 @@ class UserSyncRepository(
     suspend fun flushWatchProgress(movieSlug: String? = null) {
         if (!secureStorageManager.isLoggedIn) return
         val currentUid = secureStorageManager.activeUserId
+        if (secureStorageManager.isHistoryClearPending(currentUid)) {
+            progressJobs.values.forEach { it.cancel() }
+            progressJobs.clear()
+            pendingProgressMap.clear()
+            return
+        }
+        val deletedSlugs = secureStorageManager.getDeletedHistorySlugs(currentUid)
         val keys = if (movieSlug != null) listOf(movieSlug) else pendingProgressMap.keys().toList()
         for (k in keys) {
             progressJobs.remove(k)?.cancel()
             val target = pendingProgressMap.remove(k) ?: continue
+            if (k in deletedSlugs) continue
             try {
                 val res = networkModule.cinepvqApi.updateHistory(target)
                 if (res.isSuccessful) {
@@ -363,6 +376,11 @@ class UserSyncRepository(
 
     suspend fun removeHistory(slug: String) {
         val currentUid = secureStorageManager.activeUserId
+        // Cancel any pending debounced progress upsert for this slug BEFORE deleting
+        // so it can NEVER resurrect the deleted movie on the backend 1.5s later!
+        progressJobs.remove(slug)?.cancel()
+        pendingProgressMap.remove(slug)
+
         historyDao.deleteBySlug(currentUid, slug)
         secureStorageManager.removeEpisodeProgressForMovie(currentUid, slug)
         if (secureStorageManager.isLoggedIn) {
@@ -373,7 +391,7 @@ class UserSyncRepository(
                     val res = networkModule.cinepvqApi.updateHistory(
                         HistoryActionRequest(action = "remove", movieSlug = slug)
                     )
-                    if (res.isSuccessful) {
+                    if (res.isSuccessful && res.body()?.status == "success") {
                         secureStorageManager.removeDeletedHistorySlug(currentUid, slug)
                     } else {
                         Log.w("UserSyncRepo", "removeHistory server error HTTP ${res.code()}: ${res.message()}")
@@ -387,16 +405,28 @@ class UserSyncRepository(
 
     suspend fun clearHistory() {
         val currentUid = secureStorageManager.activeUserId
+        // Cancel ALL pending debounced progress upserts before clearing!
+        val activeKeys = progressJobs.keys().toList()
+        for (k in activeKeys) {
+            progressJobs.remove(k)?.cancel()
+            pendingProgressMap.remove(k)
+        }
+        pendingProgressMap.clear()
+
         historyDao.clearByUser(currentUid)
         secureStorageManager.clearEpisodeProgress(currentUid)
         if (secureStorageManager.isLoggedIn) {
+            secureStorageManager.setHistoryClearPending(currentUid, true)
             secureStorageManager.clearPendingSyncHistorySlugs(currentUid)
             repositoryScope.launch {
                 try {
                     val res = networkModule.cinepvqApi.updateHistory(
                         HistoryActionRequest(action = "clear")
                     )
-                    if (!res.isSuccessful) {
+                    if (res.isSuccessful && res.body()?.status == "success") {
+                        secureStorageManager.setHistoryClearPending(currentUid, false)
+                        secureStorageManager.clearDeletedHistorySlugs(currentUid)
+                    } else {
                         Log.w("UserSyncRepo", "clearHistory server error HTTP ${res.code()}: ${res.message()}")
                     }
                 } catch (e: Exception) {
@@ -704,19 +734,37 @@ class UserSyncRepository(
 
         // 2. Sync Watch History with Timestamp Resolution and Web Deletion Sync
         try {
-            // First, process any pending deletions (tombstones) on the server
+            // First, flush pending clear-all tombstone if user cleared history while offline
+            if (secureStorageManager.isHistoryClearPending(currentUid)) {
+                try {
+                    val clearRes = networkModule.cinepvqApi.updateHistory(
+                        HistoryActionRequest(action = "clear")
+                    )
+                    if (clearRes.isSuccessful && clearRes.body()?.status == "success") {
+                        secureStorageManager.setHistoryClearPending(currentUid, false)
+                        secureStorageManager.clearDeletedHistorySlugs(currentUid)
+                    }
+                } catch (_: Exception) {}
+            }
+
+            // Next, process any pending single-movie deletion tombstones on the server
             val deletedHistSlugs = secureStorageManager.getDeletedHistorySlugs(currentUid)
             for (delSlug in deletedHistSlugs) {
                 try {
                     val delRes = networkModule.cinepvqApi.updateHistory(
                         HistoryActionRequest(action = "remove", movieSlug = delSlug)
                     )
-                    if (delRes.isSuccessful) {
+                    if (delRes.isSuccessful && delRes.body()?.status == "success") {
                         secureStorageManager.removeDeletedHistorySlug(currentUid, delSlug)
                     }
                 } catch (_: Exception) {}
             }
 
+            // If clear-all is still pending (server unreachable), do NOT pull stale server items back!
+            if (secureStorageManager.isHistoryClearPending(currentUid)) {
+                historyDao.clearByUser(currentUid)
+                histCount = 0
+            } else {
             val histRes = networkModule.cinepvqApi.getHistory()
             if (histRes.isSuccessful && histRes.body()?.history != null) {
                 val remoteHist = histRes.body()!!.history
@@ -819,6 +867,7 @@ class UserSyncRepository(
                 val err = "Lỗi tải History (HTTP ${histRes.code()}: ${histRes.message().ifBlank { "Lỗi phản hồi" }})"
                 Log.e("UserSyncRepo", err)
                 errors.add(err)
+            }
             }
         } catch (e: Exception) {
             Log.e("UserSyncRepo", "Sync History network failure: ${e.message}", e)

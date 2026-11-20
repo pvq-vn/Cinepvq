@@ -593,12 +593,81 @@ export default function CustomHlsPlayer({
     } catch {}
 
     let hlsInstance: Hls | null = null;
+    let networkRecoveryCount = 0;
+    let mediaRecoveryCount = 0;
+    let hasReceivedFirstFrame = false;
+    let startupWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
+    const recentStallTimestamps: number[] = [];
+
+    const clearStartupWatchdog = () => {
+      if (startupWatchdogTimer) {
+        clearTimeout(startupWatchdogTimer);
+        startupWatchdogTimer = null;
+      }
+    };
+
+    const markFirstFrameReady = () => {
+      if (!hasReceivedFirstFrame) {
+        hasReceivedFirstFrame = true;
+        clearStartupWatchdog();
+      }
+    };
+
+    const handleStallCheck = () => {
+      if (sessionId !== loadSessionIdRef.current) return;
+      if (!hasReceivedFirstFrame || video.paused || video.seeking) return;
+      const now = Date.now();
+      recentStallTimestamps.push(now);
+      while (recentStallTimestamps.length > 0 && now - recentStallTimestamps[0] > 25000) {
+        recentStallTimestamps.shift();
+      }
+      // If active CDN stalls 3+ times inside 25 seconds, proactively fail over to a faster source
+      if (recentStallTimestamps.length >= 3) {
+        recentStallTimestamps.length = 0;
+        console.warn("[HlsPlayer] Frequent rebuffering detected — failing over to faster source");
+        onErrorRef.current?.("Frequent rebuffering on current source");
+      }
+    };
+
+    video.addEventListener("loadeddata", markFirstFrameReady);
+    video.addEventListener("playing", markFirstFrameReady);
+    video.addEventListener("waiting", handleStallCheck);
+
+    // Startup watchdog: never spin infinitely on a dead/throttled CDN (failover after 8s if no frame)
+    if (autoPlayRef.current || isServerSwitch) {
+      startupWatchdogTimer = setTimeout(() => {
+        if (
+          sessionId === loadSessionIdRef.current &&
+          !hasReceivedFirstFrame &&
+          video.readyState < 3
+        ) {
+          console.warn("[HlsPlayer] Startup timeout (>8s without first frame) — failing over");
+          onErrorRef.current?.("Startup timeout on current source");
+        }
+      }, 8000);
+    }
 
     if (Hls.isSupported()) {
       hlsInstance = new Hls({
         enableWorker: true,
         lowLatencyMode: false,
-        backBufferLength: 90,
+        startFragPrefetch: true,
+        maxBufferLength: 45,
+        maxMaxBufferLength: 120,
+        maxBufferSize: 80 * 1000 * 1000,
+        maxBufferHole: 0.8,
+        nudgeOffset: 0.2,
+        nudgeMaxRetry: 8,
+        backBufferLength: 60,
+        manifestLoadingTimeOut: 10000,
+        manifestLoadingMaxRetry: 2,
+        manifestLoadingRetryDelay: 500,
+        levelLoadingTimeOut: 10000,
+        levelLoadingMaxRetry: 2,
+        levelLoadingRetryDelay: 500,
+        fragLoadingTimeOut: 12000,
+        fragLoadingMaxRetry: 3,
+        fragLoadingRetryDelay: 500,
         ...(stripPng
           ? { fLoader: PngUnwrapFragmentLoader as unknown as HlsConfig["fLoader"] }
           : {}),
@@ -609,7 +678,7 @@ export default function CustomHlsPlayer({
       hlsInstance.attachMedia(video);
 
       hlsInstance.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
-        setIsBuffering(false);
+        // Keep isBuffering true until first frame arrives (loadeddata/canplay/playing)
         // Apply default playback rate
         if (video) {
           video.playbackRate = playbackRateRef.current;
@@ -693,17 +762,41 @@ export default function CustomHlsPlayer({
       hlsInstance.on(Hls.Events.ERROR, (_, data) => {
         if (sessionId !== loadSessionIdRef.current) return;
         if (data.fatal) {
+          const httpCode = data.response?.code || 0;
+          const isHardHttpFailure = httpCode === 403 || httpCode === 404 || httpCode === 410 || httpCode >= 500;
+          const isManifestFail =
+            data.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR ||
+            data.details === Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT ||
+            data.details === Hls.ErrorDetails.MANIFEST_PARSING_ERROR;
+
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
-              console.warn("[HlsPlayer] Fatal network error, trying to recover...", data);
-              hlsInstance?.startLoad();
+              if (isHardHttpFailure || isManifestFail || networkRecoveryCount >= 2) {
+                console.warn("[HlsPlayer] Unrecoverable network error -> triggering source failover", data);
+                clearStartupWatchdog();
+                setErrorMsg("Đang chuyển sang nguồn phát nhanh hơn...");
+                onErrorRef.current?.(data.details || `Network error (${httpCode})`);
+              } else {
+                networkRecoveryCount++;
+                console.warn(`[HlsPlayer] Fatal network error, retry ${networkRecoveryCount}/2...`, data);
+                hlsInstance?.startLoad();
+              }
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
-              console.warn("[HlsPlayer] Fatal media error, recovering...", data);
-              hlsInstance?.recoverMediaError();
+              if (mediaRecoveryCount >= 2) {
+                console.warn("[HlsPlayer] Repeated media error -> triggering source failover", data);
+                clearStartupWatchdog();
+                setErrorMsg("Đang chuyển sang nguồn phát dự phòng...");
+                onErrorRef.current?.(data.details || "Media error");
+              } else {
+                mediaRecoveryCount++;
+                console.warn(`[HlsPlayer] Fatal media error, recover ${mediaRecoveryCount}/2...`, data);
+                hlsInstance?.recoverMediaError();
+              }
               break;
             default:
               console.error("[HlsPlayer] Unrecoverable HLS error:", data);
+              clearStartupWatchdog();
               setErrorMsg("Không thể phát video từ nguồn này.");
               onErrorRef.current?.(data.details || "HLS error");
               break;
@@ -711,10 +804,10 @@ export default function CustomHlsPlayer({
         }
       });
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      // Native Safari/iOS support (route FHDC segments via server PNG unwrapper when needed)
+      // Native Safari/iOS support: route PNG-disguised segments (VSMOV & FHDC) via streaming server unwrapper
       const nativeSrc =
-        stripPng && src.includes("phimhdcssEmbed=") && !src.includes("proxySegments=1")
-          ? `${src}&proxySegments=1`
+        stripPng && src.startsWith("/api/hls-proxy") && !src.includes("proxySegments=1")
+          ? `${src}&proxySegments=1&stripPng=1`
           : src;
       video.src = nativeSrc;
       video.playbackRate = playbackRateRef.current;
@@ -773,6 +866,10 @@ export default function CustomHlsPlayer({
     }
 
     return () => {
+      clearStartupWatchdog();
+      video.removeEventListener("loadeddata", markFirstFrameReady);
+      video.removeEventListener("playing", markFirstFrameReady);
+      video.removeEventListener("waiting", handleStallCheck);
       if (hlsInstance) {
         hlsInstance.stopLoad();
         hlsInstance.detachMedia();
@@ -1481,7 +1578,9 @@ function getFullscreenElement(): Element | null {
       <video
         ref={videoRef}
         poster={poster}
+        preload="auto"
         playsInline
+        onLoadedData={() => setIsBuffering(false)}
         onPlay={() => {
           setIsPlaying(true);
           setIsBuffering(false);

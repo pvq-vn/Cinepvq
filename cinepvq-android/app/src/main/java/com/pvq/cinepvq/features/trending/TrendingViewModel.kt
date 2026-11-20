@@ -83,10 +83,14 @@ class TrendingViewModel(
     private val _isUpdatingFilter = MutableStateFlow(false)
     val isUpdatingFilter: StateFlow<Boolean> = _isUpdatingFilter.asStateFlow()
 
+    private val _isLoadingMoreDouban = MutableStateFlow(false)
+    val isLoadingMoreDouban: StateFlow<Boolean> = _isLoadingMoreDouban.asStateFlow()
+
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
     private var currentJob: Job? = null
+    private var loadMoreDoubanJob: Job? = null
     private val responseCache = mutableMapOf<String, TrendingRankingsData>()
 
     init {
@@ -120,8 +124,60 @@ class TrendingViewModel(
     }
 
     fun refresh() {
+        loadMoreDoubanJob?.cancel()
+        _isLoadingMoreDouban.value = false
         responseCache.clear()
         loadRankings(isRefresh = true)
+    }
+
+    fun loadMoreDouban() {
+        if (_isLoadingMoreDouban.value) return
+        val currentData = _rankingsData.value ?: return
+        val doubanSec = currentData.platforms.find { it.id == "douban" } ?: return
+        if (!doubanSec.hasMore || doubanSec.nextCursor <= 0) return
+
+        val categorySnapshot = _doubanCategory.value
+        val keySnapshot = filterKey()
+
+        loadMoreDoubanJob?.cancel()
+        loadMoreDoubanJob = viewModelScope.launch {
+            _isLoadingMoreDouban.value = true
+            try {
+                val res = networkModule.cinepvqApi.getTrendingRankings(
+                    platform = "douban",
+                    doubanCategory = categorySnapshot,
+                    doubanOffset = doubanSec.nextCursor
+                )
+                val body = res.body()
+                val nextSecDto = body?.platforms?.find { it.id == "douban" }
+                if (res.isSuccessful && body != null && body.status && nextSecDto != null && _doubanCategory.value == categorySnapshot) {
+                    val mappedNext = mapDtoToDomain(body).platforms.find { it.id == "douban" }
+                    if (mappedNext != null) {
+                        val latestData = _rankingsData.value ?: return@launch
+                        val updatedPlatforms = latestData.platforms.map { sec ->
+                            if (sec.id != "douban") sec
+                            else {
+                                val existingSlugs = sec.items.map { it.slug }.toSet()
+                                val freshItems = mappedNext.items.filter { it.slug.isNotBlank() && it.slug !in existingSlugs }
+                                sec.copy(
+                                    items = sec.items + freshItems,
+                                    hasMore = mappedNext.hasMore,
+                                    nextCursor = mappedNext.nextCursor,
+                                    totalAvailable = mappedNext.totalAvailable
+                                )
+                            }
+                        }
+                        val updatedData = latestData.copy(platforms = updatedPlatforms)
+                        _rankingsData.value = updatedData
+                        responseCache[keySnapshot] = updatedData
+                    }
+                }
+            } catch (_: Exception) {
+                // Keep existing loaded items intact on network hiccup
+            } finally {
+                _isLoadingMoreDouban.value = false
+            }
+        }
     }
 
     private fun loadRankings(isRefresh: Boolean, isFilterChange: Boolean = false) {
@@ -198,6 +254,9 @@ class TrendingViewModel(
                 countryLabel = sec.countryLabel,
                 categoryKey = sec.categoryKey,
                 metricLabel = sec.metricLabel,
+                hasMore = sec.hasMore == true,
+                nextCursor = sec.nextCursor ?: 0,
+                totalAvailable = sec.totalAvailable ?: 0,
                 items = sec.items.map { item ->
                     val yearStr = when (val y = item.year) {
                         is JsonPrimitive -> y.content

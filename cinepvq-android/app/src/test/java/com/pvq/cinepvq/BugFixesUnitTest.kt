@@ -5,6 +5,7 @@ import com.pvq.cinepvq.data.player.HlsAdAndPngProcessor
 import com.pvq.cinepvq.data.player.VideoSourceRepository
 import com.pvq.cinepvq.domain.model.StreamSource
 import com.pvq.cinepvq.domain.model.StreamType
+import com.pvq.cinepvq.features.admin.AdminViewModel
 import com.pvq.cinepvq.features.library.LibraryTab
 import com.pvq.cinepvq.features.player.PlayerGestureMath
 import com.pvq.cinepvq.features.player.VideoResolution
@@ -281,5 +282,89 @@ class BugFixesUnitTest {
         )
         assertEquals("VSMOV", vsmovName)
         assertTrue(vsmovDisplay.contains("Native"))
+    }
+
+    // ── Bug 9: Streaming PNG-TS Header Offset Detector & Sole Admin Guard ────
+
+    @Test
+    fun testStreamingPngTsHeaderDetector_findsSyncOffsetWithoutBufferingWholeSegment() {
+        fun makeTsHeaderPackets(): ByteArray {
+            val out = ByteArray(4 * 188)
+            for (p in 0 until 4) {
+                out[p * 188] = 0x47.toByte()
+                out[p * 188 + 1] = (p + 1).toByte()
+            }
+            return out
+        }
+
+        // VSMOV 478-byte PNG disguise
+        val vsmovHeader = ByteArray(478)
+        vsmovHeader[0] = 0x89.toByte(); vsmovHeader[1] = 0x50; vsmovHeader[2] = 0x4E; vsmovHeader[3] = 0x47
+        val vsmovBuf = vsmovHeader + makeTsHeaderPackets()
+        assertEquals(478, HlsAdAndPngProcessor.findTsSyncOffsetInHeader(vsmovBuf, vsmovBuf.size))
+
+        // PhimHDCSS FHDC 76-byte PNG disguise
+        val fhdcHeader = ByteArray(76)
+        fhdcHeader[0] = 0x89.toByte(); fhdcHeader[1] = 0x50; fhdcHeader[2] = 0x4E; fhdcHeader[3] = 0x47
+        val fhdcBuf = fhdcHeader + makeTsHeaderPackets()
+        assertEquals(76, HlsAdAndPngProcessor.findTsSyncOffsetInHeader(fhdcBuf, fhdcBuf.size))
+
+        // Raw MPEG-TS -> offset 0
+        val rawTs = makeTsHeaderPackets()
+        assertEquals(0, HlsAdAndPngProcessor.findTsSyncOffsetInHeader(rawTs, rawTs.size))
+
+        // Unknown binary payload -> offset 0 (no false unwrap)
+        val unknown = ByteArray(1024) { 0x11 }
+        assertEquals(0, HlsAdAndPngProcessor.findTsSyncOffsetInHeader(unknown, unknown.size))
+    }
+
+    @Test
+    fun testSoleAdminEmailGuard_matchesOnlyAuthorizedEmail() {
+        assertTrue(AdminViewModel.isAdminEmail("vanquyetp823@gmail.com"))
+        assertTrue(AdminViewModel.isAdminEmail("  VANQUYETP823@GMAIL.COM  "))
+        assertFalse(AdminViewModel.isAdminEmail("other@gmail.com"))
+        assertFalse(AdminViewModel.isAdminEmail("vanquyetp823@gmail.com.evil.com"))
+        assertFalse(AdminViewModel.isAdminEmail(""))
+        assertFalse(AdminViewModel.isAdminEmail(null))
+    }
+
+    @Test
+    fun testSingleVariantMasterFlattening_collapsesSingleVariantAndPreservesMultiBitrate() {
+        val singleMaster = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=2000000,RESOLUTION=1920x1080
+            2000kb/hls/mixed.m3u8
+        """.trimIndent()
+        val flattened = HlsAdAndPngProcessor.extractSingleVariantUrl(
+            singleMaster,
+            "https://s3.phim1280.tv/20240319/demo/index.m3u8"
+        )
+        assertEquals("https://s3.phim1280.tv/20240319/demo/2000kb/hls/mixed.m3u8", flattened)
+
+        val multiMaster = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720
+            720p.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1920x1080
+            1080p.m3u8
+        """.trimIndent()
+        assertNull(
+            HlsAdAndPngProcessor.extractSingleVariantUrl(
+                multiMaster,
+                "https://cdn.example.com/master.m3u8"
+            )
+        )
+
+        val mediaPlaylist = """
+            #EXTM3U
+            #EXTINF:5.0,
+            seg1.ts
+        """.trimIndent()
+        assertNull(
+            HlsAdAndPngProcessor.extractSingleVariantUrl(
+                mediaPlaylist,
+                "https://cdn.example.com/mixed.m3u8"
+            )
+        )
     }
 }

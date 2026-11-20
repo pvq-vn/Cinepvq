@@ -8,8 +8,8 @@ import type { VideoSourceAdapter, ResolveSourceOptions, ResolvedSource } from ".
 
 export class K20Adapter implements VideoSourceAdapter {
   readonly sourceId = "k20" as const;
-  readonly name = "K20 Direct HLS (Siêu mượt)";
-  readonly priority = 1;
+  readonly name = "K20 Direct HLS (Đã cắt QC)";
+  readonly priority = 3;
 
   async resolveStream(options: ResolveSourceOptions): Promise<ResolvedSource | null> {
     const { imdbId, season = 1, episode = 1, type = "series", slug, serverName, episodeSlug } = options;

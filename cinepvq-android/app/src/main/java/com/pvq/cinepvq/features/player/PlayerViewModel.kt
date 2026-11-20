@@ -27,6 +27,8 @@ class PlayerViewModel(
     val availableSources: StateFlow<List<StreamSource>> = playbackManager.availableSources
     val activeStream: StateFlow<StreamSource?> = playbackManager.activeStream
     val isLoadingStream: StateFlow<Boolean> = playbackManager.isLoadingStream
+    val isBuffering: StateFlow<Boolean> = playbackManager.isBuffering
+    val playWhenReady: StateFlow<Boolean> = playbackManager.playWhenReady
     val errorMessage: StateFlow<String?> = playbackManager.errorMessage
 
     val initialResumePositionMs: Long

@@ -88,6 +88,10 @@ export interface PlatformRankingSection {
   countryLabel?: string;
   categoryKey?: string;
   metricLabel?: string;
+  hasMore?: boolean;
+  nextCursor?: number;
+  totalScanned?: number;
+  totalAvailable?: number;
   items: TrendingRankItem[];
 }
 

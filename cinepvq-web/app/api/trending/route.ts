@@ -41,6 +41,10 @@ export async function GET(request: NextRequest) {
     const doubanCategory = normalizeDoubanCategory(
       searchParams.get("doubanCategory")
     );
+    const doubanOffset = Math.max(
+      0,
+      parseInt(searchParams.get("doubanOffset") || "0", 10) || 0
+    );
 
     const payload = await crawlAllPlatformRankings({
       forceRefresh,
@@ -48,6 +52,7 @@ export async function GET(request: NextRequest) {
       netflixCountry,
       netflixType,
       doubanCategory,
+      doubanOffset,
     });
 
     return NextResponse.json(payload);

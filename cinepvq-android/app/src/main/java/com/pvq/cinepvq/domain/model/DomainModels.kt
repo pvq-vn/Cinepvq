@@ -161,6 +161,9 @@ data class TrendingPlatformSection(
     val countryLabel: String? = null,
     val categoryKey: String? = null,
     val metricLabel: String? = null,
+    val hasMore: Boolean = false,
+    val nextCursor: Int = 0,
+    val totalAvailable: Int = 0,
     val items: List<TrendingRankItem> = emptyList()
 )
 

@@ -5,19 +5,26 @@ import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.TransferListener
+import okhttp3.Call
+import okhttp3.ConnectionPool
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.net.URI
+import java.util.concurrent.TimeUnit
 import kotlin.math.min
 
 /**
- * Pure Kotlin HLS Ad-Stripper, Manifest Resolver & PNG-Disguised MPEG-TS Unwrapper.
+ * Pure Kotlin HLS Ad-Stripper, Manifest Resolver & Streaming PNG-Disguised MPEG-TS Unwrapper.
  * - Strips injected KKPhim1 commercial ad blocks (`/v9/<hash>/segment_0001.ts` inside
  *   `#EXT-X-DISCONTINUITY`) while preserving real movie segments including `convertv9/`.
  * - Extracts fresh inline HLS manifests from PhimHDCSS FHDC (`tiktok.phimhdc.com/embed/...`).
- * - Unwraps fake PNG/image headers on MPEG-TS segments (VSMOV 478B, PhimHDCSS FHDC 76B).
+ * - Stream-unwraps fake PNG/image headers on MPEG-TS segments (VSMOV 478B, PhimHDCSS FHDC 76B)
+ *   on the fly using a pooled HTTP/2 OkHttpClient so segments start playing with minimal TTFB!
  */
 object HlsAdAndPngProcessor {
 
@@ -331,17 +338,47 @@ object HlsAdAndPngProcessor {
     }
 
     /**
-     * Unwraps fake image/PNG header prefix and non-188 trailing footer from disguised MPEG-TS segments.
+     * If a master HLS manifest contains exactly ONE `#EXT-X-STREAM-INF` variant
+     * and no separate `#EXT-X-MEDIA:` audio/subtitle renditions, returns the resolved
+     * child media playlist URL so SmartHlsDataSource can flatten it in 1 round-trip!
      */
-    fun stripPngPrefixFromTs(buf: ByteArray): ByteArray {
-        if (buf.size < 377) return buf
+    fun extractSingleVariantUrl(manifestText: String, baseUrl: String): String? {
+        val normalized = manifestText.replace("\r\n", "\n")
+        if (normalized.contains("#EXTINF:") || normalized.contains("#EXT-X-MEDIA:")) {
+            return null
+        }
+        val lines = normalized.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+        val variants = mutableListOf<String>()
+        var i = 0
+        while (i < lines.size) {
+            if (lines[i].startsWith("#EXT-X-STREAM-INF")) {
+                var j = i + 1
+                while (j < lines.size) {
+                    if (!lines[j].startsWith("#")) {
+                        variants.add(resolveUrlSafe(lines[j], baseUrl))
+                        i = j
+                        break
+                    }
+                    j++
+                }
+            }
+            i++
+        }
+        return if (variants.size == 1) variants[0] else null
+    }
 
-        // Already valid MPEG-TS starting at byte 0
+    /**
+     * Finds the starting MPEG-TS packet offset (0x47 sync byte repeated at +188 and +376)
+     * inside an initial header buffer, returning 0 if already MPEG-TS or not a disguised image.
+     */
+    fun findTsSyncOffsetInHeader(buf: ByteArray, validLen: Int = buf.size): Int {
+        if (validLen < 377) return 0
+
         if ((buf[0].toInt() and 0xFF) == 0x47 &&
             (buf[188].toInt() and 0xFF) == 0x47 &&
             (buf[376].toInt() and 0xFF) == 0x47
         ) {
-            return buf
+            return 0
         }
 
         val b0 = buf[0].toInt() and 0xFF
@@ -355,21 +392,26 @@ object HlsAdAndPngProcessor {
         val isWebp = b0 == 0x52 && b1 == 0x49 && b2 == 0x46 && b3 == 0x46
 
         if (!isPng && !isGif && !isJpg && !isWebp) {
-            return buf
+            return 0
         }
 
-        val maxScan = min(buf.size - 377, 8192)
-        var tsOffset = -1
+        val maxScan = min(validLen - 377, 8192)
         for (i in 1..maxScan) {
             if ((buf[i].toInt() and 0xFF) == 0x47 &&
                 (buf[i + 188].toInt() and 0xFF) == 0x47 &&
                 (buf[i + 376].toInt() and 0xFF) == 0x47
             ) {
-                tsOffset = i
-                break
+                return i
             }
         }
+        return 0
+    }
 
+    /**
+     * Unwraps fake image/PNG header prefix and non-188 trailing footer from disguised MPEG-TS segments.
+     */
+    fun stripPngPrefixFromTs(buf: ByteArray): ByteArray {
+        val tsOffset = findTsSyncOffsetInHeader(buf, buf.size)
         if (tsOffset <= 0) return buf
 
         val remaining = buf.size - tsOffset
@@ -383,26 +425,50 @@ object HlsAdAndPngProcessor {
 class SmartHlsDataSourceFactory(
     private val defaultHeaders: Map<String, String> = emptyMap(),
     private val stripAds: Boolean = true,
-    private val stripPng: Boolean = false
+    private val stripPng: Boolean = false,
+    private val okHttpClient: OkHttpClient = SHARED_MEDIA_OKHTTP_CLIENT
 ) : DataSource.Factory {
 
-    private val httpFactory = DefaultHttpDataSource.Factory()
-        .setUserAgent(
-            defaultHeaders["User-Agent"]
-                ?: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-        )
-        .setAllowCrossProtocolRedirects(true)
-        .setConnectTimeoutMs(12_000)
-        .setReadTimeoutMs(15_000)
-        .apply {
-            if (defaultHeaders.isNotEmpty()) {
-                setDefaultRequestProperties(defaultHeaders)
-            }
+    companion object {
+        private const val DEFAULT_UA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+
+        val SHARED_MEDIA_OKHTTP_CLIENT: OkHttpClient by lazy {
+            OkHttpClient.Builder()
+                .connectionPool(ConnectionPool(16, 5, TimeUnit.MINUTES))
+                .connectTimeout(12, TimeUnit.SECONDS)
+                .readTimeout(20, TimeUnit.SECONDS)
+                .writeTimeout(12, TimeUnit.SECONDS)
+                .followRedirects(true)
+                .followSslRedirects(true)
+                .retryOnConnectionFailure(true)
+                .build()
         }
+
+        private const val MANIFEST_CACHE_TTL_MS = 3 * 60 * 1000L
+        private const val MAX_MANIFEST_CACHE = 150
+        private val manifestCache = java.util.concurrent.ConcurrentHashMap<String, Pair<ByteArray, Long>>()
+
+        internal fun getCachedManifest(key: String): ByteArray? {
+            val hit = manifestCache[key] ?: return null
+            if (hit.second > System.currentTimeMillis()) return hit.first
+            manifestCache.remove(key)
+            return null
+        }
+
+        internal fun putCachedManifest(key: String, bytes: ByteArray) {
+            if (manifestCache.size >= MAX_MANIFEST_CACHE) {
+                manifestCache.clear()
+            }
+            manifestCache[key] = bytes to (System.currentTimeMillis() + MANIFEST_CACHE_TTL_MS)
+        }
+    }
 
     override fun createDataSource(): DataSource {
         return SmartHlsDataSource(
-            upstream = httpFactory.createDataSource(),
+            client = okHttpClient,
+            defaultHeaders = defaultHeaders,
+            defaultUserAgent = defaultHeaders["User-Agent"] ?: DEFAULT_UA,
             stripAds = stripAds,
             stripPng = stripPng
         )
@@ -411,26 +477,44 @@ class SmartHlsDataSourceFactory(
 
 @UnstableApi
 private class SmartHlsDataSource(
-    private val upstream: DataSource,
+    private val client: OkHttpClient,
+    private val defaultHeaders: Map<String, String>,
+    private val defaultUserAgent: String,
     private val stripAds: Boolean,
     private val stripPng: Boolean
 ) : DataSource {
 
+    private val transferListeners = mutableListOf<TransferListener>()
+    private var activeDataSpec: DataSpec? = null
+    private var activeCall: Call? = null
+    private var activeResponse: Response? = null
+    private var activeStream: InputStream? = null
+
+    // Mode A: Small text manifest buffer (M3U8 / FHDC embed HTML)
     private var bufferedBytes: ByteArray? = null
     private var readOffset: Int = 0
     private var bytesRemaining: Int = 0
+
+    // Mode B: Low-latency streaming prefix buffer for PNG-TS header unwrap
+    private var streamPrefixBytes: ByteArray? = null
+    private var streamPrefixOffset: Int = 0
+    private var streamPrefixRemaining: Int = 0
+
     private var currentUri: Uri? = null
     private var responseHeaders: Map<String, List<String>> = emptyMap()
+    private var opened: Boolean = false
 
     override fun addTransferListener(transferListener: TransferListener) {
-        upstream.addTransferListener(transferListener)
+        if (!transferListeners.contains(transferListener)) {
+            transferListeners.add(transferListener)
+        }
     }
 
     override fun open(dataSpec: DataSpec): Long {
-        bufferedBytes = null
-        readOffset = 0
-        bytesRemaining = 0
+        closeInternal()
+        activeDataSpec = dataSpec
         currentUri = dataSpec.uri
+        transferListeners.forEach { it.onTransferInitializing(this, dataSpec, true) }
 
         val url = dataSpec.uri.toString()
         val lower = url.lowercase()
@@ -438,89 +522,207 @@ private class SmartHlsDataSource(
         val isPhimHdcssEmbed = lower.contains("phimhdc.com/embed/")
         val isManifestUrl = lower.contains(".m3u8") || lower.contains("/m3u8") ||
             lower.contains("hls-proxy")
-        val isPotentialPngSegment = stripPng && (
+        val isPotentialPngSegment = stripPng && !isManifestUrl && !isPhimHdcssEmbed && (
             lower.contains(".png") ||
-            lower.contains(".jpg") ||
-            lower.contains(".jpeg") ||
-            lower.contains(".webp") ||
-            lower.contains(".gif") ||
-            lower.contains("ibyteimg.com") ||
-            lower.contains("streamvsmov.com")
-        )
+                lower.contains(".jpg") ||
+                lower.contains(".jpeg") ||
+                lower.contains(".webp") ||
+                lower.contains(".gif") ||
+                lower.contains("ibyteimg.com") ||
+                lower.contains("tiktokcdn.com") ||
+                lower.contains("streamvsmov.com")
+            )
 
-        val shouldBuffer = isPhimHdcssEmbed || isManifestUrl || isPotentialPngSegment
+        val needsTextRewrite = isPhimHdcssEmbed || isManifestUrl
 
-        if (!shouldBuffer) {
-            val len = upstream.open(dataSpec)
-            currentUri = upstream.uri ?: dataSpec.uri
-            responseHeaders = upstream.responseHeaders
-            return len
+        // Fast 0ms in-memory manifest cache hit (skips full RTT on seek / revisit / source return)
+        val manifestCacheKey = if (needsTextRewrite) "$url|$stripAds|$stripPng" else null
+        if (manifestCacheKey != null) {
+            val cached = SmartHlsDataSourceFactory.getCachedManifest(manifestCacheKey)
+            if (cached != null) {
+                val startPos = dataSpec.position.toInt().coerceIn(0, cached.size)
+                val avail = cached.size - startPos
+                val requestedLen = if (dataSpec.length != C.LENGTH_UNSET.toLong()) {
+                    min(avail, dataSpec.length.toInt().coerceAtLeast(0))
+                } else {
+                    avail
+                }
+                bufferedBytes = cached
+                readOffset = startPos
+                bytesRemaining = requestedLen
+                opened = true
+                transferListeners.forEach { it.onTransferStart(this, dataSpec, true) }
+                return requestedLen.toLong()
+            }
         }
 
-        // Fetch full upstream response without range truncation so we can clean manifest or unwrap PNG-TS
-        val fullSpec = dataSpec.buildUpon()
-            .setPosition(0L)
-            .setLength(C.LENGTH_UNSET.toLong())
-            .build()
+        val reqBuilder = Request.Builder()
+            .url(url)
+            .header("User-Agent", defaultUserAgent)
+            .header("Accept", "*/*")
 
-        val rawBytes = try {
-            upstream.open(fullSpec)
-            currentUri = upstream.uri ?: dataSpec.uri
-            responseHeaders = upstream.responseHeaders
-            readAllUpstreamBytes()
-        } finally {
-            try {
-                upstream.close()
-            } catch (_: Exception) {}
+        defaultHeaders.forEach { (k, v) ->
+            if (!k.equals("User-Agent", ignoreCase = true) && v.isNotBlank()) {
+                reqBuilder.header(k, v)
+            }
+        }
+        dataSpec.httpRequestHeaders.forEach { (k, v) ->
+            reqBuilder.header(k, v)
+        }
+
+        // Apply HTTP Range header for direct passthrough streams (never for full-text manifest rewrite or PNG header probe)
+        if (!needsTextRewrite && !isPotentialPngSegment) {
+            if (dataSpec.position > 0L || dataSpec.length != C.LENGTH_UNSET.toLong()) {
+                val rangeStart = dataSpec.position
+                val rangeValue = if (dataSpec.length != C.LENGTH_UNSET.toLong()) {
+                    "bytes=$rangeStart-${rangeStart + dataSpec.length - 1}"
+                } else {
+                    "bytes=$rangeStart-"
+                }
+                reqBuilder.header("Range", rangeValue)
+            }
+        }
+
+        val call = client.newCall(reqBuilder.build())
+        activeCall = call
+        val response = call.execute()
+        activeResponse = response
+
+        if (!response.isSuccessful) {
+            val code = response.code
+            closeInternal()
+            throw IOException("HTTP $code while loading $url")
+        }
+
+        currentUri = Uri.parse(response.request.url.toString())
+        responseHeaders = response.headers.toMultimap()
+        val body = response.body ?: run {
+            closeInternal()
+            throw IOException("Empty response body for $url")
         }
 
         val finalUrl = currentUri?.toString() ?: url
-        val processed: ByteArray = when {
-            isPhimHdcssEmbed -> {
-                val html = rawBytes.toString(Charsets.UTF_8)
-                val manifest = HlsAdAndPngProcessor.extractPhimHdcssManifestFromHtml(html)
-                    ?: throw IOException("PhimHDCSS FHDC manifest not found")
-                val resolved = HlsAdAndPngProcessor.resolveManifestUrls(manifest, finalUrl)
-                resolved.toByteArray(Charsets.UTF_8)
-            }
-            looksLikeM3u8(rawBytes) -> {
-                val text = rawBytes.toString(Charsets.UTF_8)
-                val cleaned = if (stripAds) {
-                    HlsAdAndPngProcessor.stripAdsFromM3u8(text, finalUrl).cleaned
-                } else {
-                    text
+
+        // ── Mode A: Tiny Manifest / FHDC Embed HTML (buffered once, ~10-60KB) ──
+        if (needsTextRewrite) {
+            val rawBytes = body.bytes()
+            response.close()
+            activeResponse = null
+            activeCall = null
+
+            val processed: ByteArray = when {
+                isPhimHdcssEmbed -> {
+                    val html = rawBytes.toString(Charsets.UTF_8)
+                    val manifest = HlsAdAndPngProcessor.extractPhimHdcssManifestFromHtml(html)
+                        ?: throw IOException("PhimHDCSS FHDC manifest not found")
+                    HlsAdAndPngProcessor.resolveManifestUrls(manifest, finalUrl).toByteArray(Charsets.UTF_8)
                 }
-                HlsAdAndPngProcessor.resolveManifestUrls(cleaned, finalUrl).toByteArray(Charsets.UTF_8)
+                looksLikeM3u8(rawBytes) -> {
+                    var text = rawBytes.toString(Charsets.UTF_8)
+                    var resolvedBase = finalUrl
+
+                    // Single-Variant Master Flattening: collapse master -> single media playlist in 1 ExoPlayer prepare!
+                    val singleChildUrl = HlsAdAndPngProcessor.extractSingleVariantUrl(text, resolvedBase)
+                    if (singleChildUrl != null) {
+                        try {
+                            val childReq = Request.Builder()
+                                .url(singleChildUrl)
+                                .header("User-Agent", defaultUserAgent)
+                                .header("Accept", "*/*")
+                                .apply {
+                                    defaultHeaders.forEach { (k, v) ->
+                                        if (!k.equals("User-Agent", ignoreCase = true) && v.isNotBlank()) {
+                                            header(k, v)
+                                        }
+                                    }
+                                }
+                                .build()
+                            client.newCall(childReq).execute().use { childRes ->
+                                if (childRes.isSuccessful) {
+                                    val childText = childRes.body?.string()
+                                    if (!childText.isNullOrBlank() && childText.contains("#EXTM3U") && childText.contains("#EXTINF:")) {
+                                        text = childText
+                                        resolvedBase = childRes.request.url.toString()
+                                    }
+                                }
+                            }
+                        } catch (_: Exception) {}
+                    }
+
+                    val cleaned = if (stripAds) {
+                        HlsAdAndPngProcessor.stripAdsFromM3u8(text, resolvedBase).cleaned
+                    } else {
+                        text
+                    }
+                    HlsAdAndPngProcessor.resolveManifestUrls(cleaned, resolvedBase).toByteArray(Charsets.UTF_8)
+                }
+                stripPng -> HlsAdAndPngProcessor.stripPngPrefixFromTs(rawBytes)
+                else -> rawBytes
             }
-            stripPng -> {
-                HlsAdAndPngProcessor.stripPngPrefixFromTs(rawBytes)
+
+            if (manifestCacheKey != null && processed.isNotEmpty()) {
+                SmartHlsDataSourceFactory.putCachedManifest(manifestCacheKey, processed)
             }
-            else -> rawBytes
+
+            val startPos = dataSpec.position.toInt().coerceIn(0, processed.size)
+            val avail = processed.size - startPos
+            val requestedLen = if (dataSpec.length != C.LENGTH_UNSET.toLong()) {
+                min(avail, dataSpec.length.toInt().coerceAtLeast(0))
+            } else {
+                avail
+            }
+
+            bufferedBytes = processed
+            readOffset = startPos
+            bytesRemaining = requestedLen
+            opened = true
+            transferListeners.forEach { it.onTransferStart(this, dataSpec, true) }
+            return requestedLen.toLong()
         }
 
-        val startPos = dataSpec.position.toInt().coerceIn(0, processed.size)
-        val avail = processed.size - startPos
-        val requestedLen = if (dataSpec.length != C.LENGTH_UNSET.toLong()) {
-            min(avail, dataSpec.length.toInt().coerceAtLeast(0))
-        } else {
-            avail
+        // ── Mode B: Streaming PNG-Header Unwrap (only peeks <= 8KB, ZERO full-segment stall!) ──
+        val inputStream = body.byteStream()
+        activeStream = inputStream
+        val contentLen = body.contentLength()
+
+        if (isPotentialPngSegment) {
+            val headerProbe = ByteArray(8192)
+            var filled = 0
+            var tsOffset = 0
+            while (filled < 2048) {
+                val n = inputStream.read(headerProbe, filled, headerProbe.size - filled)
+                if (n <= 0) break
+                filled += n
+                if (filled >= 1024) {
+                    tsOffset = HlsAdAndPngProcessor.findTsSyncOffsetInHeader(headerProbe, filled)
+                    if (tsOffset > 0) break
+                }
+            }
+            if (tsOffset == 0) {
+                tsOffset = HlsAdAndPngProcessor.findTsSyncOffsetInHeader(headerProbe, filled)
+            }
+            if (tsOffset > 0 && tsOffset < filled) {
+                streamPrefixBytes = headerProbe
+                streamPrefixOffset = tsOffset
+                streamPrefixRemaining = filled - tsOffset
+            } else if (filled > 0) {
+                streamPrefixBytes = headerProbe
+                streamPrefixOffset = 0
+                streamPrefixRemaining = filled
+            }
+            opened = true
+            transferListeners.forEach { it.onTransferStart(this, dataSpec, true) }
+            return if (contentLen > 0L && tsOffset >= 0 && contentLen > tsOffset) {
+                C.LENGTH_UNSET.toLong() // Let ExoPlayer stream smoothly until EOF
+            } else {
+                C.LENGTH_UNSET.toLong()
+            }
         }
 
-        bufferedBytes = processed
-        readOffset = startPos
-        bytesRemaining = requestedLen
-        return requestedLen.toLong()
-    }
-
-    private fun readAllUpstreamBytes(): ByteArray {
-        val baos = ByteArrayOutputStream(32 * 1024)
-        val chunk = ByteArray(16 * 1024)
-        while (true) {
-            val n = upstream.read(chunk, 0, chunk.size)
-            if (n == C.RESULT_END_OF_INPUT || n <= 0) break
-            baos.write(chunk, 0, n)
-        }
-        return baos.toByteArray()
+        // ── Mode C: Direct Pooled HTTP/2 Streaming Passthrough (KKPhim1 / K20 / ChoPhim .ts) ──
+        opened = true
+        transferListeners.forEach { it.onTransferStart(this, dataSpec, true) }
+        return if (contentLen >= 0L) contentLen else C.LENGTH_UNSET.toLong()
     }
 
     private fun looksLikeM3u8(bytes: ByteArray): Boolean {
@@ -530,30 +732,83 @@ private class SmartHlsDataSource(
     }
 
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
-        val local = bufferedBytes
-        if (local == null) {
-            return upstream.read(buffer, offset, length)
-        }
         if (length == 0) return 0
-        if (bytesRemaining <= 0) return C.RESULT_END_OF_INPUT
 
-        val toCopy = min(length, bytesRemaining)
-        System.arraycopy(local, readOffset, buffer, offset, toCopy)
-        readOffset += toCopy
-        bytesRemaining -= toCopy
-        return toCopy
+        // Mode A: In-memory rewritten manifest
+        val local = bufferedBytes
+        if (local != null) {
+            if (bytesRemaining <= 0) return C.RESULT_END_OF_INPUT
+            val toCopy = min(length, bytesRemaining)
+            System.arraycopy(local, readOffset, buffer, offset, toCopy)
+            readOffset += toCopy
+            bytesRemaining -= toCopy
+            activeDataSpec?.let { spec ->
+                transferListeners.forEach { it.onBytesTransferred(this, spec, true, toCopy) }
+            }
+            return toCopy
+        }
+
+        // Mode B prefix drain (post-PNG header bytes)
+        val prefix = streamPrefixBytes
+        if (prefix != null && streamPrefixRemaining > 0) {
+            val toCopy = min(length, streamPrefixRemaining)
+            System.arraycopy(prefix, streamPrefixOffset, buffer, offset, toCopy)
+            streamPrefixOffset += toCopy
+            streamPrefixRemaining -= toCopy
+            if (streamPrefixRemaining == 0) {
+                streamPrefixBytes = null
+            }
+            activeDataSpec?.let { spec ->
+                transferListeners.forEach { it.onBytesTransferred(this, spec, true, toCopy) }
+            }
+            return toCopy
+        }
+
+        // Mode B/C: Live OkHttp stream read
+        val stream = activeStream ?: return C.RESULT_END_OF_INPUT
+        val readBytes = stream.read(buffer, offset, length)
+        if (readBytes == -1) return C.RESULT_END_OF_INPUT
+        if (readBytes > 0) {
+            activeDataSpec?.let { spec ->
+                transferListeners.forEach { it.onBytesTransferred(this, spec, true, readBytes) }
+            }
+        }
+        return readBytes
     }
 
     override fun getUri(): Uri? = currentUri
 
     override fun getResponseHeaders(): Map<String, List<String>> = responseHeaders
 
-    override fun close() {
+    private fun closeInternal() {
         bufferedBytes = null
         bytesRemaining = 0
         readOffset = 0
+        streamPrefixBytes = null
+        streamPrefixOffset = 0
+        streamPrefixRemaining = 0
         try {
-            upstream.close()
+            activeStream?.close()
         } catch (_: Exception) {}
+        activeStream = null
+        try {
+            activeResponse?.close()
+        } catch (_: Exception) {}
+        activeResponse = null
+        try {
+            activeCall?.cancel()
+        } catch (_: Exception) {}
+        activeCall = null
+    }
+
+    override fun close() {
+        val wasOpened = opened
+        val spec = activeDataSpec
+        opened = false
+        activeDataSpec = null
+        closeInternal()
+        if (wasOpened && spec != null) {
+            transferListeners.forEach { it.onTransferEnd(this, spec, true) }
+        }
     }
 }

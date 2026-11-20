@@ -28,10 +28,23 @@ export const api = directApi;
 
 // ─── List Endpoints ──────────────────────────────────────────────────────────
 
-/** Phim mới cập nhật */
+/** Phim mới cập nhật (Hợp nhất đa nguồn, không lộ nguồn ngoài player) */
 export const getLatestMovies = async (
   page = 1
 ): Promise<AxiosResponse<PaginatedResponse>> => {
+  if (typeof window !== "undefined" && page <= 2) {
+    try {
+      const res = await axios.get<PaginatedResponse>("/api/catalog/latest", {
+        params: { page },
+        timeout: 10_000,
+      });
+      if (res.data?.items && res.data.items.length > 0) {
+        return res;
+      }
+    } catch {
+      // Fall through to direct KKPhim API
+    }
+  }
   const res = await directApi.get<KKPhimRawLatestResponse>(
     "danh-sach/phim-moi-cap-nhat",
     { params: { page } }
@@ -167,11 +180,24 @@ export const getMoviesFiltered = async ({
 
 // ─── Search Endpoint ─────────────────────────────────────────────────────────
 
-/** Tìm kiếm phim theo từ khóa */
+/** Tìm kiếm phim hợp nhất trên toàn bộ 6 dataset (KKPhim, VSMOV, NguonC, ChoPhim, PhimHDCSS) */
 export const searchMovies = async (
   keyword: string,
   page = 1
 ): Promise<AxiosResponse<PaginatedResponse>> => {
+  if (typeof window !== "undefined") {
+    try {
+      const res = await axios.get<PaginatedResponse>("/api/catalog/search", {
+        params: { q: keyword, page },
+        timeout: 12_000,
+      });
+      if (res.data && Array.isArray(res.data.items)) {
+        return res;
+      }
+    } catch {
+      // Fallback to direct KKPhim API if backend route fails
+    }
+  }
   const res = await directApi.get<KKPhimRawV1ListResponse>(
     "v1/api/tim-kiem",
     { params: { keyword, page } }
@@ -184,10 +210,23 @@ export const searchMovies = async (
 
 // ─── Movie Detail Endpoint ───────────────────────────────────────────────────
 
-/** Chi tiết phim + danh sách tập từ KKPhim */
+/** Chi tiết phim hợp nhất toàn bộ dataset (tự động fallback nếu phim không có trên KKPhim) */
 export const getMovieDetail = async (
   slug: string
 ): Promise<AxiosResponse<MovieDetailResponse>> => {
+  if (typeof window !== "undefined") {
+    try {
+      const res = await axios.get<MovieDetailResponse>(
+        `/api/movies/${encodeURIComponent(slug)}`,
+        { timeout: 12_000 }
+      );
+      if (res.data?.status === "success" && res.data.movie) {
+        return res;
+      }
+    } catch {
+      // Fall through to direct KKPhim API
+    }
+  }
   const res = await directApi.get<KKPhimRawDetailResponse>(
     `phim/${encodeURIComponent(slug)}`
   );

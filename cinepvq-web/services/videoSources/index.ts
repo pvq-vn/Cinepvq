@@ -1,8 +1,8 @@
 // ==============================================================================
 // services/videoSources/index.ts
 // Multi-Source Video Engine: Central Resolver & Orchestration
-// Priority: 1. K20 -> 2. VSMOV Native HLS -> 3. PhimHDCSS (FHDC) -> 4. ChoPhim -> 5. KKPhim1 (Ad-Free) -> 6. NguonC
-// Includes in-memory TTL cache for near-instant episode & server switching.
+// Priority: 1. VSMOV Native HLS -> 2. PhimHDCSS (FHDC) -> 3. K20 -> 4. KKPhim1 (Ad-Free) -> 5. ChoPhim -> 6. NguonC
+// Includes in-memory TTL cache + strict per-adapter deadline for sub-3s resolution & 0ms cached switching.
 // ==============================================================================
 
 import type {
@@ -20,13 +20,30 @@ import { NguonCAdapter } from "./adapters/nguoncAdapter";
 export * from "./types";
 
 const adapters: VideoSourceAdapter[] = [
-  new K20Adapter(),
   new VsmovAdapter(),
   new PhimHdcssAdapter(),
-  new ChoPhimAdapter(),
+  new K20Adapter(),
   new KKPhimAdapter(),
+  new ChoPhimAdapter(),
   new NguonCAdapter(),
 ];
+
+const ADAPTER_SOFT_DEADLINE_MS = 3200;
+
+function withSoftTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    promise
+      .then((val) => {
+        clearTimeout(timer);
+        resolve(val);
+      })
+      .catch(() => {
+        clearTimeout(timer);
+        resolve(null);
+      });
+  });
+}
 
 const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const MAX_CACHE_ENTRIES = 500;
@@ -60,9 +77,20 @@ export function getStreamResolveCacheSize(): number {
   return streamResolveCache.size;
 }
 
+export function getCachedSources(
+  options: ResolveSourceOptions
+): ResolvedSource[] | null {
+  const cacheKey = buildCacheKey(options);
+  const cached = streamResolveCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now() && cached.sources.length > 0) {
+    return cached.sources;
+  }
+  return null;
+}
+
 /**
- * Server-side resolution: Queries all adapters in parallel,
- * filters valid streams, deduplicates URLs, and sorts them by priority.
+ * Server-side resolution: Queries all adapters in parallel with a strict soft deadline,
+ * filters valid streams, deduplicates by sourceId, and sorts them by speed priority.
  */
 export async function resolveAllAvailableSourcesServer(
   options: ResolveSourceOptions
@@ -75,18 +103,38 @@ export async function resolveAllAvailableSourcesServer(
   }
 
   const results = await Promise.allSettled(
-    adapters.map((adapter) => adapter.resolveStream(options))
+    adapters.map((adapter) =>
+      withSoftTimeout(adapter.resolveStream(options), ADAPTER_SOFT_DEADLINE_MS)
+    )
   );
 
   const resolved: ResolvedSource[] = [];
-  const seenUrls = new Set<string>();
+  const seenSourceIds = new Set<string>();
 
   for (const res of results) {
     if (res.status === "fulfilled" && res.value && res.value.url) {
-      const cleanUrl = res.value.url.trim();
-      if (!seenUrls.has(cleanUrl)) {
-        seenUrls.add(cleanUrl);
+      const sid = res.value.sourceId;
+      if (!seenSourceIds.has(sid)) {
+        seenSourceIds.add(sid);
         resolved.push(res.value);
+      }
+    }
+  }
+
+  // Share VSMOV's clean WebVTT subtitles with PhimHDCSS (FHDC) when FHDC lacks softsubs
+  const vsmovSubtitles = resolved.find(
+    (s) => s.sourceId === "vsmov" && Array.isArray(s.subtitles) && s.subtitles.length > 0
+  )?.subtitles;
+  if (vsmovSubtitles && vsmovSubtitles.length > 0) {
+    for (let i = 0; i < resolved.length; i++) {
+      if (
+        resolved[i].sourceId === "phimhdcss" &&
+        (!resolved[i].subtitles || resolved[i].subtitles!.length === 0)
+      ) {
+        resolved[i] = {
+          ...resolved[i],
+          subtitles: vsmovSubtitles,
+        };
       }
     }
   }
@@ -118,7 +166,8 @@ export async function resolveAllAvailableSourcesServer(
  * On server: queries adapters directly.
  */
 export async function resolveAllSources(
-  options: ResolveSourceOptions
+  options: ResolveSourceOptions,
+  fetchConfig?: { priority?: "high" | "low" | "auto" }
 ): Promise<ResolvedSource[]> {
   if (typeof window !== "undefined") {
     const cacheKey = buildCacheKey(options);
@@ -142,7 +191,12 @@ export async function resolveAllSources(
       if (options.serverName) params.set("serverName", options.serverName);
       if (options.episodeSlug) params.set("episodeSlug", options.episodeSlug);
 
-      const res = await fetch(`/api/video-sources/resolve?${params.toString()}`);
+      const reqInit: RequestInit & { priority?: "high" | "low" | "auto" } = {};
+      if (fetchConfig?.priority) {
+        reqInit.priority = fetchConfig.priority;
+      }
+
+      const res = await fetch(`/api/video-sources/resolve?${params.toString()}`, reqInit);
       if (!res.ok) {
         if (options.knownHlsUrl && options.knownHlsUrl.includes(".m3u8")) {
           return [

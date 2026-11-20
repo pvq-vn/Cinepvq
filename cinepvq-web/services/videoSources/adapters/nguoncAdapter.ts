@@ -7,12 +7,19 @@
 import type { VideoSourceAdapter, ResolveSourceOptions, ResolvedSource } from "../types";
 
 const NGUONC_BASE = "https://phim.nguonc.com/api";
-const TIMEOUT_MS = 2500;
+const TIMEOUT_MS = 2200;
+
+type NguonCServerGroup = {
+  server_name?: string;
+  items?: Array<{ name?: string; slug?: string; embed?: string; m3u8?: string }>;
+};
+
+const nguoncServersCache = new Map<string, { servers: NguonCServerGroup[]; expiresAt: number }>();
 
 export class NguonCAdapter implements VideoSourceAdapter {
   readonly sourceId = "nguonc" as const;
   readonly name = "Server Dự Phòng (StreamC)";
-  readonly priority = 4;
+  readonly priority = 6;
 
   async resolveStream(options: ResolveSourceOptions): Promise<ResolvedSource | null> {
     const { slug, episode = 1, episodeSlug, serverName, nguoncEmbedUrl } = options;
@@ -22,24 +29,42 @@ export class NguonCAdapter implements VideoSourceAdapter {
     const isLT = /l[oồ]ng\s*ti[eế]ng/i.test(reqServer);
     const isVS = /vietsub/i.test(reqServer);
 
-    // 1. Try real NguonC API lookup by slug for an independent backup stream
+    // 1. Try real NguonC API lookup by slug (with 15m cache for instant episode switches)
     if (slug) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-      try {
-        const res = await fetch(`${NGUONC_BASE}/film/${encodeURIComponent(slug.trim().toLowerCase())}`, {
-          headers: { Accept: "application/json" },
-          signal: controller.signal,
-        });
-        clearTimeout(timer);
-        if (res.ok) {
-          const data = await res.json();
-          const servers: Array<{
-            server_name?: string;
-            items?: Array<{ name?: string; slug?: string; embed?: string; m3u8?: string }>;
-          }> = data?.movie?.episodes || [];
+      const cleanSlug = slug.trim().toLowerCase();
+      let servers: NguonCServerGroup[] = [];
+      const cached = nguoncServersCache.get(cleanSlug);
+      if (cached && cached.expiresAt > Date.now()) {
+        servers = cached.servers;
+      } else {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+        try {
+          const res = await fetch(`${NGUONC_BASE}/film/${encodeURIComponent(cleanSlug)}`, {
+            headers: { Accept: "application/json" },
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+          if (res.ok) {
+            const data = await res.json();
+            servers = (data?.movie?.episodes as NguonCServerGroup[]) || [];
+            if (servers.length > 0) {
+              if (nguoncServersCache.size > 300) {
+                const oldest = nguoncServersCache.keys().next().value;
+                if (oldest) nguoncServersCache.delete(oldest);
+              }
+              nguoncServersCache.set(cleanSlug, {
+                servers,
+                expiresAt: Date.now() + 15 * 60 * 1000,
+              });
+            }
+          }
+        } catch {
+          clearTimeout(timer);
+        }
+      }
 
-          if (servers.length > 0) {
+      if (servers.length > 0) {
             let candidateGroups = servers;
             if (isTM) {
               candidateGroups = servers.filter((g) =>
@@ -98,10 +123,6 @@ export class NguonCAdapter implements VideoSourceAdapter {
               }
             }
           }
-        }
-      } catch {
-        clearTimeout(timer);
-      }
     }
 
     // 2. Fallback to passed embed URL if present

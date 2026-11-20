@@ -14,6 +14,7 @@ import {
 import {
   ResolvedSource,
   VideoSourceId,
+  getCachedSources,
   resolveAllSources,
 } from "@/services/videoSources";
 import CustomHlsPlayer from "@/components/CustomHlsPlayer";
@@ -182,18 +183,64 @@ export default function VideoPlayer({
   const episodeKey = `${movieSlug || ""}|${season}|${episode}|${episodeSlug || ""}|${serverName || ""}|${videoUrl || ""}|${directHlsUrl}`;
   const episodeIdentity = `${movieSlug || ""}|${season}|${episodeSlug || episode}`;
 
+  // Synchronously check pre-warmed/prefetched cache FIRST so we start in 0ms on the fastest CDN (VSMOV/PhimHDCSS)!
+  const cachedForEpisode = useMemo(
+    () =>
+      getCachedSources({
+        slug: movieSlug,
+        imdbId,
+        tmdbId,
+        title: movieTitle,
+        season,
+        episode,
+        type,
+        nguoncEmbedUrl: videoUrl,
+        knownHlsUrl: directHlsUrl || undefined,
+        serverName,
+        episodeSlug,
+      }),
+    [movieSlug, imdbId, tmdbId, movieTitle, season, episode, type, videoUrl, directHlsUrl, serverName, episodeSlug]
+  );
+
+  const pickPreferredOrTopSourceId = useCallback(
+    (list: ResolvedSource[]): VideoSourceId | null => {
+      if (list.length === 0) return null;
+      const pref = settings?.preferredSource;
+      if (pref && pref !== "auto") {
+        const hit = list.find((s) => s.sourceId === pref && s.isAvailable);
+        if (hit) return hit.sourceId;
+      }
+      return list[0].sourceId;
+    },
+    [settings?.preferredSource]
+  );
+
   const [sources, setSources] = useState<ResolvedSource[]>(() =>
-    instantHlsSource ? [instantHlsSource] : []
+    cachedForEpisode && cachedForEpisode.length > 0
+      ? cachedForEpisode
+      : instantHlsSource
+      ? [instantHlsSource]
+      : []
   );
   const [activeSourceId, setActiveSourceId] = useState<VideoSourceId | null>(() =>
-    instantHlsSource ? "kkphim" : null
+    cachedForEpisode && cachedForEpisode.length > 0
+      ? pickPreferredOrTopSourceId(cachedForEpisode)
+      : instantHlsSource
+      ? "kkphim"
+      : null
   );
-  const [resolvedKey, setResolvedKey] = useState<string>("");
-  const [isSearchingBackups, setIsSearchingBackups] = useState<boolean>(false);
+  const [resolvedKey, setResolvedKey] = useState<string>(() =>
+    cachedForEpisode && cachedForEpisode.length > 0 ? episodeKey : ""
+  );
+  const isSearchingBackups = resolvedKey !== episodeKey;
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
   const [failedSourceIds, setFailedSourceIds] = useState<Set<VideoSourceId>>(
     new Set()
   );
+  const failedSourceIdsRef = useRef<Set<VideoSourceId>>(new Set());
+  useEffect(() => {
+    failedSourceIdsRef.current = failedSourceIds;
+  }, [failedSourceIds]);
 
   // Track current playback position so switching sources/servers resumes seamlessly
   const [resumeTime, setResumeTime] = useState<number>(initialTime);
@@ -227,7 +274,11 @@ export default function VideoPlayer({
     setCurrentAutoPlay(autoPlay);
     setFailedSourceIds(new Set());
 
-    if (instantHlsSource) {
+    if (cachedForEpisode && cachedForEpisode.length > 0) {
+      setSources(cachedForEpisode);
+      setActiveSourceId(pickPreferredOrTopSourceId(cachedForEpisode));
+      setResolvedKey(episodeKey);
+    } else if (instantHlsSource) {
       setSources([instantHlsSource]);
       setActiveSourceId("kkphim");
     } else if (isNewEpisode) {
@@ -321,27 +372,41 @@ export default function VideoPlayer({
   );
 
   // 1. Resolve all available sources on episode / movie / server change
+  // Deprioritize & briefly defer background discovery when an instant direct stream is already loading
+  // so Segment 1 gets 100% of initial browser bandwidth without contention.
   useEffect(() => {
     const requestId = ++resolveRequestIdRef.current;
     let isCancelled = false;
-    setIsSearchingBackups(true);
 
-    resolveAllSources({
-      slug: movieSlug,
-      imdbId,
-      tmdbId,
-      title: movieTitle,
-      season,
-      episode,
-      type,
-      nguoncEmbedUrl: videoUrl,
-      knownHlsUrl: directHlsUrl || undefined,
-      serverName,
-      episodeSlug,
-    })
+    const alreadyCached = Boolean(cachedForEpisode && cachedForEpisode.length > 0);
+    const isBackgroundOnly = Boolean(
+      instantHlsSource &&
+        (!settings?.preferredSource ||
+          settings.preferredSource === "auto" ||
+          settings.preferredSource === "kkphim")
+    );
+    const deferMs = alreadyCached ? 0 : isBackgroundOnly ? 1200 : 0;
+
+    const runResolve = () => {
+      if (isCancelled || requestId !== resolveRequestIdRef.current) return;
+      resolveAllSources(
+        {
+          slug: movieSlug,
+          imdbId,
+          tmdbId,
+          title: movieTitle,
+          season,
+          episode,
+          type,
+          nguoncEmbedUrl: videoUrl,
+          knownHlsUrl: directHlsUrl || undefined,
+          serverName,
+          episodeSlug,
+        },
+        { priority: isBackgroundOnly ? "low" : "high" }
+      )
       .then((resolvedList) => {
         if (isCancelled || requestId !== resolveRequestIdRef.current) return;
-        setIsSearchingBackups(false);
 
         const finalList = [...resolvedList];
 
@@ -399,22 +464,25 @@ export default function VideoPlayer({
               ? finalList.find((s) => s.sourceId === pref && s.isAvailable)
               : null;
 
-          if (preferredMatch) {
+          if (preferredMatch && !failedSourceIdsRef.current.has(preferredMatch.sourceId)) {
             setActiveSourceId(preferredMatch.sourceId);
-          } else if (
-            instantHlsSource &&
-            finalList.some((s) => s.sourceId === "kkphim")
-          ) {
-            // Keep playing the instant direct HLS stream without interrupting playback!
-            setActiveSourceId((prev) => prev || "kkphim");
           } else {
-            setActiveSourceId(finalList[0].sourceId);
+            const firstHealthy =
+              finalList.find((s) => s.isAvailable && !failedSourceIdsRef.current.has(s.sourceId)) ||
+              finalList[0];
+            if (instantHlsSource && !failedSourceIdsRef.current.has("kkphim")) {
+              // Keep playing active stream smoothly without interrupting unless it already failed/stalled
+              setActiveSourceId((prev) =>
+                prev && !failedSourceIdsRef.current.has(prev) ? prev : firstHealthy.sourceId
+              );
+            } else {
+              setActiveSourceId(firstHealthy.sourceId);
+            }
           }
         }
       })
       .catch((err) => {
         if (isCancelled || requestId !== resolveRequestIdRef.current) return;
-        setIsSearchingBackups(false);
         console.error("[MULTI-SOURCE] Resolution failed:", err);
         if (instantHlsSource) {
           setSources([instantHlsSource]);
@@ -446,9 +514,14 @@ export default function VideoPlayer({
         }
         setResolvedKey(episodeKey);
       });
+    };
+
+    const deferTimer = deferMs > 0 ? setTimeout(runResolve, deferMs) : null;
+    if (deferMs === 0) runResolve();
 
     return () => {
       isCancelled = true;
+      if (deferTimer) clearTimeout(deferTimer);
     };
   }, [
     episodeKey,
@@ -464,10 +537,11 @@ export default function VideoPlayer({
     videoUrl,
     directHlsUrl,
     instantHlsSource,
+    cachedForEpisode,
     settings?.preferredSource,
   ]);
 
-  // Preload next episode's video sources in background 3.5s after current episode starts
+  // Preload next episode's video sources at low priority 6s after current episode starts
   useEffect(() => {
     if (!episodes || episodes.length <= 1 || !episodeSlug || !movieSlug) return;
     const curIdx = episodes.findIndex((e) => e.slug === episodeSlug);
@@ -477,20 +551,23 @@ export default function VideoPlayer({
 
     const timer = setTimeout(() => {
       const nextHls = extractDirectHlsUrl(nextEp.m3u8, nextEp.embed);
-      resolveAllSources({
-        slug: movieSlug,
-        imdbId,
-        tmdbId,
-        title: movieTitle,
-        season,
-        episode: parseInt(nextEp.name.replace(/\D/g, ""), 10) || curIdx + 2,
-        type,
-        nguoncEmbedUrl: nextEp.embed,
-        knownHlsUrl: nextHls || undefined,
-        serverName,
-        episodeSlug: nextEp.slug,
-      }).catch(() => {});
-    }, 3500);
+      resolveAllSources(
+        {
+          slug: movieSlug,
+          imdbId,
+          tmdbId,
+          title: movieTitle,
+          season,
+          episode: parseInt(nextEp.name.replace(/\D/g, ""), 10) || curIdx + 2,
+          type,
+          nguoncEmbedUrl: nextEp.embed,
+          knownHlsUrl: nextHls || undefined,
+          serverName,
+          episodeSlug: nextEp.slug,
+        },
+        { priority: "low" }
+      ).catch(() => {});
+    }, 6000);
 
     return () => clearTimeout(timer);
   }, [episodes, episodeSlug, movieSlug, imdbId, tmdbId, movieTitle, season, type, serverName]);
@@ -526,6 +603,7 @@ export default function VideoPlayer({
       setFailedSourceIds((prev) => {
         const next = new Set(prev);
         next.add(activeSourceId);
+        failedSourceIdsRef.current = next;
 
         const eligible = displaySources.filter(
           (s) => !next.has(s.sourceId) && s.url

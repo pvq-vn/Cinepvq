@@ -131,6 +131,8 @@ fun PlayerScreen(
     val trackSelector = playbackManager.trackSelector
 
     val isPlaying by playbackManager.isPlaying.collectAsStateWithLifecycle()
+    val isBuffering by playbackManager.isBuffering.collectAsStateWithLifecycle()
+    val playWhenReady by playbackManager.playWhenReady.collectAsStateWithLifecycle()
     val presentationState by playbackManager.presentationState.collectAsStateWithLifecycle()
     val shouldAttachPlayer = presentationState == com.pvq.cinepvq.data.player.PlayerPresentationState.FULL_PORTRAIT ||
                              presentationState == com.pvq.cinepvq.data.player.PlayerPresentationState.FULL_LANDSCAPE
@@ -1114,12 +1116,35 @@ fun PlayerScreen(
                     effectiveServers.getOrNull(selectedServerIndex)?.items ?: emptyList()
                 }
 
+                // ── Center Buffering Spinner (Visible while video buffers & controls are hidden) ──
+                if (isBuffering && activeStream?.type == StreamType.HLS_DIRECT && !isLoadingStream && !isControlsVisible) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color.Black.copy(alpha = 0.65f),
+                            shadowElevation = 6.dp
+                        ) {
+                            CircularProgressIndicator(
+                                color = CinepvqPrimaryLight,
+                                strokeWidth = 3.dp,
+                                modifier = Modifier
+                                    .padding(14.dp)
+                                    .size(32.dp)
+                            )
+                        }
+                    }
+                }
+
                 // ── Controls Overlay ─────────────────────────────────────────
                 PlayerControls(
                     isVisible = isControlsVisible,
                     movie = movie,
                     episode = episode,
-                    isPlaying = isPlaying,
+                    isPlaying = isPlaying || (isBuffering && playWhenReady && !userPausedManually),
+                    isBuffering = isBuffering && activeStream?.type == StreamType.HLS_DIRECT,
                     currentPositionMs = currentPositionMs,
                     durationMs = durationMs,
                     isFullscreen = isFullscreen,

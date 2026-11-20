@@ -93,6 +93,12 @@ class PlaybackManager(
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
 
+    private val _isBuffering = MutableStateFlow(false)
+    val isBuffering: StateFlow<Boolean> = _isBuffering.asStateFlow()
+
+    private val _playWhenReady = MutableStateFlow(false)
+    val playWhenReady: StateFlow<Boolean> = _playWhenReady.asStateFlow()
+
     private val _currentPositionMs = MutableStateFlow(0L)
     val currentPositionMs: StateFlow<Long> = _currentPositionMs.asStateFlow()
 
@@ -266,8 +272,12 @@ class PlaybackManager(
     private var backupResolveJob: Job? = null
     private var prefetchJob: Job? = null
     private var progressTrackingJob: Job? = null
+    private var stallWatchdogJob: Job? = null
+    private val failedSourceIdsForEpisode = mutableSetOf<String>()
+    private val recentRebufferTimestamps = ArrayDeque<Long>()
+    private var hasRenderedFirstFrameForStream = false
 
-    // ── Single Persistent ExoPlayer Instance ─────────────────────────────────
+    // ── Single Persistent ExoPlayer Instance (Fast Start + Deep Anti-Stutter Cushion) ──
     val trackSelector = DefaultTrackSelector(context).apply {
         parameters = buildUponParameters()
             .setForceHighestSupportedBitrate(false)
@@ -275,8 +285,20 @@ class PlaybackManager(
             .build()
     }
 
+    private val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
+        .setBufferDurationsMs(
+            /* minBufferMs = */ 30_000,
+            /* maxBufferMs = */ 75_000,
+            /* bufferForPlaybackMs = */ 1_000,
+            /* bufferForPlaybackAfterRebufferMs = */ 2_000
+        )
+        .setBackBuffer(15_000, true)
+        .setPrioritizeTimeOverSizeThresholds(true)
+        .build()
+
     val exoPlayer: ExoPlayer = ExoPlayer.Builder(context)
         .setTrackSelector(trackSelector)
+        .setLoadControl(loadControl)
         .build().apply {
             val audioAttributes = AudioAttributes.Builder()
                 .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
@@ -288,6 +310,13 @@ class PlaybackManager(
             addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(playing: Boolean) {
                     _isPlaying.value = playing
+                    if (playing) {
+                        _isBuffering.value = false
+                    }
+                }
+
+                override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                    _playWhenReady.value = playWhenReady
                 }
 
                 override fun onTracksChanged(tracks: Tracks) {
@@ -345,10 +374,31 @@ class PlaybackManager(
                 }
 
                 override fun onPlaybackStateChanged(playbackState: Int) {
-                    if (playbackState == Player.STATE_READY) {
+                    _isBuffering.value = (playbackState == Player.STATE_BUFFERING)
+                    if (playbackState == Player.STATE_BUFFERING) {
+                        // Track rebuffer frequency & start slow-CDN stall watchdog
+                        if (hasRenderedFirstFrameForStream && playWhenReady) {
+                            val now = System.currentTimeMillis()
+                            recentRebufferTimestamps.addLast(now)
+                            while (recentRebufferTimestamps.isNotEmpty() && now - recentRebufferTimestamps.first() > 25_000L) {
+                                recentRebufferTimestamps.removeFirst()
+                            }
+                            if (recentRebufferTimestamps.size >= 3) {
+                                recentRebufferTimestamps.clear()
+                                triggerAutomaticSourceFailover("Đường truyền giật lag liên tục")
+                                return
+                            }
+                        }
+                        if (playWhenReady && _activeStream.value?.type == StreamType.HLS_DIRECT) {
+                            startStallWatchdog()
+                        }
+                    } else if (playbackState == Player.STATE_READY) {
+                        hasRenderedFirstFrameForStream = true
+                        stallWatchdogJob?.cancel()
                         _durationMs.value = duration.coerceAtLeast(0L)
                         _currentPositionMs.value = currentPosition.coerceAtLeast(0L)
                     } else if (playbackState == Player.STATE_ENDED) {
+                        stallWatchdogJob?.cancel()
                         if (_activeStream.value?.type == StreamType.HLS_DIRECT && duration > 0) {
                             recordProgress(currentEpisodeSlug, duration, duration)
                         }
@@ -364,8 +414,88 @@ class PlaybackManager(
                         }
                     }
                 }
+
+                override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                    _isBuffering.value = false
+                    stallWatchdogJob?.cancel()
+                    triggerAutomaticSourceFailover(error.message ?: "Lỗi phát luồng video")
+                }
             })
         }
+
+    private fun startStallWatchdog() {
+        stallWatchdogJob?.cancel()
+        val watchedSourceId = _activeStream.value?.sourceId ?: return
+        val watchedSlug = currentSlug
+        val watchedEp = currentEpisodeSlug
+        val timeoutMs = if (hasRenderedFirstFrameForStream) 10_000L else 7_500L
+        stallWatchdogJob = scope.launch {
+            delay(timeoutMs)
+            if (currentSlug == watchedSlug &&
+                currentEpisodeSlug == watchedEp &&
+                _activeStream.value?.sourceId == watchedSourceId &&
+                exoPlayer.playbackState == Player.STATE_BUFFERING &&
+                exoPlayer.playWhenReady
+            ) {
+                triggerAutomaticSourceFailover("Nguồn tải quá chậm (timeout ${timeoutMs / 1000}s)")
+            }
+        }
+    }
+
+    private fun triggerAutomaticSourceFailover(reason: String) {
+        val currentSrc = _activeStream.value ?: return
+        failedSourceIdsForEpisode.add(currentSrc.sourceId)
+
+        val capturedPos = if (currentSrc.type == StreamType.HLS_DIRECT && exoPlayer.currentPosition > 0L) {
+            exoPlayer.currentPosition
+        } else {
+            _currentPositionMs.value
+        }
+
+        val nextHealthy = _availableSources.value.firstOrNull {
+            it.isAvailable && it.sourceId !in failedSourceIdsForEpisode && it.sourceId != currentSrc.sourceId
+        }
+        if (nextHealthy != null) {
+            android.util.Log.w("PlaybackManager", "Auto-failover from ${currentSrc.name} -> ${nextHealthy.name} ($reason)")
+            pendingPlayWhenReady = !userPausedManually
+            _activeStream.value = nextHealthy
+            preparePlayerWithStream(nextHealthy, capturedPos)
+            return
+        }
+
+        // If backup sources haven't finished resolving yet, resolve immediately and switch to fastest healthy source!
+        val ep = _currentEpisode.value ?: return
+        val m = _movie.value
+        val slugSnapshot = currentSlug
+        val epSlugSnapshot = currentEpisodeSlug
+        val srvSnapshot = currentServerName
+        backupResolveJob?.cancel()
+        backupResolveJob = scope.launch {
+            val epNum = ep.name.filter { it.isDigit() }.toIntOrNull() ?: 1
+            val resolved = videoSourceRepository.resolveStreams(
+                slug = slugSnapshot,
+                title = m?.name,
+                episode = epNum,
+                episodeSlug = ep.slug,
+                serverName = srvSnapshot,
+                fallbackM3u8 = VideoSourceRepository.extractDirectM3u8(ep.m3u8Url),
+                fallbackEmbed = ep.embed
+            )
+            if (currentSlug != slugSnapshot || currentEpisodeSlug != epSlugSnapshot) return@launch
+            if (resolved.isNotEmpty()) {
+                _availableSources.value = resolved
+                val candidate = resolved.firstOrNull {
+                    it.isAvailable && it.sourceId !in failedSourceIdsForEpisode && it.sourceId != currentSrc.sourceId
+                }
+                if (candidate != null) {
+                    android.util.Log.w("PlaybackManager", "Resolved failover -> ${candidate.name} ($reason)")
+                    pendingPlayWhenReady = !userPausedManually
+                    _activeStream.value = candidate
+                    preparePlayerWithStream(candidate, capturedPos)
+                }
+            }
+        }
+    }
 
     init {
         startProgressTracking()
@@ -454,6 +584,10 @@ class PlaybackManager(
         playerInitJob?.cancel()
         backupResolveJob?.cancel()
         prefetchJob?.cancel()
+        stallWatchdogJob?.cancel()
+        failedSourceIdsForEpisode.clear()
+        recentRebufferTimestamps.clear()
+        hasRenderedFirstFrameForStream = false
 
         // Fire-and-forget cloud flush on IO so episode switching has ZERO network blocking delay
         if (prevSlug.isNotEmpty()) {
@@ -602,8 +736,16 @@ class PlaybackManager(
                 _isLoadingStream.value = false
                 preparePlayerWithStream(instantSource, initialResumePositionMs)
 
-                // Resolve all backup sources (K20, VSMOV Native HLS, PhimHDCSS FHDC, ChoPhim, NguonC) in background!
+                // Wait until ExoPlayer finishes initial startup buffering before firing background source lookup
+                // so mobile bandwidth is 100% dedicated to video startup (eliminates stuttering!).
                 backupResolveJob = scope.launch {
+                    var waitedMs = 0L
+                    while (exoPlayer.playbackState != Player.STATE_READY && waitedMs < 3500L) {
+                        delay(250L)
+                        waitedMs += 250L
+                    }
+                    delay(800L)
+                    if (currentSlug != slug || currentEpisodeSlug != targetEp.slug) return@launch
                     val fullSources = videoSourceRepository.resolveStreams(
                         slug = slug,
                         title = detail?.name,
@@ -674,7 +816,7 @@ class PlaybackManager(
             ?: VideoSourceRepository.extractDirectM3u8(nextEp.embed)
 
         prefetchJob = scope.launch(Dispatchers.IO) {
-            delay(2500L)
+            delay(12_000L)
             videoSourceRepository.prefetchStreams(
                 slug = movieDetail.slug,
                 title = movieDetail.name,
@@ -688,17 +830,21 @@ class PlaybackManager(
     }
 
     private fun preparePlayerWithStream(stream: StreamSource, targetPosMs: Long) {
+        stallWatchdogJob?.cancel()
+        recentRebufferTimestamps.clear()
+        hasRenderedFirstFrameForStream = false
+
         if (stream.type == StreamType.HLS_DIRECT) {
+            _isBuffering.value = true
             val targetUrl = stream.rawUrl?.ifBlank { null } ?: stream.url
             val isPhimHdcssFhdc = targetUrl.contains("phimhdc.com/embed/", ignoreCase = true)
 
             val smartFactory = SmartHlsDataSourceFactory(
                 defaultHeaders = stream.headers,
                 stripAds = true,
-                stripPng = stream.stripPng || isPhimHdcssFhdc
+                stripPng = stream.stripPng || isPhimHdcssFhdc,
+                okHttpClient = com.pvq.cinepvq.CinepvqApp.instance.networkModule.mediaOkHttpClient
             )
-            val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
-                .setDataSourceFactory(smartFactory)
 
             val subtitleConfigs = stream.subtitles.mapIndexed { idx, sub ->
                 val subUrl = sub.rawUrl?.ifBlank { null } ?: sub.url
@@ -715,21 +861,48 @@ class PlaybackManager(
                     .build()
             }
 
-            val mediaItem = MediaItem.Builder()
-                .setUri(targetUrl)
-                .apply {
-                    if (targetUrl.contains(".m3u8", ignoreCase = true) ||
-                        targetUrl.contains("/m3u8", ignoreCase = true) ||
-                        targetUrl.contains("hls-proxy", ignoreCase = true) ||
-                        isPhimHdcssFhdc
-                    ) {
-                        setMimeType(MimeTypes.APPLICATION_M3U8)
+            val isHlsUrl = targetUrl.contains(".m3u8", ignoreCase = true) ||
+                targetUrl.contains("/m3u8", ignoreCase = true) ||
+                targetUrl.contains("hls-proxy", ignoreCase = true) ||
+                isPhimHdcssFhdc
+
+            val loadErrorPolicy = androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy(4)
+
+            val mediaSource = if (isHlsUrl) {
+                val baseHlsItem = MediaItem.Builder()
+                    .setUri(targetUrl)
+                    .setMimeType(MimeTypes.APPLICATION_M3U8)
+                    .build()
+                val hlsSource = androidx.media3.exoplayer.hls.HlsMediaSource.Factory(smartFactory)
+                    .setAllowChunklessPreparation(true)
+                    .setLoadErrorHandlingPolicy(loadErrorPolicy)
+                    .createMediaSource(baseHlsItem)
+
+                if (subtitleConfigs.isEmpty()) {
+                    hlsSource
+                } else {
+                    val subFactory = androidx.media3.exoplayer.source.SingleSampleMediaSource.Factory(smartFactory)
+                        .setTreatLoadErrorsAsEndOfStream(true)
+                    val allSources = Array<androidx.media3.exoplayer.source.MediaSource>(1 + subtitleConfigs.size) { i ->
+                        if (i == 0) hlsSource
+                        else subFactory.createMediaSource(subtitleConfigs[i - 1], C.TIME_UNSET)
                     }
-                    if (subtitleConfigs.isNotEmpty()) {
-                        setSubtitleConfigurations(subtitleConfigs)
-                    }
+                    androidx.media3.exoplayer.source.MergingMediaSource(*allSources)
                 }
-                .build()
+            } else {
+                val mediaItem = MediaItem.Builder()
+                    .setUri(targetUrl)
+                    .apply {
+                        if (subtitleConfigs.isNotEmpty()) {
+                            setSubtitleConfigurations(subtitleConfigs)
+                        }
+                    }
+                    .build()
+                androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
+                    .setDataSourceFactory(smartFactory)
+                    .setLoadErrorHandlingPolicy(loadErrorPolicy)
+                    .createMediaSource(mediaItem)
+            }
 
             val shouldPlay = pendingPlayWhenReady ?: (!userPausedManually)
             pendingPlayWhenReady = null
@@ -740,12 +913,12 @@ class PlaybackManager(
                 .setPreferredTextLanguage("vi")
                 .build()
 
-            val mediaSource = mediaSourceFactory.createMediaSource(mediaItem)
             exoPlayer.setMediaSource(mediaSource, targetPosMs.coerceAtLeast(0L))
             exoPlayer.playWhenReady = shouldPlay
             exoPlayer.prepare()
         } else {
             // Embed mode: stop ExoPlayer to free up hardware codecs
+            _isBuffering.value = false
             exoPlayer.stop()
             exoPlayer.clearMediaItems()
         }
@@ -862,6 +1035,10 @@ class PlaybackManager(
         playerInitJob?.cancel()
         backupResolveJob?.cancel()
         prefetchJob?.cancel()
+        stallWatchdogJob?.cancel()
+        failedSourceIdsForEpisode.clear()
+        recentRebufferTimestamps.clear()
+        hasRenderedFirstFrameForStream = false
         userPausedManually = true
         exoPlayer.pause()
         exoPlayer.stop()

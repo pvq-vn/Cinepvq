@@ -35,6 +35,12 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       suppressHydrationWarning
     >
+      <head>
+        <link rel="preconnect" href="https://phimapi.com" crossOrigin="anonymous" />
+        <link rel="dns-prefetch" href="https://phimimg.com" />
+        <link rel="dns-prefetch" href="https://vsmov.com" />
+        <link rel="dns-prefetch" href="https://p16-oec-sg.ibyteimg.com" />
+      </head>
       <body className="min-h-screen flex flex-col bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-50 transition-colors duration-300">
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
           <QueryProvider>

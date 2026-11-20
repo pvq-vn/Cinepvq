@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import MovieCard from "@/components/MovieCard";
@@ -187,7 +187,9 @@ function PodiumCard({ item }: { item: TrendingRankItem }) {
       ? "from-amber-400 to-yellow-500 text-black"
       : rank === 2
         ? "from-slate-200 to-zinc-400 text-black"
-        : "from-amber-600 to-amber-800 text-white";
+        : rank === 3
+          ? "from-amber-600 to-amber-800 text-white"
+          : "from-emerald-500 to-teal-700 text-white";
 
   return (
     <div className="relative flex flex-col p-3.5 rounded-2xl bg-zinc-100/70 dark:bg-zinc-900/70 border border-zinc-200/80 dark:border-zinc-800/80 hover:border-amber-500/50 transition-all shadow-md hover:shadow-xl min-w-0">
@@ -247,6 +249,9 @@ function PlatformBxhSection({
   doubanCategory,
   onChangeDoubanCategory,
   isUpdating,
+  hasMoreDouban = false,
+  isLoadingMoreDouban = false,
+  onLoadMoreDouban,
 }: {
   platform: PlatformRankingSection;
   onSelectPlatform: (id: PlatformId) => void;
@@ -258,9 +263,41 @@ function PlatformBxhSection({
   doubanCategory: DoubanCategory;
   onChangeDoubanCategory: (c: DoubanCategory) => void;
   isUpdating: boolean;
+  hasMoreDouban?: boolean;
+  isLoadingMoreDouban?: boolean;
+  onLoadMoreDouban?: () => void;
 }) {
   const top3 = platform.items.slice(0, 3);
-  const rest = expanded ? platform.items.slice(3, 12) : platform.items.slice(3, 10);
+  const rest = expanded
+    ? platform.items.slice(3)
+    : platform.items.slice(3, 10);
+
+  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (
+      platform.id !== "douban" ||
+      !expanded ||
+      !hasMoreDouban ||
+      isLoadingMoreDouban ||
+      !onLoadMoreDouban
+    ) {
+      return;
+    }
+    const sentinel = loadMoreSentinelRef.current;
+    if (!sentinel || typeof IntersectionObserver === "undefined") return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          onLoadMoreDouban();
+        }
+      },
+      { rootMargin: "320px 0px" }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [platform.id, expanded, hasMoreDouban, isLoadingMoreDouban, onLoadMoreDouban]);
 
   return (
     <section className="rounded-3xl bg-white dark:bg-zinc-900/50 border border-zinc-200/80 dark:border-zinc-800/80 overflow-hidden shadow-lg">
@@ -406,9 +443,9 @@ function PlatformBxhSection({
           <div>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-sm sm:text-base font-bold text-zinc-800 dark:text-zinc-200 flex items-center gap-2">
-                <Sparkles className="h-4 w-4 text-amber-500" />
+                <Sparkles className="h-4 w-4 text-amber-500" aria-hidden="true" />
                 <span>
-                  Hạng #4 – #{3 + rest.length} trên {platform.name}
+                  Hạng #{rest[0].rank} – #{rest[rest.length - 1].rank} trên {platform.name}
                 </span>
               </h3>
             </div>
@@ -422,7 +459,7 @@ function PlatformBxhSection({
                   <RankedPosterCard item={item} />
                   <div className="flex items-center justify-between gap-1 px-1 text-[11px] text-zinc-500 dark:text-zinc-400">
                     <span className="font-bold text-amber-500 flex items-center gap-0.5 shrink-0">
-                      <Star className="h-3 w-3 fill-amber-400 text-amber-400" />
+                      <Star className="h-3 w-3 fill-amber-400 text-amber-400" aria-hidden="true" />
                       {item.score.toFixed(1)}
                     </span>
                     <span className="truncate">{item.formattedViews}</span>
@@ -430,6 +467,44 @@ function PlatformBxhSection({
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Douban Infinite Scroll Sentinel & Accessible Load More Control */}
+        {platform.id === "douban" && (
+          <div className="pt-2 flex flex-col items-center gap-3">
+            {expanded && hasMoreDouban && (
+              <div ref={loadMoreSentinelRef} className="h-1 w-full" aria-hidden="true" />
+            )}
+
+            {isLoadingMoreDouban && (
+              <div className="flex flex-col items-center gap-2 py-2">
+                <progress
+                  aria-label="Đang cào thêm phim bảng xếp hạng Douban"
+                  className="w-40 h-1.5 rounded-full accent-emerald-500"
+                />
+                <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                  Đang cào và đối chiếu thêm phim từ Douban...
+                </span>
+              </div>
+            )}
+
+            {expanded && hasMoreDouban && !isLoadingMoreDouban && onLoadMoreDouban && (
+              <button
+                type="button"
+                onClick={onLoadMoreDouban}
+                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white px-5 py-2.5 text-xs font-bold shadow-md transition-colors cursor-pointer"
+              >
+                <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Tải thêm phim Douban</span>
+              </button>
+            )}
+
+            {expanded && !hasMoreDouban && platform.items.length > 0 && (
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                Đã hiển thị toàn bộ {platform.items.length} phim khả dụng trong danh mục này.
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -443,6 +518,21 @@ export default function TrendingPage() {
   const [netflixType, setNetflixType] = useState<NetflixMediaType>("tv");
   const [doubanCategory, setDoubanCategory] = useState<DoubanCategory>("all");
   const [isRefreshingCrawl, setIsRefreshingCrawl] = useState(false);
+
+  // Douban infinite scroll appended pages state
+  const [doubanExtraItems, setDoubanExtraItems] = useState<TrendingRankItem[]>([]);
+  const [doubanNextCursor, setDoubanNextCursor] = useState<number | null>(null);
+  const [doubanHasMoreOverride, setDoubanHasMoreOverride] = useState<boolean | null>(null);
+  const [isLoadingMoreDouban, setIsLoadingMoreDouban] = useState(false);
+  const loadingMoreRef = useRef(false);
+
+  // Reset Douban appended items directly in the category switch handler
+  const handleChangeDoubanCategory = useCallback((nextCategory: DoubanCategory) => {
+    setDoubanCategory(nextCategory);
+    setDoubanExtraItems([]);
+    setDoubanNextCursor(null);
+    setDoubanHasMoreOverride(null);
+  }, []);
 
   const tabButtonRefs = useRef<Partial<Record<TabFilter, HTMLButtonElement | null>>>({});
 
@@ -507,6 +597,9 @@ export default function TrendingPage() {
       });
       const res = await fetch(`/api/trending?${params.toString()}`);
       if (res.ok) {
+        setDoubanExtraItems([]);
+        setDoubanNextCursor(null);
+        setDoubanHasMoreOverride(null);
         await refetch();
       }
     } finally {
@@ -514,7 +607,65 @@ export default function TrendingPage() {
     }
   };
 
-  const platforms = trendingPayload?.platforms ?? [];
+  const rawPlatforms = trendingPayload?.platforms ?? [];
+  const baseDoubanSection = rawPlatforms.find((p) => p.id === "douban");
+  const effectiveDoubanCursor = doubanNextCursor ?? baseDoubanSection?.nextCursor ?? 0;
+  const effectiveDoubanHasMore =
+    doubanHasMoreOverride !== null
+      ? doubanHasMoreOverride
+      : Boolean(baseDoubanSection?.hasMore);
+
+  const handleLoadMoreDouban = useCallback(async () => {
+    if (loadingMoreRef.current || !effectiveDoubanHasMore || effectiveDoubanCursor <= 0) {
+      return;
+    }
+    loadingMoreRef.current = true;
+    setIsLoadingMoreDouban(true);
+    try {
+      const params = new URLSearchParams({
+        platform: "douban",
+        doubanCategory,
+        doubanOffset: String(effectiveDoubanCursor),
+      });
+      const res = await fetch(`/api/trending?${params.toString()}`);
+      if (!res.ok) return;
+      const data = (await res.json()) as TrendingRankingsPayload;
+      const nextSec = data.platforms?.find((p) => p.id === "douban");
+      if (!nextSec) {
+        setDoubanHasMoreOverride(false);
+        return;
+      }
+      setDoubanExtraItems((prev) => {
+        const seen = new Set([
+          ...(baseDoubanSection?.items || []).map((i) => i.slug),
+          ...prev.map((i) => i.slug),
+        ]);
+        const fresh = (nextSec.items || []).filter((i) => i.slug && !seen.has(i.slug));
+        return [...prev, ...fresh];
+      });
+      setDoubanNextCursor(nextSec.nextCursor ?? effectiveDoubanCursor);
+      setDoubanHasMoreOverride(Boolean(nextSec.hasMore));
+    } finally {
+      loadingMoreRef.current = false;
+      setIsLoadingMoreDouban(false);
+    }
+  }, [doubanCategory, effectiveDoubanCursor, effectiveDoubanHasMore, baseDoubanSection?.items]);
+
+  const platforms = rawPlatforms.map((p) => {
+    if (p.id !== "douban" || doubanExtraItems.length === 0) return p;
+    const seen = new Set(p.items.map((i) => i.slug));
+    const merged = [
+      ...p.items,
+      ...doubanExtraItems.filter((i) => !seen.has(i.slug)),
+    ];
+    return {
+      ...p,
+      items: merged,
+      hasMore: effectiveDoubanHasMore,
+      nextCursor: effectiveDoubanCursor,
+    };
+  });
+
   const visiblePlatforms =
     activeTab === "all"
       ? platforms
@@ -739,8 +890,11 @@ export default function TrendingPage() {
                     onChangeNetflixCountry={setNetflixCountry}
                     onChangeNetflixType={setNetflixType}
                     doubanCategory={doubanCategory}
-                    onChangeDoubanCategory={setDoubanCategory}
+                    onChangeDoubanCategory={handleChangeDoubanCategory}
                     isUpdating={isFetching}
+                    hasMoreDouban={platform.id === "douban" ? effectiveDoubanHasMore : false}
+                    isLoadingMoreDouban={platform.id === "douban" ? isLoadingMoreDouban : false}
+                    onLoadMoreDouban={platform.id === "douban" ? handleLoadMoreDouban : undefined}
                   />
                 </div>
               ))}

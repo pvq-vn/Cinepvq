@@ -1,16 +1,20 @@
 // ==============================================================================
 // services/videoSources/adapters/chophimAdapter.ts
 // Video Source Adapter: ChoPhim (https://chophim.wtf/)
-// Parses SSR Next.js watch page `/xem/{slug}` to extract direct HLS streams
-// and routes KK-hosted playlists through the automatic ad-stripper.
+// Parses SSR Next.js watch page `/xem/{slug}` (with `/tim-kiem?keyword=...` fallback)
+// to extract direct HLS streams, preferring independent non-KK servers when present.
 // ==============================================================================
 
 import type { VideoSourceAdapter, ResolveSourceOptions, ResolvedSource } from "../types";
+import { getSlugSourceHint, searchChoPhim } from "@/services/unifiedCatalog";
 
 const CHOPHIM_BASE = "https://chophim.wtf";
-const TIMEOUT_MS = 3500;
+const TIMEOUT_MS = 2800;
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
+
+const resolvedSlugCache = new Map<string, { slug: string; expiresAt: number }>();
+const parsedGroupsCache = new Map<string, { groups: ChoPhimServerGroup[]; expiresAt: number }>();
 
 interface ChoPhimEpisodeItem {
   name?: string;
@@ -25,9 +29,17 @@ interface ChoPhimServerGroup {
 }
 
 function unescapeRscChunk(raw: string): string {
-  return raw
-    .replace(/\\"/g, '"')
-    .replace(/\\\\/g, "\\");
+  return raw.replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+}
+
+function normalizeAsciiSlug(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 function extractBalancedArray(str: string, startBracketIdx: number): string | null {
@@ -63,7 +75,6 @@ function parseChoPhimServers(html: string): ChoPhimServerGroup[] {
   const groups: ChoPhimServerGroup[] = [];
   const seenServerNames = new Set<string>();
 
-  // Unescape RSC serialized JSON segments
   const normalized = unescapeRscChunk(html);
   const re = /"server_name"\s*:\s*"([^"]+)"/g;
   let match: RegExpExecArray | null;
@@ -94,37 +105,113 @@ function parseChoPhimServers(html: string): ChoPhimServerGroup[] {
   return groups;
 }
 
+async function fetchChoPhimWatchHtml(slug: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(`${CHOPHIM_BASE}/xem/${encodeURIComponent(slug)}`, {
+      headers: {
+        "User-Agent": UA,
+        Accept: "text/html,application/xhtml+xml,*/*",
+        Referer: `${CHOPHIM_BASE}/`,
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    clearTimeout(timer);
+    return null;
+  }
+}
+
+async function findChoPhimAlternateSlug(
+  slug?: string,
+  title?: string
+): Promise<string | null> {
+  const cacheKey = (slug || title || "").toLowerCase().trim();
+  const cached = resolvedSlugCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.slug;
+  }
+
+  const query = (title || slug?.replace(/-/g, " ") || "").trim();
+  if (!query) return null;
+
+  const hits = await searchChoPhim(query);
+  if (hits.length === 0) return null;
+
+  const targetSlug = slug ? normalizeAsciiSlug(slug) : "";
+  const titleSlug = title ? normalizeAsciiSlug(title) : "";
+
+  const matched =
+    hits.find((h) => targetSlug && normalizeAsciiSlug(h.slug) === targetSlug) ||
+    hits.find((h) => titleSlug && normalizeAsciiSlug(h.name) === titleSlug) ||
+    hits.find((h) => titleSlug && normalizeAsciiSlug(h.original_name || "") === titleSlug) ||
+    hits.find(
+      (h) =>
+        (targetSlug &&
+          (normalizeAsciiSlug(h.slug).startsWith(targetSlug) ||
+            targetSlug.startsWith(normalizeAsciiSlug(h.slug)))) ||
+        (titleSlug &&
+          (normalizeAsciiSlug(h.name).startsWith(titleSlug) ||
+            titleSlug.startsWith(normalizeAsciiSlug(h.name))))
+    );
+
+  if (!matched) return null;
+
+  resolvedSlugCache.set(cacheKey, {
+    slug: matched.slug,
+    expiresAt: Date.now() + 30 * 60 * 1000,
+  });
+  return matched.slug;
+}
+
 export class ChoPhimAdapter implements VideoSourceAdapter {
   readonly sourceId = "chophim" as const;
   readonly name = "ChoPhim Direct HLS";
-  readonly priority = 4;
+  readonly priority = 5;
 
   async resolveStream(options: ResolveSourceOptions): Promise<ResolvedSource | null> {
-    const { slug, episode = 1, episodeSlug, serverName } = options;
-    if (!slug) return null;
+    const { slug, title, episode = 1, episodeSlug, serverName, knownHlsUrl } = options;
+    if (!slug && !title) return null;
 
-    const cleanSlug = slug.trim().toLowerCase();
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    const hint = slug ? getSlugSourceHint(slug) : null;
+    const primarySlug = (hint?.choPhimSlug || slug || "").trim().toLowerCase();
+    const groupsCacheKey = primarySlug || (title || "").trim().toLowerCase();
 
-    let html = "";
-    try {
-      const res = await fetch(`${CHOPHIM_BASE}/xem/${encodeURIComponent(cleanSlug)}`, {
-        headers: {
-          "User-Agent": UA,
-          Accept: "text/html,application/xhtml+xml,*/*",
-        },
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      if (!res.ok) return null;
-      html = await res.text();
-    } catch {
-      clearTimeout(timer);
-      return null;
+    let groups: ChoPhimServerGroup[] = [];
+    const cachedGroups = parsedGroupsCache.get(groupsCacheKey);
+    if (cachedGroups && cachedGroups.expiresAt > Date.now()) {
+      groups = cachedGroups.groups;
+    } else {
+      if (primarySlug) {
+        const html = await fetchChoPhimWatchHtml(primarySlug);
+        if (html) groups = parseChoPhimServers(html);
+      }
+
+      // Fallback: search ChoPhim by title/slug when direct `/xem/{slug}` slug differs!
+      if (groups.length === 0) {
+        const altSlug = await findChoPhimAlternateSlug(slug, title);
+        if (altSlug && altSlug !== primarySlug) {
+          const html = await fetchChoPhimWatchHtml(altSlug);
+          if (html) groups = parseChoPhimServers(html);
+        }
+      }
+
+      if (groups.length > 0) {
+        if (parsedGroupsCache.size > 300) {
+          const oldest = parsedGroupsCache.keys().next().value;
+          if (oldest) parsedGroupsCache.delete(oldest);
+        }
+        parsedGroupsCache.set(groupsCacheKey, {
+          groups,
+          expiresAt: Date.now() + 15 * 60 * 1000,
+        });
+      }
     }
 
-    const groups = parseChoPhimServers(html);
     if (groups.length === 0) return null;
 
     const reqServer = (serverName || "").toLowerCase();
@@ -148,8 +235,17 @@ export class ChoPhimAdapter implements VideoSourceAdapter {
       if (vs.length > 0) candidates = vs;
     }
 
-    // Prefer direct public .m3u8 streams (non-session-locked) first
-    for (const group of candidates) {
+    // Prefer independent non-(KK) servers first (e.g., Song Ngữ, (O), (OP), (CP))
+    const prioritizedCandidates = [...candidates].sort((a, b) => {
+      const aIsKk = /\(kk\)/i.test(a.server_name) ? 1 : 0;
+      const bIsKk = /\(kk\)/i.test(b.server_name) ? 1 : 0;
+      return aIsKk - bIsKk;
+    });
+
+    let fallbackMatch: ResolvedSource | null = null;
+    const knownTrimmed = (knownHlsUrl || "").trim();
+
+    for (const group of prioritizedCandidates) {
       const items = group.server_data || [];
       const ep = items.find((item) => {
         if (episodeSlug && item.slug?.toLowerCase() === episodeSlug.toLowerCase()) {
@@ -169,7 +265,6 @@ export class ChoPhimAdapter implements VideoSourceAdapter {
       const rawM3u8 = ep.link_m3u8?.trim() || "";
       const rawEmbed = ep.link_embed?.trim() || "";
 
-      // Extract inner .m3u8 if wrapped in player/?url=...
       let directM3u8 = rawM3u8.startsWith("http") && rawM3u8.includes(".m3u8") ? rawM3u8 : "";
       if (!directM3u8 && rawEmbed.includes("url=")) {
         try {
@@ -184,14 +279,14 @@ export class ChoPhimAdapter implements VideoSourceAdapter {
       const gLT = /l[oồ]ng\s*ti[eế]ng/i.test(group.server_name);
 
       if (directM3u8) {
-        return {
+        const resolved: ResolvedSource = {
           sourceId: this.sourceId,
           name: "ChoPhim Direct HLS (Đã cắt QC)",
           displayName: gTM
             ? "ChoPhim (Thuyết Minh)"
             : gLT
-            ? "ChoPhim (Lồng Tiếng)"
-            : "ChoPhim Direct",
+              ? "ChoPhim (Lồng Tiếng)"
+              : "ChoPhim Direct",
           type: "hls",
           url: `/api/hls-proxy?url=${encodeURIComponent(directM3u8)}&stripAds=1`,
           rawUrl: directM3u8,
@@ -201,9 +296,17 @@ export class ChoPhimAdapter implements VideoSourceAdapter {
           isAvailable: true,
           adFree: true,
         };
+
+        // Return immediately if this stream is distinct from known KKPhim1 URL
+        if (!knownTrimmed || directM3u8 !== knownTrimmed) {
+          return resolved;
+        }
+        if (!fallbackMatch) {
+          fallbackMatch = resolved;
+        }
       }
     }
 
-    return null;
+    return fallbackMatch;
   }
 }

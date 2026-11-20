@@ -3,6 +3,7 @@ import {
   kkphimCatalogAdapter,
   type KKPhimRawV1ListResponse,
 } from "./kkphimCatalogAdapter";
+import { matchTitleAcrossAllDatasets } from "./unifiedCatalog";
 import { normalizeEpisodeLabel } from "@/lib/format";
 import type { Movie } from "@/types/movie";
 import {
@@ -39,6 +40,7 @@ export interface CrawlTrendingOptions {
   netflixCountry?: NetflixCountryCode;
   netflixType?: NetflixMediaType;
   doubanCategory?: DoubanCategory;
+  doubanOffset?: number;
 }
 
 const KKPHIM_BASE = (
@@ -51,16 +53,10 @@ const MOBILE_UA =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 
 const SECTION_CACHE_TTL_MS = 20 * 60 * 1000; // 20 minutes
-const TITLE_MATCH_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 const sectionMemoryCache = new Map<
   string,
   { section: PlatformRankingSection; expiresAt: number }
->();
-
-const titleMatchCache = new Map<
-  string,
-  { movie: Movie | null; expiresAt: number }
 >();
 
 export function normalizeNetflixCountry(raw?: string | null): NetflixCountryCode {
@@ -146,16 +142,6 @@ function cleanExternalTitle(raw: string): string {
     .trim();
 }
 
-function normalizeMatchText(s: string): string {
-  return s
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function formatCompactViews(views: number): string {
   if (views >= 1_000_000) {
     return `${(views / 1_000_000).toFixed(1).replace(/\.0$/, "")}M lượt xem`;
@@ -229,98 +215,13 @@ async function fetchKKPhimList(pathAndQuery: string): Promise<Movie[]> {
 }
 
 /**
- * Matches an external title (English, Chinese, Korean, Japanese) to a playable
- * movie in KKPhim catalog, with 30-minute memory caching.
+ * Matches an external title across ALL 6 datasets (KKPhim1 + VSMOV + NguonC + ChoPhim + PhimHDCSS).
  */
-async function matchTitleToKKPhim(
+async function matchTitleToUnifiedCatalog(
   cleanedTitle: string,
   rawTitle?: string
 ): Promise<Movie | null> {
-  const key = cleanedTitle.toLowerCase().trim();
-  if (!key) return null;
-
-  const cached = titleMatchCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.movie;
-  }
-
-  const queries = [cleanedTitle];
-  if (cleanedTitle.includes(":")) {
-    const beforeColon = cleanedTitle.split(":")[0].trim();
-    if (beforeColon.length >= 3 && beforeColon !== cleanedTitle) {
-      queries.push(beforeColon);
-    }
-  }
-
-  let matched: Movie | null = null;
-  const targetNorm = normalizeMatchText(cleanedTitle);
-  const rawNorm = rawTitle ? normalizeMatchText(rawTitle) : targetNorm;
-  const targetTokens = targetNorm.split(" ").filter((t) => t.length >= 2);
-  const isCjkQuery = /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(cleanedTitle);
-
-  for (const q of queries) {
-    const candidates = await fetchKKPhimList(
-      `v1/api/tim-kiem?keyword=${encodeURIComponent(q)}&limit=6`
-    );
-    if (candidates.length === 0) continue;
-
-    // 1. Exact normalized match on origin_name or name
-    matched =
-      candidates.find((c) => {
-        const cn = normalizeMatchText(c.name || "");
-        const co = normalizeMatchText(c.original_name || "");
-        return (
-          cn === targetNorm ||
-          co === targetNorm ||
-          cn === rawNorm ||
-          co === rawNorm
-        );
-      }) || null;
-
-    // 2. Containment / token overlap match
-    if (!matched) {
-      matched =
-        candidates.find((c) => {
-          const cn = normalizeMatchText(c.name || "");
-          const co = normalizeMatchText(c.original_name || "");
-          if (targetNorm.length >= 2 && (co.includes(targetNorm) || cn.includes(targetNorm))) {
-            return true;
-          }
-          if (co.length >= 3 && targetNorm.includes(co)) {
-            return true;
-          }
-          if (targetTokens.length >= 2) {
-            const hay = `${cn} ${co}`;
-            const hitCount = targetTokens.filter((t) => hay.includes(t)).length;
-            return hitCount / targetTokens.length >= 0.75;
-          }
-          return false;
-        }) || null;
-    }
-
-    // 3. KKPhim's search index stores Chinese/Korean/Japanese aliases even when
-    //    `name` is Vietnamese and `origin_name` is English (e.g. "今天是太阳雨" ->
-    //    "Hôm Nay Trời Đổ Mưa Bóng Mây" / "Sunshine Through The Rain"). When a
-    //    precise CJK query returns <= 3 hits, trust the top ranked KKPhim match!
-    if (!matched && isCjkQuery && candidates.length <= 3) {
-      matched = candidates[0];
-    }
-
-    if (matched) break;
-  }
-
-  const normalizedMovie = matched
-    ? {
-        ...matched,
-        current_episode: normalizeEpisodeLabel(matched.current_episode),
-      }
-    : null;
-
-  titleMatchCache.set(key, {
-    movie: normalizedMovie,
-    expiresAt: Date.now() + TITLE_MATCH_TTL_MS,
-  });
-  return normalizedMovie;
+  return matchTitleAcrossAllDatasets(cleanedTitle, rawTitle);
 }
 
 function buildFallbackMovieShell(params: {
@@ -418,7 +319,7 @@ async function crawlNetflixCountry(
 
   if (parsedRows.length > 0) {
     const matchedMovies = await Promise.all(
-      parsedRows.map((row) => matchTitleToKKPhim(row.cleanTitle, row.rawTitle))
+      parsedRows.map((row) => matchTitleToUnifiedCatalog(row.cleanTitle, row.rawTitle))
     );
 
     items = parsedRows.map((row, idx) => {
@@ -499,7 +400,8 @@ async function crawlNetflixCountry(
 }
 
 // ============================================================================
-// 2. DOUBAN BXH STRICTLY SORTED BY REAL DOUBAN SCORE (Mobile Rexxar API)
+// 2. DOUBAN BXH STRICTLY SORTED BY REAL DOUBAN SCORE (Paginated + 6-Dataset Filter)
+// Preserves each movie's exact true Douban rank even when unmatched titles are filtered out.
 // ============================================================================
 
 interface DoubanRexxarItem {
@@ -512,11 +414,31 @@ interface DoubanRexxarItem {
   type?: string;
 }
 
-async function fetchDoubanCollection(collection: string, count = 20): Promise<DoubanRexxarItem[]> {
-  const url = `https://m.douban.com/rexxar/api/v2/subject_collection/${collection}/items?start=0&count=${count}&for_mobile=1`;
+interface RankedDoubanRawEntry {
+  trueRank: number;
+  title: string;
+  score: number;
+  ratingCount: number;
+  coverUrl: string;
+  year: string;
+  mediaType: "tv" | "movie";
+}
+
+const DOUBAN_LEADERBOARD_TTL_MS = 30 * 60 * 1000;
+const doubanLeaderboardCache = new Map<
+  DoubanCategory,
+  { entries: RankedDoubanRawEntry[]; expiresAt: number }
+>();
+
+async function fetchDoubanCollection(
+  collection: string,
+  start = 0,
+  count = 50
+): Promise<DoubanRexxarItem[]> {
+  const url = `https://m.douban.com/rexxar/api/v2/subject_collection/${collection}/items?start=${start}&count=${count}&for_mobile=1`;
   const data = await fetchJsonSafe<{
     subject_collection_items?: DoubanRexxarItem[];
-  }>(url, 6000, {
+  }>(url, 6500, {
     "User-Agent": MOBILE_UA,
     Referer: `https://m.douban.com/subject_collection/${collection}`,
   });
@@ -525,107 +447,215 @@ async function fetchDoubanCollection(collection: string, count = 20): Promise<Do
     : [];
 }
 
-async function crawlDoubanByScore(
-  category: DoubanCategory
-): Promise<PlatformRankingSection> {
-  const nowIso = new Date().toISOString();
-  const collectionsByCategory: Record<DoubanCategory, string[]> = {
-    all: ["tv_chinese_best_weekly", "tv_global_best_weekly", "movie_weekly_best"],
-    tv_cn: ["tv_chinese_best_weekly", "tv_hot"],
-    tv_global: ["tv_global_best_weekly"],
-    movie: ["movie_weekly_best"],
-    top250: ["movie_top250"],
-  };
-
-  const collections = collectionsByCategory[category] || collectionsByCategory.all;
-  const rawLists = await Promise.all(
-    collections.map((col) => fetchDoubanCollection(col, category === "top250" ? 20 : 18))
-  );
-
-  // Deduplicate and keep items with genuine Douban rating > 0
-  const byTitle = new Map<string, DoubanRexxarItem>();
-  for (const list of rawLists) {
-    for (const item of list) {
-      const title = (item.title || "").trim();
-      const score = Number(item.rating?.value || 0);
-      if (!title || score <= 0) continue;
-      const key = title.toLowerCase();
-      const existing = byTitle.get(key);
-      if (!existing || score > Number(existing.rating?.value || 0)) {
-        byTitle.set(key, item);
-      }
+async function getFullDoubanLeaderboard(
+  category: DoubanCategory,
+  forceRefresh = false
+): Promise<RankedDoubanRawEntry[]> {
+  if (!forceRefresh) {
+    const cached = doubanLeaderboardCache.get(category);
+    if (cached && cached.expiresAt > Date.now() && cached.entries.length > 0) {
+      return cached.entries;
     }
   }
 
-  // Strictly sort by real Douban score DESC, tie-break by review count DESC
-  const sortedDouban = [...byTitle.values()]
-    .sort((a, b) => {
+  let fetches: Promise<DoubanRexxarItem[]>[] = [];
+
+  if (category === "top250") {
+    // Official Douban Top 250 (strictly ordered #1..#250)
+    fetches = [0, 50, 100, 150, 200].map((s) =>
+      fetchDoubanCollection("movie_top250", s, 50)
+    );
+  } else if (category === "tv_cn") {
+    fetches = [
+      fetchDoubanCollection("tv_chinese_best_weekly", 0, 20),
+      fetchDoubanCollection("tv_domestic", 0, 50),
+      fetchDoubanCollection("tv_hot", 0, 50),
+      fetchDoubanCollection("tv_hot", 50, 50),
+    ];
+  } else if (category === "tv_global") {
+    fetches = [
+      fetchDoubanCollection("tv_global_best_weekly", 0, 20),
+      fetchDoubanCollection("tv_american", 0, 50),
+      fetchDoubanCollection("tv_korean", 0, 50),
+      fetchDoubanCollection("tv_hot", 0, 50),
+    ];
+  } else if (category === "movie") {
+    fetches = [
+      fetchDoubanCollection("movie_weekly_best", 0, 20),
+      fetchDoubanCollection("movie_hot_gaia", 0, 50),
+      fetchDoubanCollection("movie_hot_gaia", 50, 50),
+      fetchDoubanCollection("movie_hot_gaia", 100, 50),
+      fetchDoubanCollection("movie_top250", 0, 50),
+    ];
+  } else {
+    // "all": rich cross-category pool of rated Chinese TV, Global TV, and Movies
+    fetches = [
+      fetchDoubanCollection("tv_chinese_best_weekly", 0, 20),
+      fetchDoubanCollection("tv_global_best_weekly", 0, 20),
+      fetchDoubanCollection("movie_weekly_best", 0, 20),
+      fetchDoubanCollection("tv_domestic", 0, 50),
+      fetchDoubanCollection("tv_american", 0, 50),
+      fetchDoubanCollection("tv_korean", 0, 50),
+      fetchDoubanCollection("tv_hot", 0, 50),
+      fetchDoubanCollection("movie_hot_gaia", 0, 50),
+      fetchDoubanCollection("movie_hot_gaia", 50, 50),
+    ];
+  }
+
+  const rawLists = await Promise.all(fetches);
+
+  // For Top 250 preserve Douban's canonical #1..#250 ordering;
+  // for all other categories deduplicate and strictly sort by real Douban score DESC.
+  const entries: RankedDoubanRawEntry[] = [];
+
+  if (category === "top250") {
+    const seen = new Set<string>();
+    let rankCounter = 0;
+    for (const list of rawLists) {
+      for (const item of list) {
+        const title = (item.title || "").trim();
+        const score = Number(item.rating?.value || 0);
+        if (!title || score <= 0) continue;
+        const key = title.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        rankCounter++;
+        entries.push({
+          trueRank: rankCounter,
+          title,
+          score: Number(score.toFixed(1)),
+          ratingCount: Math.max(0, Math.round(item.rating?.count || 0)),
+          coverUrl: item.cover?.url || item.pic?.normal || item.pic?.large || "",
+          year: item.year || "",
+          mediaType: "movie",
+        });
+      }
+    }
+  } else {
+    const byTitle = new Map<string, DoubanRexxarItem>();
+    for (const list of rawLists) {
+      for (const item of list) {
+        const title = (item.title || "").trim();
+        const score = Number(item.rating?.value || 0);
+        if (!title || score <= 0) continue;
+        const key = title.toLowerCase();
+        const existing = byTitle.get(key);
+        if (!existing || score > Number(existing.rating?.value || 0)) {
+          byTitle.set(key, item);
+        }
+      }
+    }
+
+    const sorted = [...byTitle.values()].sort((a, b) => {
       const diff = Number(b.rating?.value || 0) - Number(a.rating?.value || 0);
       if (Math.abs(diff) > 0.001) return diff;
       return Number(b.rating?.count || 0) - Number(a.rating?.count || 0);
-    })
-    .slice(0, 12);
+    });
 
-  let items: TrendingRankItem[] = [];
+    sorted.forEach((d, idx) => {
+      entries.push({
+        trueRank: idx + 1,
+        title: (d.title || "").trim(),
+        score: Number(Number(d.rating?.value || 0).toFixed(1)),
+        ratingCount: Math.max(0, Math.round(d.rating?.count || 0)),
+        coverUrl: d.cover?.url || d.pic?.normal || d.pic?.large || "",
+        year: d.year || "",
+        mediaType: d.type === "movie" ? "movie" : "tv",
+      });
+    });
+  }
 
-  if (sortedDouban.length > 0) {
+  if (entries.length > 0) {
+    doubanLeaderboardCache.set(category, {
+      entries,
+      expiresAt: Date.now() + DOUBAN_LEADERBOARD_TTL_MS,
+    });
+  }
+  return entries;
+}
+
+async function crawlDoubanByScore(
+  category: DoubanCategory,
+  offset = 0,
+  forceRefresh = false,
+  targetPlayableCount = 12
+): Promise<PlatformRankingSection> {
+  const nowIso = new Date().toISOString();
+  const leaderboard = await getFullDoubanLeaderboard(category, forceRefresh);
+
+  const items: TrendingRankItem[] = [];
+  const seenSlugs = new Set<string>();
+  let cursor = Math.max(0, Math.min(offset, leaderboard.length));
+  const maxRawToScanThisRequest = 32;
+  let scannedThisRequest = 0;
+
+  while (
+    cursor < leaderboard.length &&
+    items.length < targetPlayableCount &&
+    scannedThisRequest < maxRawToScanThisRequest
+  ) {
+    const batchSize = Math.min(
+      16,
+      leaderboard.length - cursor,
+      maxRawToScanThisRequest - scannedThisRequest
+    );
+    const batch = leaderboard.slice(cursor, cursor + batchSize);
+    cursor += batch.length;
+    scannedThisRequest += batch.length;
+
     const matchedMovies = await Promise.all(
-      sortedDouban.map((d) =>
-        matchTitleToKKPhim(cleanExternalTitle(d.title || ""), d.title || "")
+      batch.map((entry) =>
+        matchTitleToUnifiedCatalog(cleanExternalTitle(entry.title), entry.title)
       )
     );
 
-    items = sortedDouban.map((d, idx) => {
-      const rank = idx + 1;
-      const matched = matchedMovies[idx];
-      const realScore = Number((d.rating?.value || 0).toFixed(1));
-      const ratingCount = Math.max(0, Math.round(d.rating?.count || 0));
+    for (let i = 0; i < batch.length; i++) {
+      const entry = batch[i];
+      const matched = matchedMovies[i];
+
+      // STRICT RULE: Only show movies present in our unified 6-dataset catalog with valid poster,
+      // while STRICTLY preserving the movie's true original Douban rank (e.g. #2, #4, #5 — never renumber)!
+      if (!matched || !matched.slug || (!matched.thumb_url && !matched.poster_url)) {
+        continue;
+      }
+      if (seenSlugs.has(matched.slug)) continue;
+      seenSlugs.add(matched.slug);
+
       const formattedCount =
-        ratingCount >= 1_000_000
-          ? `${(ratingCount / 1_000_000).toFixed(1)}M đánh giá`
-          : ratingCount >= 1_000
-            ? `${(ratingCount / 1_000).toFixed(1)}K đánh giá`
-            : `${ratingCount} đánh giá`;
+        entry.ratingCount >= 1_000_000
+          ? `${(entry.ratingCount / 1_000_000).toFixed(1)}M đánh giá`
+          : entry.ratingCount >= 1_000
+            ? `${(entry.ratingCount / 1_000).toFixed(1)}K đánh giá`
+            : `${entry.ratingCount} đánh giá`;
 
-      const coverUrl = d.cover?.url || d.pic?.normal || d.pic?.large || "";
-      const baseMovie =
-        matched ||
-        buildFallbackMovieShell({
-          title: d.title || `Douban #${rank}`,
-          originalTitle: d.title || "",
-          posterUrl: coverUrl,
-          year: d.year || "",
-          quality: `Douban ${realScore}`,
-          episodeLabel: d.type === "movie" ? "Điện ảnh" : "Phim bộ",
-          platformId: "douban",
-          rank,
-        });
-
-      return {
-        ...baseMovie,
-        poster_url: baseMovie.poster_url || coverUrl,
-        thumb_url: baseMovie.thumb_url || coverUrl,
-        rank,
+      items.push({
+        ...matched,
+        rank: entry.trueRank,
         platformId: "douban",
         platformName: "Douban (豆瓣)",
-        score: realScore,
+        score: entry.score,
         scoreSource: "Douban",
-        views: ratingCount,
+        views: entry.ratingCount,
         formattedViews: formattedCount,
-        heatLabel: `⭐ ${realScore.toFixed(1)} điểm Douban • ${formattedCount}`,
+        heatLabel: `⭐ ${entry.score.toFixed(1)} điểm Douban • ${formattedCount}`,
         trendDelta: 0,
-        playable: Boolean(matched),
-        searchQuery: d.title || baseMovie.name,
-        mediaType: d.type === "movie" ? "movie" : "tv",
-      };
-    });
-  } else {
+        playable: true,
+        searchQuery: entry.title,
+        mediaType: entry.mediaType,
+      });
+    }
+  }
+
+  // Graceful fallback only if Douban upstream was completely unreachable on page 0
+  if (leaderboard.length === 0 && offset === 0) {
     const fallbackCn = await fetchKKPhimList(
       "v1/api/danh-sach/phim-bo?country=trung-quoc&sort_field=modified.time&limit=14"
     );
-    items = buildRankedItems(fallbackCn, "douban", "Douban", "Douban", [], 12)
-      .sort((a, b) => b.score - a.score)
-      .map((it, i) => ({ ...it, rank: i + 1, playable: true }));
+    items.push(
+      ...buildRankedItems(fallbackCn, "douban", "Douban", "Douban", [], 12)
+        .sort((a, b) => b.score - a.score)
+        .map((it, i) => ({ ...it, rank: i + 1, playable: true }))
+    );
   }
 
   const catLabel =
@@ -634,7 +664,7 @@ async function crawlDoubanByScore(
   return {
     id: "douban",
     name: "Douban (豆瓣) — Theo Điểm",
-    subtitle: `Xếp hạng trực tiếp theo điểm đánh giá Douban thực tế từ cao đến thấp (${catLabel})`,
+    subtitle: `Chỉ hiển thị phim có trong kho phim Cinepvq & giữ nguyên thứ hạng gốc theo điểm Douban (${catLabel})`,
     brandColor: "from-emerald-600 via-green-600 to-teal-700",
     accentBg: "bg-emerald-600",
     badgeText: "DOUBAN 豆瓣 SCORE",
@@ -642,6 +672,10 @@ async function crawlDoubanByScore(
     updatedAt: nowIso,
     categoryKey: category,
     metricLabel: "Điểm Douban",
+    hasMore: cursor < leaderboard.length,
+    nextCursor: cursor,
+    totalScanned: cursor,
+    totalAvailable: leaderboard.length,
     items,
   };
 }
@@ -697,7 +731,7 @@ async function crawlYunheRankings(): Promise<PlatformRankingSection> {
 
   if (merged.length > 0) {
     const matchedMovies = await Promise.all(
-      merged.map((it) => matchTitleToKKPhim(cleanExternalTitle(it.name || ""), it.name || ""))
+      merged.map((it) => matchTitleToUnifiedCatalog(cleanExternalTitle(it.name || ""), it.name || ""))
     );
 
     items = merged.map((it, idx) => {
@@ -894,7 +928,7 @@ async function crawlKuyunRankings(): Promise<PlatformRankingSection> {
   if (primaryList.length > 0) {
     const matchedMovies = await Promise.all(
       primaryList.map((it) =>
-        matchTitleToKKPhim(cleanExternalTitle(it.title), it.title)
+        matchTitleToUnifiedCatalog(cleanExternalTitle(it.title), it.title)
       )
     );
 
@@ -1231,6 +1265,7 @@ export async function crawlAllPlatformRankings(
   const netflixCountry = normalizeNetflixCountry(opts.netflixCountry);
   const netflixType = normalizeNetflixType(opts.netflixType);
   const doubanCategory = normalizeDoubanCategory(opts.doubanCategory);
+  const doubanOffset = Math.max(0, Math.floor(opts.doubanOffset || 0));
 
   const needsNetflix = requestedPlatform === "all" || requestedPlatform === "netflix";
   const needsDouban = requestedPlatform === "all" || requestedPlatform === "douban";
@@ -1249,9 +1284,23 @@ export async function crawlAllPlatformRankings(
         )
       : Promise.resolve(null),
     needsDouban
-      ? getOrCrawlSection(`douban:${doubanCategory}`, forceRefresh, () =>
-          crawlDoubanByScore(doubanCategory)
-        )
+      ? doubanOffset > 0
+        ? (async () => {
+            const memKey = `douban:${doubanCategory}:o${doubanOffset}`;
+            if (!forceRefresh) {
+              const mem = sectionMemoryCache.get(memKey);
+              if (mem && mem.expiresAt > Date.now()) return mem.section;
+            }
+            const fresh = await crawlDoubanByScore(doubanCategory, doubanOffset, forceRefresh);
+            sectionMemoryCache.set(memKey, {
+              section: fresh,
+              expiresAt: Date.now() + SECTION_CACHE_TTL_MS,
+            });
+            return fresh;
+          })()
+        : getOrCrawlSection(`douban2:${doubanCategory}`, forceRefresh, () =>
+            crawlDoubanByScore(doubanCategory, 0, forceRefresh)
+          )
       : Promise.resolve(null),
     needsYunhe
       ? getOrCrawlSection("yunhe", forceRefresh, () => crawlYunheRankings())

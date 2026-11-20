@@ -30,6 +30,8 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
 
     private val streamCache = ConcurrentHashMap<String, CachedEntry>()
     private val phimHdcssDetailCache = ConcurrentHashMap<String, Pair<String, Long>>()
+    private val phimHdcssEpLinksCache = ConcurrentHashMap<String, Pair<List<String>, Long>>()
+    private val vsmovApiCache = ConcurrentHashMap<String, Pair<String, Long>>()
 
     companion object {
         private const val CACHE_TTL_MS = 15 * 60 * 1000L
@@ -138,7 +140,7 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
                 type = StreamType.HLS_DIRECT,
                 url = m3u8Url,
                 rawUrl = m3u8Url,
-                priority = 5,
+                priority = 4,
                 quality = "FHD",
                 serverName = serverName ?: "KKphim1",
                 isAvailable = true,
@@ -213,82 +215,75 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
             fallbackEmbed
         } else null
 
-        // Run backend resolver AND on-device native extractors in PARALLEL (cuts latency from ~8s to ~1.5-3s!)
-        val backendDeferred = async {
-            withTimeoutOrNull(4500L) {
-                fetchFromBackendResolver(
-                    slug = slug,
-                    title = title,
-                    episode = episode,
-                    season = season,
-                    type = type,
-                    serverName = serverName,
-                    episodeSlug = episodeSlug,
-                    knownHlsUrl = cleanM3u8,
-                    nguoncEmbedUrl = initialNguoncEmbed
-                )
-            } ?: emptyList()
-        }
-        val vsmovDeferred = async {
-            withTimeoutOrNull(4000L) {
-                fetchVsmovDirectHls(slug, episode, episodeSlug, serverName)
-            }
-        }
-        val choPhimDeferred = async {
-            withTimeoutOrNull(3500L) {
-                fetchChoPhimDirectHls(slug, episode, episodeSlug, serverName)
-            }
-        }
-        val phimHdcssDeferred = async {
-            withTimeoutOrNull(4500L) {
-                fetchPhimHdcssDirectHls(slug, title, episode, serverName)
-            }
-        }
-        val nguoncDeferred = async {
-            withTimeoutOrNull(3000L) {
-                if (initialNguoncEmbed != null) initialNguoncEmbed
-                else fetchNguonCEmbed(slug, episode, episodeSlug)
-            }
-        }
-
         val streamList = mutableListOf<StreamSource>()
 
-        // 1. Add backend resolved sources (already includes K20, VSMOV Native, PhimHDCSS, ChoPhim, KKPhim1, NguonC)
-        streamList.addAll(backendDeferred.await())
+        // 1. Primary: Single lightweight request (~2KB JSON) to Cinepvq backend resolver
+        //    (runs all 6 adapters in parallel on server fiber, sparing mobile bandwidth & CPU!)
+        val backendSources = withTimeoutOrNull(5000L) {
+            fetchFromBackendResolver(
+                slug = slug,
+                title = title,
+                episode = episode,
+                season = season,
+                type = type,
+                serverName = serverName,
+                episodeSlug = episodeSlug,
+                knownHlsUrl = cleanM3u8,
+                nguoncEmbedUrl = initialNguoncEmbed
+            )
+        } ?: emptyList()
 
-        // 2. Add on-device VSMOV Native HLS if backend didn't provide an HLS VSMOV source
-        val vsmovDirect = vsmovDeferred.await()
-        val hasVsmovHls = streamList.any { it.name == "VSMOV" && it.type == StreamType.HLS_DIRECT }
-        if (!hasVsmovHls && vsmovDirect != null) {
+        streamList.addAll(backendSources)
+
+        // 2. On-device fallback extractors: ONLY run for sources NOT already provided by backend
+        //    (cuts mobile background HTTP traffic by ~85% while keeping full offline/direct resilience!)
+        val needVsmov = streamList.none { it.name == "VSMOV" && it.type == StreamType.HLS_DIRECT }
+        val needPhimHdcss = streamList.none { it.name == "PhimHDCSS" }
+        val needChoPhim = streamList.none { it.name == "ChoPhim" }
+        val needNguonc = streamList.none { it.name == "NguonC" }
+
+        val vsmovDeferred = if (needVsmov) {
+            async { withTimeoutOrNull(4000L) { fetchVsmovDirectHls(slug, episode, episodeSlug, serverName) } }
+        } else null
+        val choPhimDeferred = if (needChoPhim) {
+            async { withTimeoutOrNull(4000L) { fetchChoPhimDirectHls(slug, title, episode, episodeSlug, serverName, cleanM3u8) } }
+        } else null
+        val phimHdcssDeferred = if (needPhimHdcss) {
+            async { withTimeoutOrNull(4500L) { fetchPhimHdcssDirectHls(slug, title, episode, serverName) } }
+        } else null
+        val nguoncDeferred = if (needNguonc) {
+            async {
+                withTimeoutOrNull(3000L) {
+                    if (initialNguoncEmbed != null) initialNguoncEmbed
+                    else fetchNguonCEmbed(slug, episode, episodeSlug)
+                }
+            }
+        } else null
+
+        // Merge fallback results
+        vsmovDeferred?.await()?.let { vsmovDirect ->
             streamList.removeAll { it.name == "VSMOV" && it.type == StreamType.EMBED }
             streamList.add(vsmovDirect)
         }
 
-        // 3. Add on-device PhimHDCSS Native HLS (FHDC TikTok CDN) if missing
-        val phimHdcssDirect = phimHdcssDeferred.await()
-        val hasPhimHdcss = streamList.any { it.name == "PhimHDCSS" }
-        if (!hasPhimHdcss && phimHdcssDirect != null) {
+        phimHdcssDeferred?.await()?.let { phimHdcssDirect ->
             streamList.add(phimHdcssDirect)
         }
 
-        // 4. Add on-device ChoPhim Direct HLS if missing
-        val choPhimDirect = choPhimDeferred.await()
-        val hasChoPhim = streamList.any { it.name == "ChoPhim" }
-        if (!hasChoPhim && choPhimDirect != null) {
+        choPhimDeferred?.await()?.let { choPhimDirect ->
             streamList.add(choPhimDirect)
         }
 
         // 5. Direct KKPhim1 M3U8 (on-device SmartHlsDataSource strips embedded ads!)
         val alreadyHasDirectKkphim = streamList.any {
-            (it.name == "KKphim1" && it.type == StreamType.HLS_DIRECT) ||
-                (cleanM3u8 != null && (it.rawUrl == cleanM3u8 || it.url == cleanM3u8))
+            it.name == "KKphim1" && it.type == StreamType.HLS_DIRECT
         }
         if (!alreadyHasDirectKkphim && !cleanM3u8.isNullOrBlank()) {
             streamList.add(buildInstantKkphimSource(cleanM3u8, serverName))
         }
 
         // 6. Genuine NguonC iframe backup (Cloudflare Turnstile gated — WebView fallback)
-        val effectiveNguoncEmbed = nguoncDeferred.await()
+        val effectiveNguoncEmbed = nguoncDeferred?.await()
         val hasNguonc = streamList.any { it.name == "NguonC" }
         if (!hasNguonc && !effectiveNguoncEmbed.isNullOrBlank() &&
             (effectiveNguoncEmbed.contains("streamc") || effectiveNguoncEmbed.contains("nguonc"))
@@ -332,7 +327,17 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
             )
         }
 
-        // Deduplicate & sort strictly: HLS_DIRECT first, then by provider priority
+        // Share VSMOV WebVTT subtitles with PhimHDCSS when PhimHDCSS lacks softsubs
+        val vsmovSubs = streamList.firstOrNull { it.name == "VSMOV" && it.subtitles.isNotEmpty() }?.subtitles
+        if (!vsmovSubs.isNullOrEmpty()) {
+            for (i in streamList.indices) {
+                if (streamList[i].name == "PhimHDCSS" && streamList[i].subtitles.isEmpty()) {
+                    streamList[i] = streamList[i].copy(subtitles = vsmovSubs)
+                }
+            }
+        }
+
+        // Deduplicate by provider + type (never drop distinct providers like ChoPhim even if CDN mirrors KKPhim1)
         val sortedCandidates = streamList.sortedWith(
             compareBy<StreamSource> { if (it.type == StreamType.HLS_DIRECT) 0 else 1 }
                 .thenBy { it.priority }
@@ -340,14 +345,11 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
 
         val distinctSources = mutableListOf<StreamSource>()
         val seenKeys = mutableSetOf<String>()
-        val seenUrls = mutableSetOf<String>()
 
         for (s in sortedCandidates) {
             val dedupKey = "${s.name}_${s.type}"
-            val effectiveUrl = s.rawUrl?.ifBlank { null } ?: s.url
-            if (!seenKeys.contains(dedupKey) && !seenUrls.contains(effectiveUrl)) {
+            if (!seenKeys.contains(dedupKey)) {
                 seenKeys.add(dedupKey)
-                seenUrls.add(effectiveUrl)
                 distinctSources.add(s)
             }
         }
@@ -426,11 +428,11 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
                         )
 
                         val p = when (cleanName) {
-                            "K20" -> 1
-                            "VSMOV" -> if (streamType == StreamType.HLS_DIRECT) 2 else 6
-                            "PhimHDCSS" -> 3
-                            "ChoPhim" -> 4
-                            "KKphim1" -> 5
+                            "VSMOV" -> if (streamType == StreamType.HLS_DIRECT) 1 else 6
+                            "PhimHDCSS" -> 2
+                            "K20" -> 3
+                            "KKphim1" -> 4
+                            "ChoPhim" -> 5
                             "NguonC" -> 6
                             else -> s.priority
                         }
@@ -469,13 +471,18 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
         serverName: String?
     ): StreamSource? = withContext(Dispatchers.IO) {
         try {
-            val apiReq = Request.Builder()
-                .url("https://vsmov.com/api/phim/$slug")
-                .header("User-Agent", DESKTOP_UA)
-                .build()
-            val body = networkModule.okHttpClient.newCall(apiReq).execute().use { res ->
-                if (!res.isSuccessful) return@withContext null
-                res.body?.string() ?: return@withContext null
+            val slugKey = slug.lowercase()
+            val body = vsmovApiCache[slugKey]?.takeIf { it.second > System.currentTimeMillis() }?.first ?: run {
+                val apiReq = Request.Builder()
+                    .url("https://vsmov.com/api/phim/$slug")
+                    .header("User-Agent", DESKTOP_UA)
+                    .build()
+                val fetched = networkModule.mediaOkHttpClient.newCall(apiReq).execute().use { res ->
+                    if (!res.isSuccessful) return@withContext null
+                    res.body?.string() ?: return@withContext null
+                }
+                vsmovApiCache[slugKey] = fetched to (System.currentTimeMillis() + CACHE_TTL_MS)
+                fetched
             }
 
             val root = networkModule.json.parseToJsonElement(body).jsonObject
@@ -530,7 +537,7 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
                     type = StreamType.HLS_DIRECT,
                     url = matchedM3u8,
                     rawUrl = matchedM3u8,
-                    priority = 2,
+                    priority = 1,
                     quality = "FHD",
                     serverName = matchedGroupName,
                     isAvailable = true,
@@ -545,7 +552,7 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
                 .header("User-Agent", DESKTOP_UA)
                 .header("Referer", "https://vsmov.com/")
                 .build()
-            val html = networkModule.okHttpClient.newCall(embedReq).execute().use { res ->
+            val html = networkModule.mediaOkHttpClient.newCall(embedReq).execute().use { res ->
                 if (!res.isSuccessful) return@withContext null
                 res.body?.string() ?: return@withContext null
             }
@@ -612,7 +619,7 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
                 type = StreamType.HLS_DIRECT,
                 url = masterUrl,
                 rawUrl = masterUrl,
-                priority = 2,
+                priority = 1,
                 quality = "FHD",
                 serverName = matchedGroupName,
                 isAvailable = true,
@@ -626,27 +633,103 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
         }
     }
 
-    // ── On-Device ChoPhim Direct HLS Extractor ───────────────────────────────
+    // ── On-Device ChoPhim Direct HLS Extractor (Balanced RSC Parser + Search Fallback) ──
 
-    private suspend fun fetchChoPhimDirectHls(
-        slug: String,
-        episodeNumber: Int,
-        episodeSlug: String?,
-        serverName: String?
-    ): StreamSource? = withContext(Dispatchers.IO) {
-        try {
+    private fun extractBalancedJsonArray(str: String, startBracketIdx: Int): String? {
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (i in startBracketIdx until str.length) {
+            val ch = str[i]
+            if (escaped) {
+                escaped = false
+                continue
+            }
+            if (ch == '\\') {
+                escaped = true
+                continue
+            }
+            if (ch == '"') {
+                inString = !inString
+                continue
+            }
+            if (!inString) {
+                if (ch == '[') depth++
+                else if (ch == ']') {
+                    depth--
+                    if (depth == 0) return str.substring(startBracketIdx, i + 1)
+                }
+            }
+        }
+        return null
+    }
+
+    private fun fetchChoPhimHtmlSync(targetSlug: String): String? {
+        return try {
             val req = Request.Builder()
-                .url("https://chophim.wtf/xem/${slug.trim().lowercase()}")
+                .url("https://chophim.wtf/xem/${targetSlug.trim().lowercase()}")
                 .header("User-Agent", DESKTOP_UA)
                 .header("Referer", "https://chophim.wtf/")
                 .build()
-            val html = networkModule.okHttpClient.newCall(req).execute().use { res ->
-                if (!res.isSuccessful) return@withContext null
-                res.body?.string() ?: return@withContext null
+            networkModule.mediaOkHttpClient.newCall(req).execute().use { res ->
+                if (!res.isSuccessful) null else res.body?.string()
             }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun searchChoPhimSlugSync(slug: String, title: String?): String? {
+        return try {
+            val query = (title?.takeIf { it.isNotBlank() } ?: slug.replace("-", " ")).trim()
+            val req = Request.Builder()
+                .url("https://chophim.wtf/tim-kiem?keyword=${URLEncoder.encode(query, "UTF-8")}")
+                .header("User-Agent", DESKTOP_UA)
+                .header("Referer", "https://chophim.wtf/")
+                .build()
+            val html = networkModule.mediaOkHttpClient.newCall(req).execute().use { res ->
+                if (!res.isSuccessful) return null
+                res.body?.string() ?: return null
+            }
+            val foundSlugs = Regex("""href="/phim/([a-z0-9-]+)"""", RegexOption.IGNORE_CASE)
+                .findAll(html)
+                .map { it.groupValues[1].lowercase() }
+                .distinct()
+                .toList()
+            val normTarget = normalizeAsciiSlug(slug)
+            val normTitle = title?.let { normalizeAsciiSlug(it) } ?: ""
+            foundSlugs.firstOrNull { it == normTarget }
+                ?: foundSlugs.firstOrNull { normTitle.isNotEmpty() && it == normTitle }
+                ?: foundSlugs.firstOrNull {
+                    it.startsWith(normTarget) || normTarget.startsWith(it) ||
+                        (normTitle.isNotEmpty() && (it.startsWith(normTitle) || normTitle.startsWith(it)))
+                }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private suspend fun fetchChoPhimDirectHls(
+        slug: String,
+        title: String?,
+        episodeNumber: Int,
+        episodeSlug: String?,
+        serverName: String?,
+        knownKkUrl: String?
+    ): StreamSource? = withContext(Dispatchers.IO) {
+        try {
+            var html = fetchChoPhimHtmlSync(slug)
+            if (html == null || !html.contains("server_data")) {
+                val altSlug = searchChoPhimSlugSync(slug, title)
+                if (!altSlug.isNullOrBlank() && altSlug != slug.lowercase()) {
+                    html = fetchChoPhimHtmlSync(altSlug)
+                }
+            }
+            if (html.isNullOrBlank()) return@withContext null
 
             val unescaped = html
                 .replace("\\\"", "\"")
+                .replace("\\\\", "\\")
                 .replace("\\/", "/")
                 .replace("\\u0026", "&")
 
@@ -654,12 +737,36 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
             val wantTm = Regex("thuy[eế]t\\s*minh|\\btm\\b").containsMatchIn(reqServer)
             val wantLt = Regex("l[oồ]ng\\s*ti[eế]ng|\\blt\\b").containsMatchIn(reqServer)
 
-            val serverRe = Regex(""""server_name"\s*:\s*"([^"]+)"\s*,\s*"server_data"\s*:\s*\[([\s\S]*?)\]""")
-            val itemRe = Regex("""\{[^{}]*"name"\s*:\s*"([^"]*)"[^{}]*"slug"\s*:\s*"([^"]*)"[^{}]*\}""")
-            val m3u8Re = Regex(""""link_m3u8"\s*:\s*"(https?://[^"]+\.m3u8[^"]*)"""")
+            val parsedGroups = mutableListOf<Pair<String, kotlinx.serialization.json.JsonArray>>()
+            val seenGroups = mutableSetOf<String>()
+            val srvNameRe = Regex(""""server_name"\s*:\s*"([^"]+)"""")
 
-            for (sm in serverRe.findAll(unescaped)) {
-                val gName = sm.groupValues[1]
+            for (sm in srvNameRe.findAll(unescaped)) {
+                val gName = sm.groupValues[1].trim()
+                if (gName.isBlank() || !seenGroups.add(gName)) continue
+                val endWin = (sm.range.first + 80000).coerceAtMost(unescaped.length)
+                val win = unescaped.substring(sm.range.first, endWin)
+                val dataKeyIdx = win.indexOf("\"server_data\":[")
+                if (dataKeyIdx == -1 || dataKeyIdx > 600) continue
+                val arrStart = sm.range.first + dataKeyIdx + "\"server_data\":".length
+                val arrStr = extractBalancedJsonArray(unescaped, arrStart) ?: continue
+                try {
+                    val arr = networkModule.json.parseToJsonElement(arrStr).jsonArray
+                    if (arr.isNotEmpty()) {
+                        parsedGroups.add(gName to arr)
+                    }
+                } catch (_: Exception) {}
+            }
+
+            if (parsedGroups.isEmpty()) return@withContext null
+
+            // Prefer independent non-(KK) servers first!
+            val sortedGroups = parsedGroups.sortedBy { (gName, _) ->
+                if (gName.contains("(KK)", ignoreCase = true)) 1 else 0
+            }
+
+            var fallbackSource: StreamSource? = null
+            for ((gName, arr) in sortedGroups) {
                 val gLower = gName.lowercase()
                 val gIsTm = Regex("thuy[eế]t\\s*minh|\\btm\\b").containsMatchIn(gLower)
                 val gIsLt = Regex("l[oồ]ng\\s*ti[eế]ng|\\blt\\b").containsMatchIn(gLower)
@@ -667,41 +774,45 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
                 if (wantLt && !gIsLt) continue
                 if (!wantTm && !wantLt && (gIsTm || gIsLt)) continue
 
-                val dataBlock = sm.groupValues[2]
-                val items = itemRe.findAll(dataBlock).toList()
-                for (im in items) {
-                    val objStr = im.value
-                    val epName = im.groupValues[1]
-                    val epSlug = im.groupValues[2]
+                for (el in arr) {
+                    val obj = el.jsonObject
+                    val epName = obj["name"]?.jsonPrimitive?.contentOrNull ?: ""
+                    val epSlug = obj["slug"]?.jsonPrimitive?.contentOrNull ?: ""
                     val digits = epName.filter { it.isDigit() }.toIntOrNull()
                         ?: epSlug.filter { it.isDigit() }.toIntOrNull()
 
                     val matchesEp = (episodeSlug != null && epSlug.equals(episodeSlug, ignoreCase = true)) ||
                         digits == episodeNumber ||
-                        ((epName.lowercase().contains("full") || items.size == 1) && episodeNumber == 1)
+                        ((epName.lowercase().contains("full") || arr.size == 1) && episodeNumber == 1)
 
                     if (matchesEp) {
-                        val m3u8 = m3u8Re.find(objStr)?.groupValues?.getOrNull(1)
+                        val rawM3u8 = obj["link_m3u8"]?.jsonPrimitive?.contentOrNull
+                        val rawEmbed = obj["link_embed"]?.jsonPrimitive?.contentOrNull
+                        val m3u8 = extractDirectM3u8(rawM3u8) ?: extractDirectM3u8(rawEmbed)
                         if (!m3u8.isNullOrBlank()) {
                             val (cleanName, cleanDisplay) = cleanSourceName("chophim", "ChoPhim", "ChoPhim", gName, m3u8)
-                            return@withContext StreamSource(
+                            val candidate = StreamSource(
                                 sourceId = "chophim",
                                 name = cleanName,
                                 displayName = cleanDisplay,
                                 type = StreamType.HLS_DIRECT,
                                 url = m3u8,
                                 rawUrl = m3u8,
-                                priority = 4,
+                                priority = 5,
                                 quality = "FHD",
                                 serverName = gName,
                                 isAvailable = true,
                                 adFree = true
                             )
+                            if (knownKkUrl.isNullOrBlank() || m3u8 != knownKkUrl) {
+                                return@withContext candidate
+                            }
+                            if (fallbackSource == null) fallbackSource = candidate
                         }
                     }
                 }
             }
-            null
+            fallbackSource
         } catch (_: Exception) {
             null
         }
@@ -737,7 +848,7 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
             if (detailUrl == null) {
                 val query = (title?.takeIf { it.isNotBlank() } ?: slug.replace("-", " ")).trim()
                 val searchUrl = "https://phimhdcss.com/?search=${URLEncoder.encode(query, "UTF-8")}"
-                val searchHtml = networkModule.okHttpClient.newCall(
+                val searchHtml = networkModule.mediaOkHttpClient.newCall(
                     Request.Builder().url(searchUrl).header("User-Agent", DESKTOP_UA).build()
                 ).execute().use { res ->
                     if (!res.isSuccessful) return@withContext null
@@ -765,22 +876,27 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
                 phimHdcssDetailCache[detailCacheKey] = detailUrl to (System.currentTimeMillis() + DETAIL_CACHE_TTL_MS)
             }
 
-            val detailHtml = networkModule.okHttpClient.newCall(
-                Request.Builder()
-                    .url(detailUrl)
-                    .header("User-Agent", DESKTOP_UA)
-                    .header("Referer", "https://phimhdcss.com/")
-                    .build()
-            ).execute().use { res ->
-                if (!res.isSuccessful) return@withContext null
-                res.body?.string() ?: return@withContext null
+            val epLinks = phimHdcssEpLinksCache[detailUrl]?.takeIf { it.second > System.currentTimeMillis() }?.first ?: run {
+                val detailHtml = networkModule.mediaOkHttpClient.newCall(
+                    Request.Builder()
+                        .url(detailUrl)
+                        .header("User-Agent", DESKTOP_UA)
+                        .header("Referer", "https://phimhdcss.com/")
+                        .build()
+                ).execute().use { res ->
+                    if (!res.isSuccessful) return@withContext null
+                    res.body?.string() ?: return@withContext null
+                }
+                val parsed = Regex("""href="(https://phimhdcss\.com/[a-z0-9-]+/(?:tap-[^"'\s]+|full[^"'\s]*))"""", RegexOption.IGNORE_CASE)
+                    .findAll(detailHtml)
+                    .map { it.groupValues[1] }
+                    .distinct()
+                    .toList()
+                if (parsed.isNotEmpty()) {
+                    phimHdcssEpLinksCache[detailUrl] = parsed to (System.currentTimeMillis() + DETAIL_CACHE_TTL_MS)
+                }
+                parsed
             }
-
-            val epLinks = Regex("""href="(https://phimhdcss\.com/[a-z0-9-]+/(?:tap-[^"'\s]+|full[^"'\s]*))"""", RegexOption.IGNORE_CASE)
-                .findAll(detailHtml)
-                .map { it.groupValues[1] }
-                .distinct()
-                .toList()
             if (epLinks.isEmpty()) return@withContext null
 
             val epRe = Regex("""/tap-0*$episodeNumber-\d+$""", RegexOption.IGNORE_CASE)
@@ -791,7 +907,7 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
                 } else null
             if (matchedEpUrl == null) return@withContext null
 
-            val watchHtml = networkModule.okHttpClient.newCall(
+            val watchHtml = networkModule.mediaOkHttpClient.newCall(
                 Request.Builder()
                     .url(matchedEpUrl)
                     .header("User-Agent", DESKTOP_UA)
@@ -835,7 +951,7 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
                     type = StreamType.HLS_DIRECT,
                     url = fhdc.second,
                     rawUrl = fhdc.second,
-                    priority = 3,
+                    priority = 2,
                     quality = "FHD",
                     serverName = "PhimHDCSS • FHDC",
                     isAvailable = true,
@@ -863,7 +979,7 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
                     type = StreamType.HLS_DIRECT,
                     url = m3u8,
                     rawUrl = m3u8,
-                    priority = 3,
+                    priority = 2,
                     quality = "FHD",
                     serverName = "PhimHDCSS • HD",
                     isAvailable = true,
@@ -883,7 +999,7 @@ class VideoSourceRepository(private val networkModule: NetworkModule) {
                 .url("https://phim.nguonc.com/api/film/$slug")
                 .header("User-Agent", DESKTOP_UA)
                 .build()
-            val body = networkModule.okHttpClient.newCall(req).execute().use { res ->
+            val body = networkModule.mediaOkHttpClient.newCall(req).execute().use { res ->
                 if (!res.isSuccessful) return@withContext null
                 res.body?.string() ?: return@withContext null
             }

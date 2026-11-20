@@ -7,14 +7,16 @@
 // ==============================================================================
 
 import type { VideoSourceAdapter, ResolveSourceOptions, ResolvedSource } from "../types";
+import { getSlugSourceHint } from "@/services/unifiedCatalog";
 
 const PHIMHDCSS_BASE = "https://phimhdcss.com";
-const TIMEOUT_MS = 3500;
+const TIMEOUT_MS = 2800;
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
-// Cache slug -> PhimHDCSS detail URL to keep subsequent episode switches fast
+// Cache slug -> PhimHDCSS detail URL and detail URL -> episode links for sub-second episode switches
 const detailUrlCache = new Map<string, { url: string; expiresAt: number }>();
+const detailEpisodesCache = new Map<string, { epLinks: string[]; expiresAt: number }>();
 
 async function fetchHtmlSafe(url: string, referer?: string): Promise<string | null> {
   const controller = new AbortController();
@@ -51,6 +53,11 @@ async function findPhimHdcssDetailUrl(
   slug?: string,
   title?: string
 ): Promise<string | null> {
+  if (slug) {
+    const hint = getSlugSourceHint(slug);
+    if (hint?.phimHdcssUrl) return hint.phimHdcssUrl;
+  }
+
   const cacheKey = (slug || title || "").toLowerCase();
   const cached = detailUrlCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
@@ -78,10 +85,26 @@ async function findPhimHdcssDetailUrl(
   const targetSlug = slug ? normalizeSlug(slug) : "";
   const titleSlug = title ? normalizeSlug(title) : "";
 
+  // Preserve season consistency (don't match Season 1 when Season 2 is requested)
+  const extractSeasonNum = (s: string): string | null => {
+    const m = s.match(/(?:phan|season|mua)-(\d+)$/i);
+    return m ? m[1] : null;
+  };
+  const targetSeason = extractSeasonNum(targetSlug) || extractSeasonNum(titleSlug);
+  const seasonCompatible = (candSlug: string): boolean => {
+    const candSeason = extractSeasonNum(candSlug);
+    if (targetSeason && candSeason && targetSeason !== candSeason) return false;
+    if (targetSeason && !candSeason && targetSeason !== "1") return false;
+    return true;
+  };
+
+  const compatible = matches.filter((m) => seasonCompatible(m.linkSlug));
+  const pool = compatible.length > 0 ? compatible : matches;
+
   const exact =
-    matches.find((m) => targetSlug && m.linkSlug === targetSlug) ||
-    matches.find((m) => titleSlug && m.linkSlug === titleSlug) ||
-    matches.find(
+    pool.find((m) => targetSlug && m.linkSlug === targetSlug) ||
+    pool.find((m) => titleSlug && m.linkSlug === titleSlug) ||
+    pool.find(
       (m) =>
         (targetSlug && (m.linkSlug.startsWith(targetSlug) || targetSlug.startsWith(m.linkSlug))) ||
         (titleSlug && (m.linkSlug.startsWith(titleSlug) || titleSlug.startsWith(m.linkSlug)))
@@ -135,7 +158,7 @@ function decodeRealServerMap(watchHtml: string): Array<{
 export class PhimHdcssAdapter implements VideoSourceAdapter {
   readonly sourceId = "phimhdcss" as const;
   readonly name = "PhimHDCSS Direct HLS (TikTok CDN)";
-  readonly priority = 3;
+  readonly priority = 2;
 
   async resolveStream(options: ResolveSourceOptions): Promise<ResolvedSource | null> {
     const { slug, title, episode = 1, serverName } = options;
@@ -150,19 +173,35 @@ export class PhimHdcssAdapter implements VideoSourceAdapter {
     const detailUrl = await findPhimHdcssDetailUrl(slug, title);
     if (!detailUrl) return null;
 
-    const detailHtml = await fetchHtmlSafe(detailUrl, PHIMHDCSS_BASE);
-    if (!detailHtml) return null;
+    let epLinks: string[] = [];
+    const cachedEps = detailEpisodesCache.get(detailUrl);
+    if (cachedEps && cachedEps.expiresAt > Date.now()) {
+      epLinks = cachedEps.epLinks;
+    } else {
+      const detailHtml = await fetchHtmlSafe(detailUrl, PHIMHDCSS_BASE);
+      if (!detailHtml) return null;
 
-    // Extract episode URLs from detail page (format: https://phimhdcss.com/{slug}/tap-{n}-{epId} or /full-{epId})
-    const epLinks = [
-      ...new Set(
-        [
-          ...detailHtml.matchAll(
-            /href="(https:\/\/phimhdcss\.com\/[a-z0-9-]+\/(?:tap-[^"'\s]+|full[^"'\s]*))"/gi
-          ),
-        ].map((m) => m[1])
-      ),
-    ];
+      // Extract episode URLs from detail page (format: https://phimhdcss.com/{slug}/tap-{n}-{epId} or /full-{epId})
+      epLinks = [
+        ...new Set(
+          [
+            ...detailHtml.matchAll(
+              /href="(https:\/\/phimhdcss\.com\/[a-z0-9-]+\/(?:tap-[^"'\s]+|full[^"'\s]*))"/gi
+            ),
+          ].map((m) => m[1])
+        ),
+      ];
+      if (epLinks.length > 0) {
+        if (detailEpisodesCache.size > 300) {
+          const oldest = detailEpisodesCache.keys().next().value;
+          if (oldest) detailEpisodesCache.delete(oldest);
+        }
+        detailEpisodesCache.set(detailUrl, {
+          epLinks,
+          expiresAt: Date.now() + 30 * 60 * 1000,
+        });
+      }
+    }
 
     if (epLinks.length === 0) return null;
 
@@ -181,31 +220,28 @@ export class PhimHdcssAdapter implements VideoSourceAdapter {
     if (decodedServers.length === 0) return null;
 
     // Priority 1: FHDC (tiktok.phimhdc.com/embed/... -> ultra-fast ByteImg CDN HLS!)
+    // Return immediately without extra 4th probe hop; /api/hls-proxy extracts & caches manifest on load.
     const fhdc = decodedServers.find(
       (s) =>
-        s.label.toUpperCase().startsWith("FHDC") ||
-        s.url.includes("tiktok.phimhdc.com/embed/")
+        s.url.includes("tiktok.phimhdc.com/embed/") ||
+        (s.label.toUpperCase().startsWith("FHDC") && s.url.includes("phimhdc"))
     );
     if (fhdc) {
-      // Verify FHDC embed actually has a manifest before returning
-      const embedHtml = await fetchHtmlSafe(fhdc.url, PHIMHDCSS_BASE + "/");
-      if (embedHtml && embedHtml.includes("#EXTM3U")) {
-        return {
-          sourceId: this.sourceId,
-          name: "PhimHDCSS FHDC (Siêu nhanh • Không QC)",
-          displayName: "PhimHDCSS (FHDC)",
-          type: "hls",
-          url: `/api/hls-proxy?phimhdcssEmbed=${encodeURIComponent(fhdc.url)}`,
-          rawUrl: fhdc.url,
-          priority: this.priority,
-          quality: "FHD",
-          serverName: "PhimHDCSS • FHDC",
-          isAvailable: true,
-          headers: { Referer: `${PHIMHDCSS_BASE}/` },
-          stripPng: true,
-          adFree: true,
-        };
-      }
+      return {
+        sourceId: this.sourceId,
+        name: "PhimHDCSS FHDC (Siêu nhanh • Không QC)",
+        displayName: "PhimHDCSS (FHDC)",
+        type: "hls",
+        url: `/api/hls-proxy?phimhdcssEmbed=${encodeURIComponent(fhdc.url)}`,
+        rawUrl: fhdc.url,
+        priority: this.priority,
+        quality: "FHD",
+        serverName: "PhimHDCSS • FHDC",
+        isAvailable: true,
+        headers: { Referer: `${PHIMHDCSS_BASE}/` },
+        stripPng: true,
+        adFree: true,
+      };
     }
 
     // Priority 2: HD server wrapping a direct .m3u8 link (`phimhdc.com/player.php?link=...m3u8`)

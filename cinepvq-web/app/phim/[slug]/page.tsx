@@ -5,6 +5,7 @@ import { useParams, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { useFetchMovieDetail } from "@/hooks/useMovies";
 import { searchMovies } from "@/services/api";
+import { resolveAllSources } from "@/services/videoSources";
 import { extractCategoriesFromMovie, type MovieEnrichmentData } from "@/types/movie";
 import { useUserStore } from "@/hooks/useUserStore";
 import {
@@ -253,7 +254,11 @@ export default function MovieDetailPage() {
       if (movie?.thumb_url) params.set("thumbUrl", movie.thumb_url);
       if (movie?.poster_url) params.set("posterUrl", movie.poster_url);
 
-      const res = await fetch(`/api/movies/${encodeURIComponent(mSlug)}/enrich?${params.toString()}`);
+      const enrichReqInit: RequestInit & { priority?: "low" } = { priority: "low" };
+      const res = await fetch(
+        `/api/movies/${encodeURIComponent(mSlug)}/enrich?${params.toString()}`,
+        enrichReqInit
+      );
       if (!res.ok) return null;
       const json = await res.json();
       return (json?.data as MovieEnrichmentData) || null;
@@ -332,6 +337,45 @@ export default function MovieDetailPage() {
 
   const currentVideoUrl = activeEpisode?.embed || activeEpisode?.m3u8 || "";
   const activeEpisodeSlug = activeEpisode?.slug || "";
+
+  // Pre-warm multi-source video resolver at low priority while user views the movie detail page
+  // so tapping "Xem Ngay" starts in 0ms directly on the fastest CDN (VSMOV / PhimHDCSS).
+  useEffect(() => {
+    if (isWatching || !movie || !activeEpisode) return;
+    const mSlug = movie.slug || slug;
+    if (!mSlug) return;
+    const epNum =
+      parseInt(activeEpisode.name.replace(/\D/g, ""), 10) ||
+      parseInt(activeEpisode.slug.replace(/\D/g, ""), 10) ||
+      1;
+    const timer = setTimeout(() => {
+      resolveAllSources(
+        {
+          slug: mSlug,
+          imdbId: movie.imdb_id || undefined,
+          tmdbId: movie.tmdb_id ? String(movie.tmdb_id) : undefined,
+          title: movie.name || movie.original_name,
+          season: currentSeason,
+          episode: epNum,
+          type: isMovie ? "movie" : "series",
+          nguoncEmbedUrl: activeEpisode.embed || undefined,
+          knownHlsUrl: activeEpisode.m3u8 || undefined,
+          serverName: currentServer?.server_name || "Vietsub",
+          episodeSlug: activeEpisode.slug,
+        },
+        { priority: "low" }
+      ).catch(() => {});
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [
+    isWatching,
+    movie,
+    slug,
+    activeEpisode,
+    currentSeason,
+    isMovie,
+    currentServer?.server_name,
+  ]);
 
   // Initial resume time for VideoPlayer — keyed strictly by episode to prevent cross-episode leakage
   const movieSlug = movie?.slug;

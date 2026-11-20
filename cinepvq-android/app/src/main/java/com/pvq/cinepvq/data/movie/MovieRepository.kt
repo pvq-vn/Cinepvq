@@ -14,14 +14,30 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import java.util.concurrent.ConcurrentHashMap
 
 class MovieRepository(
     private val networkModule: NetworkModule,
     private val database: CinepvqDatabase
 ) {
     private val json: Json = networkModule.json
+    private val detailMemoryCache = ConcurrentHashMap<String, Pair<MovieDetail, Long>>()
+
+    companion object {
+        private const val DETAIL_MEM_CACHE_TTL_MS = 10 * 60 * 1000L
+    }
 
     suspend fun getLatestMovies(page: Int = 1): Result<List<Movie>> = runCatching {
+        if (page <= 2) {
+            try {
+                val unifiedRes = networkModule.cinepvqApi.getUnifiedLatestMovies(page)
+                if (unifiedRes.isSuccessful && unifiedRes.body()?.items?.isNotEmpty() == true) {
+                    return@runCatching unifiedRes.body()!!.items.map { it.toDomainMovie() }
+                }
+            } catch (_: Exception) {
+                // Fall back seamlessly to KKPhim direct
+            }
+        }
         val res = networkModule.kkphimApi.getLatestMovies(page)
         if (!res.isSuccessful || res.body() == null) {
             throw Exception("Không thể tải danh sách phim mới")
@@ -66,8 +82,21 @@ class MovieRepository(
     }
 
     suspend fun searchMovies(keyword: String, page: Int = 1): Result<List<Movie>> = runCatching {
-        if (keyword.isBlank()) return@runCatching emptyList()
-        val res = networkModule.kkphimApi.searchMovies(keyword.trim(), page)
+        val trimmed = keyword.trim()
+        if (trimmed.isBlank()) return@runCatching emptyList()
+
+        // 1. Primary: Unified 6-Dataset Search (KKPhim1 + VSMOV + NguonC + ChoPhim + PhimHDCSS)
+        try {
+            val unifiedRes = networkModule.cinepvqApi.searchUnifiedCatalog(trimmed, page)
+            if (unifiedRes.isSuccessful && unifiedRes.body() != null) {
+                return@runCatching unifiedRes.body()!!.items.map { it.toDomainMovie() }
+            }
+        } catch (_: Exception) {
+            // Fall through to direct KKPhim API if backend is unreachable
+        }
+
+        // 2. Offline/Fallback: Direct KKPhim API
+        val res = networkModule.kkphimApi.searchMovies(trimmed, page)
         if (!res.isSuccessful || res.body()?.data == null) {
             return@runCatching emptyList()
         }
@@ -76,22 +105,50 @@ class MovieRepository(
     }
 
     suspend fun getMovieDetail(slug: String): Result<MovieDetail> = runCatching {
-        // 1. Try remote fetch
+        val cacheKey = slug.trim().lowercase()
+        val memHit = detailMemoryCache[cacheKey]
+        if (memHit != null && memHit.second > System.currentTimeMillis()) {
+            return@runCatching memHit.first
+        }
+
+        // 1. Fast primary check on KKPhim direct API
         try {
             val res = networkModule.kkphimApi.getMovieDetail(slug)
-            if (res.isSuccessful && res.body()?.movie != null) {
+            if (res.isSuccessful && res.body()?.movie != null && res.body()!!.episodes.isNotEmpty()) {
                 val detail = res.body()!!.movie!!.toDomainDetail(res.body()!!.episodes)
-                // Cache to Room SQLite
+                detailMemoryCache[cacheKey] = detail to (System.currentTimeMillis() + DETAIL_MEM_CACHE_TTL_MS)
                 cacheMovieDetail(detail, res.body()!!.episodes)
                 return@runCatching detail
             }
-        } catch (e: Exception) {
-            // Check local Room cache fallback
-            val cached = database.movieCacheDao().getMovieBySlug(slug)
-            if (cached != null) {
-                return@runCatching cached.toDomainDetail(json)
+        } catch (_: Exception) {
+            // Fall through to unified multi-dataset backend resolver
+        }
+
+        // 2. Unified 6-Dataset Movie Detail Fallback (VSMOV / NguonC / ChoPhim / PhimHDCSS / PostgreSQL)
+        try {
+            val unifiedRes = networkModule.cinepvqApi.getUnifiedMovieDetail(slug)
+            val uMovie = unifiedRes.body()?.movie
+            if (unifiedRes.isSuccessful && uMovie != null && uMovie.name.isNotBlank()) {
+                val detail = uMovie.toDomainDetail()
+                detailMemoryCache[cacheKey] = detail to (System.currentTimeMillis() + DETAIL_MEM_CACHE_TTL_MS)
+                val rawEps = uMovie.episodes.map { srv ->
+                    KKPhimEpisodeServer(
+                        serverName = srv.serverName,
+                        serverData = srv.items.map { ep ->
+                            com.pvq.cinepvq.core.network.model.KKPhimEpisodeItem(
+                                name = ep.name,
+                                slug = ep.slug,
+                                linkEmbed = ep.embed,
+                                linkM3u8 = ep.m3u8
+                            )
+                        }
+                    )
+                }
+                cacheMovieDetail(detail, rawEps)
+                return@runCatching detail
             }
-            throw e
+        } catch (_: Exception) {
+            // Fall through to local Room cache
         }
 
         val cached = database.movieCacheDao().getMovieBySlug(slug)
@@ -238,6 +295,66 @@ class MovieRepository(
         val cleanBase = cdnBase.trimEnd('/')
         val cleanPath = trimmed.trimStart('/')
         return "$cleanBase/$cleanPath"
+    }
+
+    private fun com.pvq.cinepvq.core.network.model.UnifiedMovieItemDto.toDomainMovie(): Movie {
+        val rawYear = when (val y = year) {
+            is kotlinx.serialization.json.JsonPrimitive -> y.contentOrNull ?: ""
+            else -> ""
+        }
+        return Movie(
+            slug = slug,
+            name = name,
+            originalName = originalName,
+            thumbUrl = thumbUrl.ifBlank { posterUrl },
+            posterUrl = posterUrl.ifBlank { thumbUrl },
+            year = rawYear,
+            episodeCurrent = currentEpisode,
+            quality = quality.ifBlank { "FHD" },
+            time = time
+        )
+    }
+
+    private fun com.pvq.cinepvq.core.network.model.UnifiedMovieDetailDto.toDomainDetail(): MovieDetail {
+        val rawYear = when (val y = year) {
+            is kotlinx.serialization.json.JsonPrimitive -> y.contentOrNull ?: ""
+            else -> ""
+        }
+        val rawTotal = when (val et = totalEpisodes) {
+            is kotlinx.serialization.json.JsonPrimitive -> et.contentOrNull ?: ""
+            else -> ""
+        }
+        return MovieDetail(
+            slug = slug,
+            name = name,
+            originalName = originalName,
+            thumbUrl = thumbUrl.ifBlank { posterUrl },
+            posterUrl = posterUrl.ifBlank { thumbUrl },
+            description = description,
+            year = rawYear,
+            episodeCurrent = currentEpisode,
+            episodeTotal = rawTotal,
+            quality = quality.ifBlank { "FHD" },
+            lang = language.ifBlank { "Vietsub" },
+            time = time,
+            director = director,
+            actor = casts,
+            categories = emptyList(),
+            countries = emptyList(),
+            episodes = episodes.map { srv ->
+                EpisodeServer(
+                    serverName = srv.serverName.ifBlank { "Vietsub" },
+                    items = srv.items.map { ep ->
+                        EpisodeItem(
+                            name = ep.name,
+                            slug = ep.slug,
+                            embed = ep.embed.ifBlank { ep.m3u8 ?: "" },
+                            m3u8Url = ep.m3u8
+                        )
+                    }
+                )
+            }
+        )
     }
 
     private fun extractStringOrArray(element: kotlinx.serialization.json.JsonElement?): String {

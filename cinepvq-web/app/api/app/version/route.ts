@@ -14,16 +14,18 @@ export interface AppVersionResponse {
   forceUpdate: boolean;
 }
 
-const DEFAULT_VERSION_CODE = 3;
-const DEFAULT_VERSION_NAME = "1.1.0";
+const DEFAULT_VERSION_CODE = 4;
+const DEFAULT_VERSION_NAME = "1.2.0";
 const DEFAULT_TAG = `v${DEFAULT_VERSION_NAME}`;
 
 const DEFAULT_CHANGELOG = [
-  "Bổ sung Bảng Xếp Hạng Thịnh Hành đa nền tảng (Netflix theo quốc gia, Douban theo điểm, Vân Hợp, Khốc Vân)",
-  "Tự động cắt quảng cáo nhúng trong nguồn KKPhim1",
-  "Phát Native ExoPlayer với đầy đủ tính năng và phụ đề cho VSMOV, PhimHDCSS (FHDC) và ChoPhim",
-  "Sửa triệt để lỗi giữ thời gian cũ khi chuyển tập ở màn hình nhỏ và tăng tốc độ chuyển tập",
-  "Tối ưu độ nhạy vuốt tua, âm lượng, đồng bộ đúng độ sáng hệ thống và sửa lỗi cuộn khi lọc A-Z",
+  "Tối ưu toàn diện tốc độ khởi phát phim (0ms từ bộ nhớ đệm, gộp manifest 1 lượt tải, pre-warm sẵn nguồn ngay tại trang chi tiết) và phát mượt không giật lag (HTTP/2 pool, buffer 30s-75s, tự động chuyển nguồn nhanh hơn khi CDN tắc nghẽn)",
+  "Hiển thị vòng xoay đang tải (buffering spinner) chuẩn xác thay vì nháy nút tạm dừng khi nạp video",
+  "Hợp nhất toàn bộ 6 kho phim (KKPhim1, VSMOV, PhimHDCSS, ChoPhim, K20, NguonC) thành 1 kho phim duy nhất trên Tìm kiếm, Trang chủ, Chi tiết & BXH",
+  "Bổ sung phụ đề tiếng Việt cho PhimHDCSS và hiển thị đầy đủ nguồn ChoPhim trong trình phát",
+  "Nâng cấp BXH Douban cuộn vô hạn, chỉ hiển thị phim khả dụng có poster và giữ nguyên thứ hạng gốc",
+  "Sửa triệt để lỗi phim đã xóa trong Lịch sử tự đồng bộ quay lại giữa Web và App",
+  "Bổ sung Trang Quản Trị (Admin Portal) tích hợp trực tiếp trong Tài khoản và Cài đặt",
 ];
 
 async function fetchReleaseSha256(downloadUrl: string): Promise<string> {

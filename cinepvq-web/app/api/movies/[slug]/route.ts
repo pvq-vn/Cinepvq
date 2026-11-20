@@ -1,19 +1,18 @@
 // ==============================================================================
 // app/api/movies/[slug]/route.ts
-// Movie Detail Cache-Aside Endpoint (PostgreSQL + NguonC Upstream Fallback)
+// Unified Multi-Dataset Movie Detail Endpoint
+// Resolves across KKPhim1 + VSMOV + NguonC + ChoPhim + PhimHDCSS + PostgreSQL
 // ==============================================================================
 
 import { NextRequest, NextResponse } from "next/server";
 import { isDbConfigured } from "@/lib/db/client";
 import { movieRepository } from "@/lib/repositories/movieRepository";
-import type { MovieDetailResponse } from "@/types/movie";
+import { getUnifiedMovieDetail } from "@/services/unifiedCatalog";
 
-const UPSTREAM_API_URL =
-  process.env.NGUONC_API_URL ?? "https://phim.nguonc.com/api";
-const UPSTREAM_TIMEOUT_MS = 10_000;
+export const dynamic = "force-dynamic";
 
 export async function GET(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ slug: string }> }
 ) {
   const { slug } = await params;
@@ -25,67 +24,48 @@ export async function GET(
     );
   }
 
-  // ─── 1. Check PostgreSQL Persistent Cache ──────────────────────────────────
-  if (isDbConfigured()) {
-    try {
-      const cachedMovie = await movieRepository.findMovieBySlug(slug);
-      if (cachedMovie && cachedMovie.episodes && cachedMovie.episodes.length > 0) {
-        return NextResponse.json({
-          status: "success",
-          movie: cachedMovie,
-          cached: true,
-          source: "database",
+  try {
+    // 1. Resolve live from Unified 6-Dataset Catalog (KKPhim -> VSMOV/NguonC/ChoPhim/PhimHDCSS)
+    const unified = await getUnifiedMovieDetail(slug);
+    if (unified && unified.movie) {
+      // Asynchronously persist to PostgreSQL cache for enrichment & offline resilience
+      if (isDbConfigured()) {
+        movieRepository.upsertMovieFromNguonC(unified.movie).catch((upsertErr) => {
+          console.warn(
+            `[MovieCache] Background upsert failed for ${slug}:`,
+            upsertErr instanceof Error ? upsertErr.message : String(upsertErr)
+          );
         });
       }
-    } catch (err) {
-      console.warn(
-        `[MovieCache] Failed to read from database for slug ${slug}, falling back to upstream:`,
-        err instanceof Error ? err.message : String(err)
-      );
-    }
-  }
-
-  // ─── 2. Upstream Fetch from NguonC ─────────────────────────────────────────
-  const targetUrl = new URL(
-    `film/${encodeURIComponent(slug)}`,
-    `${UPSTREAM_API_URL.replace(/\/$/, "")}/`
-  );
-
-  try {
-    const upstreamRes = await fetch(targetUrl, {
-      cache: "no-store",
-      headers: {
-        Accept: "application/json",
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      },
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-    });
-
-    if (!upstreamRes.ok) {
-      return NextResponse.json(
-        { status: "error", message: "Movie service upstream unavailable" },
-        { status: upstreamRes.status >= 500 ? 502 : upstreamRes.status }
-      );
-    }
-
-    const data: MovieDetailResponse = await upstreamRes.json();
-
-    // ─── 3. Asynchronously Upsert Into PostgreSQL Cache ───────────────────────
-    if (data.status === "success" && data.movie && isDbConfigured()) {
-      movieRepository.upsertMovieFromNguonC(data.movie).catch((upsertErr) => {
-        console.warn(
-          `[MovieCache] Background upsert failed for ${slug}:`,
-          upsertErr instanceof Error ? upsertErr.message : String(upsertErr)
-        );
+      return NextResponse.json({
+        ...unified,
+        cached: false,
       });
     }
 
-    return NextResponse.json({
-      ...data,
-      cached: false,
-      source: "nguonc",
-    });
+    // 2. Fallback to PostgreSQL Persistent Cache if all upstream datasets failed
+    if (isDbConfigured()) {
+      try {
+        const cachedMovie = await movieRepository.findMovieBySlug(slug);
+        if (cachedMovie && cachedMovie.episodes && cachedMovie.episodes.length > 0) {
+          return NextResponse.json({
+            status: "success",
+            movie: cachedMovie,
+            cached: true,
+          });
+        }
+      } catch (err) {
+        console.warn(
+          `[MovieCache] Failed to read from database for slug ${slug}:`,
+          err instanceof Error ? err.message : String(err)
+        );
+      }
+    }
+
+    return NextResponse.json(
+      { status: "error", message: "Không tìm thấy thông tin phim trên hệ thống" },
+      { status: 404 }
+    );
   } catch (error) {
     const isTimeout =
       error instanceof DOMException && error.name === "TimeoutError";

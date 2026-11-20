@@ -14,9 +14,12 @@ import type {
 } from "../types";
 
 const VSMOV_BASE = "https://vsmov.com/api";
-const TIMEOUT_MS = 3500;
+const TIMEOUT_MS = 2800;
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
+
+// Cache movie episode directory per slug (15 min TTL) for near-instant episode switches
+const vsmovMovieCache = new Map<string, { data: VsmovMovieData; expiresAt: number }>();
 
 interface VsmovEpisodeItem {
   name: string;
@@ -163,8 +166,8 @@ async function extractVsmovDirectHls(embedUrl: string): Promise<{
 
 export class VsmovAdapter implements VideoSourceAdapter {
   readonly sourceId = "vsmov" as const;
-  readonly name = "VSMOV Native HLS (Không QC)";
-  readonly priority = 2;
+  readonly name = "VSMOV Native HLS (Siêu mượt • Không QC)";
+  readonly priority = 1;
 
   async resolveStream(options: ResolveSourceOptions): Promise<ResolvedSource | null> {
     const { slug, title, episode = 1 } = options;
@@ -175,9 +178,14 @@ export class VsmovAdapter implements VideoSourceAdapter {
       "User-Agent": UA,
     };
 
+    const cacheKey = (slug || title || "").trim().toLowerCase();
     let movieData: VsmovMovieData | null = null;
+    const cachedMovie = vsmovMovieCache.get(cacheKey);
+    if (cachedMovie && cachedMovie.expiresAt > Date.now()) {
+      movieData = cachedMovie.data;
+    }
 
-    if (slug) {
+    if (!movieData && slug) {
       const cleanSlug = slug.trim().toLowerCase();
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -245,6 +253,17 @@ export class VsmovAdapter implements VideoSourceAdapter {
       return null;
     }
 
+    if (!cachedMovie || cachedMovie.expiresAt <= Date.now()) {
+      if (vsmovMovieCache.size > 300) {
+        const oldest = vsmovMovieCache.keys().next().value;
+        if (oldest) vsmovMovieCache.delete(oldest);
+      }
+      vsmovMovieCache.set(cacheKey, {
+        data: movieData,
+        expiresAt: Date.now() + 15 * 60 * 1000,
+      });
+    }
+
     const reqServer = (options.serverName || "").toLowerCase();
     const isTM = /thuy[eế]t\s*minh|\btm\b/i.test(reqServer);
     const isLT = /l[oồ]ng\s*ti[eế]ng/i.test(reqServer);
@@ -299,6 +318,7 @@ export class VsmovAdapter implements VideoSourceAdapter {
           : "VSMOV";
 
         // Case 1: API already gave direct .m3u8
+        // Segments allow direct browser CORS -> unwrap PNG-TS client-side in hls.js for 0ms server hop!
         if (ep.link_m3u8 && ep.link_m3u8.includes(".m3u8")) {
           const rawM3u8 = ep.link_m3u8.trim();
           return {
@@ -306,7 +326,7 @@ export class VsmovAdapter implements VideoSourceAdapter {
             name: this.name,
             displayName,
             type: "hls",
-            url: `/api/hls-proxy?url=${encodeURIComponent(rawM3u8)}&proxySegments=1&stripPng=1`,
+            url: `/api/hls-proxy?url=${encodeURIComponent(rawM3u8)}`,
             rawUrl: rawM3u8,
             priority: this.priority,
             quality: movieData.movie?.quality || "HD",
@@ -318,12 +338,14 @@ export class VsmovAdapter implements VideoSourceAdapter {
         }
 
         // Case 2: Extract real master.m3u8 + VTT subtitles from VSMOV embed page!
+        // VSMOV edge CDN supports CORS directly: browser fetches segments straight from edge
+        // and unwraps 478B PNG headers in PngUnwrapFragmentLoader (Safari native adds proxySegments=1).
         if (ep.link_embed) {
           const extracted = await extractVsmovDirectHls(ep.link_embed);
           if (extracted?.masterUrl) {
             const proxyUrl =
               `/api/hls-proxy?url=${encodeURIComponent(extracted.masterUrl)}` +
-              `&proxySegments=1&stripPng=1&ref=${encodeURIComponent(ep.link_embed)}`;
+              `&ref=${encodeURIComponent(ep.link_embed)}`;
             return {
               sourceId: this.sourceId,
               name: this.name,

@@ -15,7 +15,67 @@ import {
   notificationStore,
   episodeProgressStore,
   setProgressSyncListener,
+  getActiveUserId,
 } from "@/services/userStore";
+
+// ─── User-Scoped Tombstone & Pending Sync Storage (Prevents Cross-Device Resurrection) ───
+function readSlugSet(keyBase: string, uid?: string): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  const id = uid || getActiveUserId();
+  try {
+    const raw = localStorage.getItem(`${keyBase}_${id}`);
+    const arr = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(arr) ? arr.filter((s): s is string => typeof s === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeSlugSet(keyBase: string, set: Set<string>, uid?: string): void {
+  if (typeof window === "undefined") return;
+  const id = uid || getActiveUserId();
+  try {
+    if (set.size === 0) {
+      localStorage.removeItem(`${keyBase}_${id}`);
+    } else {
+      localStorage.setItem(`${keyBase}_${id}`, JSON.stringify(Array.from(set)));
+    }
+  } catch {}
+}
+
+function addSlugToSet(keyBase: string, slug: string): void {
+  if (!slug) return;
+  const set = readSlugSet(keyBase);
+  set.add(slug);
+  writeSlugSet(keyBase, set);
+}
+
+function removeSlugFromSet(keyBase: string, slug: string): void {
+  if (!slug) return;
+  const set = readSlugSet(keyBase);
+  if (set.delete(slug)) writeSlugSet(keyBase, set);
+}
+
+function isClearFlagSet(keyBase: string): boolean {
+  if (typeof window === "undefined") return false;
+  return localStorage.getItem(`${keyBase}_${getActiveUserId()}`) === "true";
+}
+
+function setClearFlag(keyBase: string, val: boolean): void {
+  if (typeof window === "undefined") return;
+  const key = `${keyBase}_${getActiveUserId()}`;
+  if (val) localStorage.setItem(key, "true");
+  else localStorage.removeItem(key);
+}
+
+const TOMBSTONE_KEYS = {
+  DELETED_HIST: "cinepvq_deleted_hist",
+  PENDING_HIST: "cinepvq_pending_hist",
+  CLEAR_HIST: "cinepvq_clear_hist",
+  DELETED_WL: "cinepvq_deleted_wl",
+  PENDING_WL: "cinepvq_pending_wl",
+  CLEAR_WL: "cinepvq_clear_wl",
+};
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { normalizeEpisodeLabel } from "@/lib/format";
 import type {
@@ -151,17 +211,48 @@ export const userSyncManager = {
           })
           .catch((err) => console.warn("[UserSync] Sync favorites failed", err)),
 
-        // Sync history: fetch latest progress from Supabase, compare timestamp and merge
-        fetch("/api/history", {
-          headers: authHeaders,
-        })
-          .then((r) => r.json())
-          .then((data) => {
+        // Sync history: flush local deletions first, then reconcile strictly against authoritative DB
+        // so movies deleted on Android or another browser are NEVER resurrected!
+        (async () => {
+          try {
+            if (isClearFlagSet(TOMBSTONE_KEYS.CLEAR_HIST)) {
+              const clearRes = await fetch("/api/history", {
+                method: "DELETE",
+                headers: authHeaders,
+                body: JSON.stringify({ clearAll: true }),
+              });
+              if (clearRes.ok) {
+                setClearFlag(TOMBSTONE_KEYS.CLEAR_HIST, false);
+                writeSlugSet(TOMBSTONE_KEYS.DELETED_HIST, new Set());
+              }
+            }
+
+            const deletedHist = readSlugSet(TOMBSTONE_KEYS.DELETED_HIST);
+            for (const delSlug of deletedHist) {
+              try {
+                const delRes = await fetch("/api/history", {
+                  method: "DELETE",
+                  headers: authHeaders,
+                  body: JSON.stringify({ movieSlug: delSlug }),
+                });
+                if (delRes.ok) {
+                  removeSlugFromSet(TOMBSTONE_KEYS.DELETED_HIST, delSlug);
+                }
+              } catch {}
+            }
+
+            const r = await fetch("/api/history", { headers: authHeaders });
+            const data = await r.json();
             if (data.status === "success" && Array.isArray(data.history)) {
-              const remoteHistory: WatchHistoryItem[] = data.history.map((r: WatchHistoryItem) => ({
-                ...r,
-                episodeName: normalizeEpisodeLabel(r.episodeName, r.episodeSlug) || r.episodeName,
-              }));
+              const activeDeleted = readSlugSet(TOMBSTONE_KEYS.DELETED_HIST);
+              const pendingSync = readSlugSet(TOMBSTONE_KEYS.PENDING_HIST);
+              const remoteHistory: WatchHistoryItem[] = data.history
+                .filter((item: WatchHistoryItem) => item && item.slug && !activeDeleted.has(item.slug))
+                .map((item: WatchHistoryItem) => ({
+                  ...item,
+                  episodeName: normalizeEpisodeLabel(item.episodeName, item.episodeSlug) || item.episodeName,
+                }));
+
               const currentLocal = historyStore.getAll();
               const localMap = new Map<string, WatchHistoryItem>();
               currentLocal.forEach((item) => {
@@ -171,19 +262,15 @@ export const userSyncManager = {
               const mergedMap = new Map<string, WatchHistoryItem>();
               const itemsToPush: WatchHistoryItem[] = [];
 
-              // 1. Duyệt toàn bộ lịch sử từ DB
+              // 1. Reconcile authoritative remote DB rows
               remoteHistory.forEach((remote) => {
-                if (!remote || !remote.slug) return;
                 const local = localMap.get(remote.slug);
-                const timeRemote = remote.updatedAt
-                  ? new Date(remote.updatedAt).getTime()
-                  : 0;
-                const timeLocal = local?.updatedAt
-                  ? new Date(local.updatedAt).getTime()
-                  : 0;
+                const timeRemote = remote.updatedAt ? new Date(remote.updatedAt).getTime() : 0;
+                const timeLocal = local?.updatedAt ? new Date(local.updatedAt).getTime() : 0;
 
                 if (!local || timeRemote >= timeLocal) {
                   mergedMap.set(remote.slug, remote);
+                  removeSlugFromSet(TOMBSTONE_KEYS.PENDING_HIST, remote.slug);
 
                   if (remote.episodeSlug && typeof remote.currentTime === "number") {
                     episodeProgressStore.save(
@@ -193,7 +280,7 @@ export const userSyncManager = {
                       remote.currentTime,
                       remote.duration || 0,
                       remote.updatedAt,
-                      true // skipRemoteSync to avoid echo
+                      true
                     );
                   }
                 } else {
@@ -202,9 +289,11 @@ export const userSyncManager = {
                 }
               });
 
-              // 2. Duyệt các phim chỉ có ở local mà DB chưa có
+              // 2. Keep/push local-only items ONLY if genuinely pending offline sync or first login migration.
+              //    Any previously-synced item missing from remote DB was deleted on another device -> drop locally!
               currentLocal.forEach((loc) => {
-                if (loc && loc.slug && !mergedMap.has(loc.slug)) {
+                if (!loc || !loc.slug || mergedMap.has(loc.slug) || activeDeleted.has(loc.slug)) return;
+                if (isFirstLogin || pendingSync.has(loc.slug)) {
                   mergedMap.set(loc.slug, loc);
                   itemsToPush.push(loc);
                 }
@@ -218,71 +307,85 @@ export const userSyncManager = {
 
               historyStore.setAll(mergedList);
 
-              // 3. Nếu có item local mới hơn, đồng bộ đẩy lên DB
               if (itemsToPush.length > 0) {
-                fetch("/api/history", {
+                const pushRes = await fetch("/api/history", {
                   method: "POST",
                   headers: authHeaders,
                   body: JSON.stringify({ action: "sync", history: itemsToPush }),
-                }).catch((err) =>
-                  console.warn("[UserSync] Push local history to remote failed", err)
-                );
-              }
-
-              if (typeof window !== "undefined") {
-                window.dispatchEvent(new Event("cinepvq_storage_update"));
-              }
-            }
-          })
-          .catch((err) => console.warn("[UserSync] Sync history failed", err)),
-
-        // Sync watchlist (push local if exists, else pull)
-        (localWatchlist.length > 0
-          ? fetch("/api/watchlist", {
-              method: "POST",
-              headers: authHeaders,
-              body: JSON.stringify({ action: "sync", watchlist: localWatchlist }),
-            })
-          : fetch("/api/watchlist", {
-              headers: authHeaders,
-            })
-        )
-          .then((r) => r.json())
-          .then((data) => {
-            if (data.status === "success" && Array.isArray(data.watchlist)) {
-              const currentLocal = watchlistStore.getAll();
-              const mergedMap = new Map<string, WatchlistItem>();
-              data.watchlist.forEach((w: WatchlistItem) => {
-                if (w && w.slug) mergedMap.set(w.slug, w);
-              });
-              currentLocal.forEach((loc) => {
-                if (loc && loc.slug) {
-                  if (!mergedMap.has(loc.slug)) {
-                    mergedMap.set(loc.slug, loc);
-                  } else {
-                    const remote = mergedMap.get(loc.slug)!;
-                    const timeLoc = loc.addedAt ? new Date(loc.addedAt).getTime() : 0;
-                    const timeRemote = remote.addedAt ? new Date(remote.addedAt).getTime() : 0;
-                    if (timeLoc > timeRemote) {
-                      mergedMap.set(loc.slug, loc);
-                    }
-                  }
+                });
+                if (pushRes.ok) {
+                  itemsToPush.forEach((it) => removeSlugFromSet(TOMBSTONE_KEYS.PENDING_HIST, it.slug));
                 }
-              });
-              const mergedList = Array.from(mergedMap.values())
-                .sort((a, b) => {
-                  const timeA = a.addedAt ? new Date(a.addedAt).getTime() : 0;
-                  const timeB = b.addedAt ? new Date(b.addedAt).getTime() : 0;
-                  return timeB - timeA;
-                })
-                .slice(0, 100);
-              watchlistStore.setAll(mergedList);
+              }
+
               if (typeof window !== "undefined") {
                 window.dispatchEvent(new Event("cinepvq_storage_update"));
               }
             }
-          })
-          .catch((err) => console.warn("[UserSync] Sync watchlist failed", err)),
+          } catch (err) {
+            console.warn("[UserSync] Sync history failed", err);
+          }
+        })(),
+
+        // Sync watchlist: flush local deletions first, then pull authoritative list
+        (async () => {
+          try {
+            if (isClearFlagSet(TOMBSTONE_KEYS.CLEAR_WL)) {
+              const clearRes = await fetch("/api/watchlist", {
+                method: "POST",
+                headers: authHeaders,
+                body: JSON.stringify({ action: "clear" }),
+              });
+              if (clearRes.ok) {
+                setClearFlag(TOMBSTONE_KEYS.CLEAR_WL, false);
+                writeSlugSet(TOMBSTONE_KEYS.DELETED_WL, new Set());
+              }
+            }
+
+            const deletedWl = readSlugSet(TOMBSTONE_KEYS.DELETED_WL);
+            for (const delSlug of deletedWl) {
+              try {
+                const delRes = await fetch("/api/watchlist", {
+                  method: "POST",
+                  headers: authHeaders,
+                  body: JSON.stringify({ action: "remove", slug: delSlug }),
+                });
+                if (delRes.ok) {
+                  removeSlugFromSet(TOMBSTONE_KEYS.DELETED_WL, delSlug);
+                }
+              } catch {}
+            }
+
+            const pendingWl = readSlugSet(TOMBSTONE_KEYS.PENDING_WL);
+            const toMigrateWl = isFirstLogin
+              ? localWatchlist
+              : localWatchlist.filter((w) => pendingWl.has(w.slug));
+
+            const r =
+              toMigrateWl.length > 0
+                ? await fetch("/api/watchlist", {
+                    method: "POST",
+                    headers: authHeaders,
+                    body: JSON.stringify({ action: "sync", watchlist: toMigrateWl }),
+                  })
+                : await fetch("/api/watchlist", { headers: authHeaders });
+
+            const data = await r.json();
+            if (data.status === "success" && Array.isArray(data.watchlist)) {
+              const activeDeleted = readSlugSet(TOMBSTONE_KEYS.DELETED_WL);
+              const validRemote = (data.watchlist as WatchlistItem[]).filter(
+                (w) => w && w.slug && !activeDeleted.has(w.slug)
+              );
+              toMigrateWl.forEach((w) => removeSlugFromSet(TOMBSTONE_KEYS.PENDING_WL, w.slug));
+              watchlistStore.setAll(validRemote);
+              if (typeof window !== "undefined") {
+                window.dispatchEvent(new Event("cinepvq_storage_update"));
+              }
+            }
+          } catch (err) {
+            console.warn("[UserSync] Sync watchlist failed", err);
+          }
+        })(),
 
         // Pull remote settings
         fetch("/api/settings", {
@@ -406,6 +509,9 @@ export const userSyncManager = {
     const user = authStore.getUser();
     if (!user) return;
 
+    removeSlugFromSet(TOMBSTONE_KEYS.DELETED_HIST, movie.slug);
+    addSlugToSet(TOMBSTONE_KEYS.PENDING_HIST, movie.slug);
+
     try {
       const authHeaders = await getAuthHeaders();
       const normalizedEpisode = episode
@@ -414,7 +520,7 @@ export const userSyncManager = {
             name: normalizeEpisodeLabel(episode.name, episode.slug),
           }
         : undefined;
-      await fetch("/api/history", {
+      const res = await fetch("/api/history", {
         method: "POST",
         headers: authHeaders,
         body: JSON.stringify({
@@ -425,6 +531,9 @@ export const userSyncManager = {
           updatedAt: new Date().toISOString(),
         }),
       });
+      if (res.ok) {
+        removeSlugFromSet(TOMBSTONE_KEYS.PENDING_HIST, movie.slug);
+      }
     } catch (err) {
       console.warn("[UserSync] History sync failed, local state retained", err);
     }
@@ -434,15 +543,30 @@ export const userSyncManager = {
     const user = authStore.getUser();
     if (!user) return;
 
+    // Cancel any queued progress upsert for this slug so it cannot re-insert after deletion
+    if (pendingProgress?.movieSlug === movieSlug) {
+      if (progressTimer) {
+        clearTimeout(progressTimer);
+        progressTimer = null;
+      }
+      pendingProgress = null;
+    }
+
+    addSlugToSet(TOMBSTONE_KEYS.DELETED_HIST, movieSlug);
+    removeSlugFromSet(TOMBSTONE_KEYS.PENDING_HIST, movieSlug);
+
     try {
       const authHeaders = await getAuthHeaders();
-      await fetch("/api/history", {
+      const res = await fetch("/api/history", {
         method: "DELETE",
         headers: authHeaders,
         body: JSON.stringify({
           movieSlug,
         }),
       });
+      if (res.ok) {
+        removeSlugFromSet(TOMBSTONE_KEYS.DELETED_HIST, movieSlug);
+      }
     } catch (err) {
       console.warn("[UserSync] History remove sync failed", err);
     }
@@ -452,15 +576,27 @@ export const userSyncManager = {
     const user = authStore.getUser();
     if (!user) return;
 
+    if (progressTimer) {
+      clearTimeout(progressTimer);
+      progressTimer = null;
+    }
+    pendingProgress = null;
+    setClearFlag(TOMBSTONE_KEYS.CLEAR_HIST, true);
+    writeSlugSet(TOMBSTONE_KEYS.PENDING_HIST, new Set());
+
     try {
       const authHeaders = await getAuthHeaders();
-      await fetch("/api/history", {
+      const res = await fetch("/api/history", {
         method: "DELETE",
         headers: authHeaders,
         body: JSON.stringify({
           clearAll: true,
         }),
       });
+      if (res.ok) {
+        setClearFlag(TOMBSTONE_KEYS.CLEAR_HIST, false);
+        writeSlugSet(TOMBSTONE_KEYS.DELETED_HIST, new Set());
+      }
     } catch (err) {
       console.warn("[UserSync] History clear sync failed", err);
     }
@@ -510,10 +646,18 @@ export const userSyncManager = {
     const user = authStore.getUser();
     if (!user) return;
 
+    if (isAdded) {
+      removeSlugFromSet(TOMBSTONE_KEYS.DELETED_WL, movie.slug);
+      addSlugToSet(TOMBSTONE_KEYS.PENDING_WL, movie.slug);
+    } else {
+      addSlugToSet(TOMBSTONE_KEYS.DELETED_WL, movie.slug);
+      removeSlugFromSet(TOMBSTONE_KEYS.PENDING_WL, movie.slug);
+    }
+
     try {
       const authHeaders = await getAuthHeaders();
       if (isAdded) {
-        await fetch("/api/watchlist", {
+        const res = await fetch("/api/watchlist", {
           method: "POST",
           headers: authHeaders,
           body: JSON.stringify({
@@ -538,8 +682,9 @@ export const userSyncManager = {
             },
           }),
         });
+        if (res.ok) removeSlugFromSet(TOMBSTONE_KEYS.PENDING_WL, movie.slug);
       } else {
-        await fetch("/api/watchlist", {
+        const res = await fetch("/api/watchlist", {
           method: "POST",
           headers: authHeaders,
           body: JSON.stringify({
@@ -547,6 +692,7 @@ export const userSyncManager = {
             slug: movie.slug,
           }),
         });
+        if (res.ok) removeSlugFromSet(TOMBSTONE_KEYS.DELETED_WL, movie.slug);
       }
     } catch (err) {
       console.warn("[UserSync] Watchlist toggle sync failed", err);
@@ -557,9 +703,12 @@ export const userSyncManager = {
     const user = authStore.getUser();
     if (!user) return;
 
+    addSlugToSet(TOMBSTONE_KEYS.DELETED_WL, slug);
+    removeSlugFromSet(TOMBSTONE_KEYS.PENDING_WL, slug);
+
     try {
       const authHeaders = await getAuthHeaders();
-      await fetch("/api/watchlist", {
+      const res = await fetch("/api/watchlist", {
         method: "POST",
         headers: authHeaders,
         body: JSON.stringify({
@@ -567,6 +716,7 @@ export const userSyncManager = {
           slug,
         }),
       });
+      if (res.ok) removeSlugFromSet(TOMBSTONE_KEYS.DELETED_WL, slug);
     } catch (err) {
       console.warn("[UserSync] Watchlist remove sync failed", err);
     }
@@ -576,15 +726,22 @@ export const userSyncManager = {
     const user = authStore.getUser();
     if (!user) return;
 
+    setClearFlag(TOMBSTONE_KEYS.CLEAR_WL, true);
+    writeSlugSet(TOMBSTONE_KEYS.PENDING_WL, new Set());
+
     try {
       const authHeaders = await getAuthHeaders();
-      await fetch("/api/watchlist", {
+      const res = await fetch("/api/watchlist", {
         method: "POST",
         headers: authHeaders,
         body: JSON.stringify({
           action: "clear",
         }),
       });
+      if (res.ok) {
+        setClearFlag(TOMBSTONE_KEYS.CLEAR_WL, false);
+        writeSlugSet(TOMBSTONE_KEYS.DELETED_WL, new Set());
+      }
     } catch (err) {
       console.warn("[UserSync] Watchlist clear sync failed", err);
     }
@@ -620,6 +777,11 @@ export const userSyncManager = {
       if (!pendingProgress) return;
       const target = pendingProgress;
       pendingProgress = null;
+      // Never re-insert a movie that was deleted locally while this debounce timer was pending
+      if (readSlugSet(TOMBSTONE_KEYS.DELETED_HIST).has(target.movieSlug)) {
+        return;
+      }
+      addSlugToSet(TOMBSTONE_KEYS.PENDING_HIST, target.movieSlug);
       try {
         const authHeaders = await getAuthHeaders();
         const existingHist = historyStore.getAll().find((h) => h.slug === target.movieSlug);
@@ -629,7 +791,7 @@ export const userSyncManager = {
             : undefined,
           target.episodeSlug
         );
-        await fetch("/api/history", {
+        const res = await fetch("/api/history", {
           method: "POST",
           headers: authHeaders,
           body: JSON.stringify({
@@ -642,6 +804,9 @@ export const userSyncManager = {
             updatedAt: target.updatedAt,
           }),
         });
+        if (res.ok) {
+          removeSlugFromSet(TOMBSTONE_KEYS.PENDING_HIST, target.movieSlug);
+        }
       } catch (err) {
         console.warn("[UserSync] Debounced progress sync failed", err);
       }

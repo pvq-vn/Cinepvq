@@ -188,8 +188,8 @@ export const historyRepository = {
     const res = await query(
       `DELETE FROM watch_history wh
        USING movies m
-       WHERE wh.movie_id = m.id AND wh.user_id = $1 AND m.slug = $2`,
-      [realUserId, movieSlug]
+       WHERE wh.movie_id = m.id AND wh.user_id = $1 AND LOWER(m.slug) = LOWER($2)`,
+      [realUserId, movieSlug.trim()]
     );
     return (res?.rowCount ?? 0) > 0;
   },

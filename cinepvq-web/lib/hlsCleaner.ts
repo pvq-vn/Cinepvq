@@ -378,37 +378,74 @@ export function rewriteHlsManifest(
 }
 
 /**
- * Unwraps PNG-disguised MPEG-TS segments (used by VSMOV & PhimHDCSS FHDC).
- * Scans the initial bytes for a genuine 188-byte-aligned MPEG-TS sync triplet
- * (`0x47` at `i`, `i + 188`, `i + 376`) and trims any fake PNG header/footer.
+ * If a master HLS manifest contains exactly ONE `#EXT-X-STREAM-INF` variant
+ * and no separate `#EXT-X-MEDIA:` audio/subtitle renditions, returns the
+ * resolved absolute URL of that single media playlist so `/api/hls-proxy` can
+ * flatten it in ONE round-trip (eliminating a full extra RTT on startup!).
  */
-export function stripPngPrefixFromTs(buf: Uint8Array): Uint8Array {
-  if (buf.length < 377) return buf;
+export function extractSingleVariantUrl(
+  manifestText: string,
+  sourceUrl: string
+): string | null {
+  const normalized = manifestText.replace(/\r\n/g, "\n");
+  if (normalized.includes("#EXTINF:") || normalized.includes("#EXT-X-MEDIA:")) {
+    return null;
+  }
+  const lines = normalized.split("\n").map((l) => l.trim()).filter(Boolean);
+  const variantUrls: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith("#EXT-X-STREAM-INF")) {
+      for (let j = i + 1; j < lines.length; j++) {
+        if (!lines[j].startsWith("#")) {
+          variantUrls.push(resolveUrlSafe(lines[j], sourceUrl));
+          i = j;
+          break;
+        }
+      }
+    }
+  }
+  return variantUrls.length === 1 ? variantUrls[0] : null;
+}
+
+/**
+ * Finds the starting offset of a genuine 188-byte-aligned MPEG-TS sync triplet
+ * (`0x47` at `i`, `i + 188`, `i + 376`) inside an initial header buffer.
+ * Returns 0 if already MPEG-TS or not a disguised image header.
+ */
+export function findTsSyncOffsetInHeader(buf: Uint8Array): number {
+  if (buf.length < 377) return 0;
 
   // Already pure MPEG-TS starting at byte 0
   if (buf[0] === 0x47 && buf[188] === 0x47 && buf[376] === 0x47) {
-    return buf;
+    return 0;
   }
 
-  // Only scan if it looks like a disguised image/binary header (PNG, GIF, JPEG, WebP, BMP)
+  // Only scan if it looks like a disguised image/binary header (PNG, GIF, JPEG, WebP)
   const isPng = buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
   const isGif = buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46;
   const isJpg = buf[0] === 0xff && buf[1] === 0xd8;
   const isWebp = buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46;
 
   if (!isPng && !isGif && !isJpg && !isWebp) {
-    return buf;
+    return 0;
   }
 
   const maxScan = Math.min(buf.length - 377, 8192);
-  let tsOffset = -1;
   for (let i = 1; i <= maxScan; i++) {
     if (buf[i] === 0x47 && buf[i + 188] === 0x47 && buf[i + 376] === 0x47) {
-      tsOffset = i;
-      break;
+      return i;
     }
   }
+  return 0;
+}
 
+/**
+ * Unwraps PNG-disguised MPEG-TS segments (used by VSMOV & PhimHDCSS FHDC).
+ * Scans the initial bytes for a genuine 188-byte-aligned MPEG-TS sync triplet
+ * (`0x47` at `i`, `i + 188`, `i + 376`) and trims any fake PNG header/footer.
+ */
+export function stripPngPrefixFromTs(buf: Uint8Array): Uint8Array {
+  const tsOffset = findTsSyncOffsetInHeader(buf);
   if (tsOffset <= 0) return buf;
 
   // Trim trailing non-188-byte-aligned footer (e.g. PNG IEND tail if appended)

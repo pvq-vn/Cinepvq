@@ -4,18 +4,21 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.pvq.cinepvq.CinepvqApp
 import com.pvq.cinepvq.data.movie.MovieRepository
+import com.pvq.cinepvq.data.player.VideoSourceRepository
 import com.pvq.cinepvq.data.user.UserSyncRepository
 import com.pvq.cinepvq.domain.model.EpisodeItem
 import com.pvq.cinepvq.domain.model.MovieDetail
 import com.pvq.cinepvq.core.network.model.Comment
 import com.pvq.cinepvq.core.network.model.PostCommentRequest
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import com.pvq.cinepvq.domain.model.Movie
 
 class DetailViewModel(
     private val movieRepository: MovieRepository = CinepvqApp.instance.movieRepository,
-    private val userSyncRepository: UserSyncRepository = CinepvqApp.instance.userSyncRepository
+    private val userSyncRepository: UserSyncRepository = CinepvqApp.instance.userSyncRepository,
+    private val videoSourceRepository: VideoSourceRepository = CinepvqApp.instance.videoSourceRepository
 ) : ViewModel() {
 
     private val _movieDetail = MutableStateFlow<MovieDetail?>(null)
@@ -79,6 +82,7 @@ class DetailViewModel(
                 val detail = res.getOrNull()!!
                 _movieDetail.value = detail
                 fetchSimilarMovies(detail)
+                prewarmInitialEpisodeSources(detail)
             } else {
                 _errorMessage.value = res.exceptionOrNull()?.message ?: "Không thể tải chi tiết phim"
             }
@@ -86,6 +90,36 @@ class DetailViewModel(
         }
 
         fetchComments(slug)
+    }
+
+    /**
+     * Pre-warms multi-source stream resolution in the background while the user reads the
+     * movie detail page so tapping "Xem ngay" launches in 0ms on the fastest CDN (VSMOV / PhimHDCSS).
+     */
+    private fun prewarmInitialEpisodeSources(detail: MovieDetail) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val server = detail.episodes.firstOrNull() ?: return@launch
+                val resumeEpSlug = userSyncRepository.getHistoryDirect(detail.slug)?.episodeSlug
+                val targetEp = server.items.firstOrNull { !resumeEpSlug.isNullOrBlank() && it.slug == resumeEpSlug }
+                    ?: server.items.firstOrNull()
+                    ?: return@launch
+                val epNum = targetEp.name.filter { it.isDigit() }.toIntOrNull()
+                    ?: targetEp.slug.filter { it.isDigit() }.toIntOrNull()
+                    ?: 1
+                val m3u8 = VideoSourceRepository.extractDirectM3u8(targetEp.m3u8Url)
+                    ?: VideoSourceRepository.extractDirectM3u8(targetEp.embed)
+                videoSourceRepository.prefetchStreams(
+                    slug = detail.slug,
+                    title = detail.name,
+                    episode = epNum,
+                    serverName = server.serverName,
+                    episodeSlug = targetEp.slug,
+                    fallbackM3u8 = m3u8,
+                    fallbackEmbed = targetEp.embed
+                )
+            } catch (_: Exception) {}
+        }
     }
 
     private fun fetchSimilarMovies(detail: MovieDetail) {

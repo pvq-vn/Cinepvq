@@ -34,11 +34,13 @@ import com.pvq.cinepvq.ui.theme.*
 fun ProfileScreen(
     onNavigateToAuth: () -> Unit,
     onNavigateToSettings: () -> Unit = {},
+    onNavigateToAdmin: () -> Unit = {},
     onBarsVisibilityChanged: ((Boolean) -> Unit)? = null,
     viewModel: ProfileViewModel = viewModel()
 ) {
     val user by viewModel.currentUser.collectAsStateWithLifecycle()
     val isLoggedIn by viewModel.isLoggedIn.collectAsStateWithLifecycle()
+    val isSoleAdmin = isLoggedIn && com.pvq.cinepvq.features.admin.AdminViewModel.isAdminEmail(user?.email)
     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
     val favCount by viewModel.favoritesCount.collectAsStateWithLifecycle()
     val histCount by viewModel.historyCount.collectAsStateWithLifecycle()
@@ -402,6 +404,66 @@ fun ProfileScreen(
             }
         }
 
+        if (isSoleAdmin) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onNavigateToAdmin),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = CinepvqSurface),
+                border = androidx.compose.foundation.BorderStroke(1.dp, CinepvqBorderViolet)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(CinepvqPrimary.copy(alpha = 0.16f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AdminPanelSettings,
+                                contentDescription = null,
+                                tint = CinepvqPrimaryLight,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        Column {
+                            Text(
+                                text = "Trang Quản Trị (Admin Portal)",
+                                color = CinepvqTextPrimary,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Thống kê, quản lý phim, crawler, người dùng & tương tác",
+                                color = CinepvqTextMuted,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = null,
+                        tint = CinepvqPrimaryLight,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+
         Spacer(modifier = Modifier.height(20.dp))
 
         // ── Server & Network Settings ──
@@ -544,7 +606,7 @@ fun ProfileScreen(
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                text = "Cinepvq Mobile v1.0 (Jetpack Compose)",
+                                text = "Cinepvq Mobile v${com.pvq.cinepvq.BuildConfig.VERSION_NAME} (Jetpack Compose)",
                                 color = CinepvqTextMuted,
                                 fontSize = 11.sp
                             )

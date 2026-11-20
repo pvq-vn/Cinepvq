@@ -61,7 +61,7 @@ function matchTitle(candidateName: string, targetTitle: string, season = 1): boo
 export class KKPhimAdapter implements VideoSourceAdapter {
   readonly sourceId = "kkphim" as const;
   readonly name = "KKPhim1 Direct HLS (Đã cắt QC)";
-  readonly priority = 5;
+  readonly priority = 4;
 
   async resolveStream(options: ResolveSourceOptions): Promise<ResolvedSource | null> {
     const { slug, title, episode = 1, knownHlsUrl, serverName } = options;
