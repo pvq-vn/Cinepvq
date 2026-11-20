@@ -112,16 +112,98 @@ data class VideoSourcesResponse(
 )
 
 @Serializable
+data class SubtitleTrackDto(
+    val label: String = "Tiếng Việt",
+    val lang: String = "vi",
+    val url: String = "",
+    val rawUrl: String? = null
+)
+
+@Serializable
 data class ResolvedStreamSource(
     val sourceId: String = "",
     val name: String = "",
     val displayName: String = "",
     val type: String = "hls", // "hls" or "iframe"
     val url: String = "",
+    val rawUrl: String? = null,
     val priority: Int = 1,
     val quality: String? = null,
     val serverName: String? = null,
-    val isAvailable: Boolean = true
+    val isAvailable: Boolean = true,
+    val headers: Map<String, String>? = null,
+    val subtitles: List<SubtitleTrackDto>? = null,
+    val stripPng: Boolean? = null,
+    val adFree: Boolean? = null
+)
+
+// ─── Cinepvq Trending BXH Models ────────────────────────────────────────────
+
+@Serializable
+data class NetflixCountryDto(
+    val code: String = "vn",
+    val label: String = "Việt Nam",
+    val shortLabel: String = "VN",
+    val flag: String = "🇻🇳"
+)
+
+@Serializable
+data class DoubanCategoryDto(
+    val key: String = "all",
+    val label: String = "Tổng hợp"
+)
+
+@Serializable
+data class TrendingRankItemDto(
+    val slug: String = "",
+    val name: String = "",
+    @SerialName("original_name") val originalName: String? = null,
+    @SerialName("thumb_url") val thumbUrl: String = "",
+    @SerialName("poster_url") val posterUrl: String = "",
+    val year: JsonElement? = null,
+    @SerialName("current_episode") val currentEpisode: String = "",
+    val quality: String = "HD",
+    val rank: Int = 1,
+    val platformId: String = "",
+    val platformName: String = "",
+    val score: Double = 0.0,
+    val scoreSource: String = "",
+    val views: Long = 0L,
+    val formattedViews: String = "",
+    val heatLabel: String = "",
+    val trendDelta: Int = 0,
+    val playable: Boolean? = null,
+    val searchQuery: String? = null,
+    val weeksInTop10: Int? = null,
+    val marketShare: Double? = null,
+    val broadcastPlatform: String? = null
+)
+
+@Serializable
+data class TrendingPlatformSectionDto(
+    val id: String = "",
+    val name: String = "",
+    val subtitle: String = "",
+    val badgeText: String = "",
+    val updatedAt: String = "",
+    val countryCode: String? = null,
+    val countryLabel: String? = null,
+    val categoryKey: String? = null,
+    val metricLabel: String? = null,
+    val items: List<TrendingRankItemDto> = emptyList()
+)
+
+@Serializable
+data class TrendingRankingsResponseDto(
+    val status: Boolean = false,
+    val updatedAt: String = "",
+    val activeNetflixCountry: String = "vn",
+    val activeNetflixType: String = "tv",
+    val activeDoubanCategory: String = "all",
+    val netflixCountries: List<NetflixCountryDto> = emptyList(),
+    val doubanCategories: List<DoubanCategoryDto> = emptyList(),
+    val platforms: List<TrendingPlatformSectionDto> = emptyList(),
+    val message: String? = null
 )
 
 // ─── Cinepvq User & Sync Models ─────────────────────────────────────────────

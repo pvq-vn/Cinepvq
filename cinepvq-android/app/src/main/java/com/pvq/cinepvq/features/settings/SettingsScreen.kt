@@ -42,10 +42,12 @@ fun SettingsScreen(
     val speedOptions = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
     val sourceOptions = listOf(
         "auto" to "Tự động (Ưu tiên nguồn nhanh nhất)",
-        "k20" to "K20",
-        "kkphim" to "KKphim1",
-        "nguonc" to "NguonC",
-        "vsmov" to "VSMOV"
+        "k20" to "K20 Direct HLS",
+        "vsmov" to "VSMOV (Native HLS • Phụ đề)",
+        "phimhdcss" to "PhimHDCSS (FHDC Siêu nhanh)",
+        "chophim" to "ChoPhim (Direct HLS)",
+        "kkphim" to "KKphim1 (Đã cắt quảng cáo)",
+        "nguonc" to "NguonC (StreamC)"
     )
     val resolutionOptions = listOf(
         "auto" to "Tự động (Khuyên dùng)",

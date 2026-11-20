@@ -420,6 +420,7 @@ fun CinepvqAppRoot(
     )
 
     var isBarsVisible by remember { mutableStateOf(true) }
+    var pendingSearchQuery by remember { mutableStateOf<String?>(null) }
 
     val routeToNavigate by externalRoute.collectAsStateWithLifecycle()
     LaunchedEffect(routeToNavigate) {
@@ -522,6 +523,10 @@ fun CinepvqAppRoot(
                     onMovieClick = { slug ->
                         navController.navigate(Screen.Detail.createRoute(slug))
                     },
+                    onSearchQueryClick = { queryText ->
+                        pendingSearchQuery = queryText
+                        navController.navigateToTab(Screen.Search.route)
+                    },
                     onBarsVisibilityChanged = { isBarsVisible = it }
                 )
             }
@@ -532,6 +537,8 @@ fun CinepvqAppRoot(
                     onMovieClick = { slug ->
                         navController.navigate(Screen.Detail.createRoute(slug))
                     },
+                    prefillQuery = pendingSearchQuery,
+                    onPrefillConsumed = { pendingSearchQuery = null },
                     onBarsVisibilityChanged = { isBarsVisible = it }
                 )
             }

@@ -89,6 +89,7 @@ function MovieCardComponent({
           <img
             src={imageSrc}
             alt={movie.name}
+            referrerPolicy="no-referrer"
             decoding="async"
             fetchPriority={priority ? "high" : "auto"}
             className="h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"

@@ -298,6 +298,6 @@ export interface AppSettings {
   soundEnabled: boolean;
   preferredQuality: "auto" | "HD" | "FHD";
   playbackSpeed?: number;
-  preferredSource?: "auto" | "k20" | "vsmov" | "kkphim" | "nguonc";
+  preferredSource?: "auto" | "k20" | "vsmov" | "phimhdcss" | "chophim" | "kkphim" | "nguonc";
   skipSeconds?: number;
 }

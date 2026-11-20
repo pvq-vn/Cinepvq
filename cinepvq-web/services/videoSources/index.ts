@@ -1,7 +1,7 @@
 // ==============================================================================
 // services/videoSources/index.ts
 // Multi-Source Video Engine: Central Resolver & Orchestration
-// Priority: 1. K20 -> 2. VSMOV -> 3. KKPhim1 -> 4. NguonC (StreamC)
+// Priority: 1. K20 -> 2. VSMOV Native HLS -> 3. PhimHDCSS (FHDC) -> 4. ChoPhim -> 5. KKPhim1 (Ad-Free) -> 6. NguonC
 // Includes in-memory TTL cache for near-instant episode & server switching.
 // ==============================================================================
 
@@ -12,6 +12,8 @@ import type {
 } from "./types";
 import { K20Adapter } from "./adapters/k20Adapter";
 import { VsmovAdapter } from "./adapters/vsmovAdapter";
+import { PhimHdcssAdapter } from "./adapters/phimhdcssAdapter";
+import { ChoPhimAdapter } from "./adapters/chophimAdapter";
 import { KKPhimAdapter } from "./adapters/kkphimAdapter";
 import { NguonCAdapter } from "./adapters/nguoncAdapter";
 
@@ -20,6 +22,8 @@ export * from "./types";
 const adapters: VideoSourceAdapter[] = [
   new K20Adapter(),
   new VsmovAdapter(),
+  new PhimHdcssAdapter(),
+  new ChoPhimAdapter(),
   new KKPhimAdapter(),
   new NguonCAdapter(),
 ];
@@ -87,7 +91,7 @@ export async function resolveAllAvailableSourcesServer(
     }
   }
 
-  // Sort: prefer HLS sources first when priorities are close, otherwise strictly by priority
+  // Always prefer native HLS sources over iframes, then sort by priority
   resolved.sort((a, b) => {
     if (a.type === "hls" && b.type !== "hls") return -1;
     if (a.type !== "hls" && b.type === "hls") return 1;
@@ -144,12 +148,14 @@ export async function resolveAllSources(
           return [
             {
               sourceId: "kkphim",
-              name: "KKPhim1 Direct HLS",
+              name: "KKPhim1 Direct HLS (Đã cắt QC)",
               displayName: "KKPhim1 Direct",
               type: "hls",
-              url: options.knownHlsUrl,
-              priority: 3,
+              url: `/api/hls-proxy?url=${encodeURIComponent(options.knownHlsUrl.trim())}&stripAds=1`,
+              rawUrl: options.knownHlsUrl.trim(),
+              priority: 5,
               isAvailable: true,
+              adFree: true,
             },
           ];
         }
@@ -161,7 +167,7 @@ export async function resolveAllSources(
               displayName: "Server Dự Phòng",
               type: options.nguoncEmbedUrl.includes(".m3u8") ? "hls" : "iframe",
               url: options.nguoncEmbedUrl,
-              priority: 4,
+              priority: 6,
               isAvailable: true,
             },
           ];
@@ -183,12 +189,14 @@ export async function resolveAllSources(
         return [
           {
             sourceId: "kkphim",
-            name: "KKPhim1 Direct HLS",
+            name: "KKPhim1 Direct HLS (Đã cắt QC)",
             displayName: "KKPhim1 Direct",
             type: "hls",
-            url: options.knownHlsUrl,
-            priority: 3,
+            url: `/api/hls-proxy?url=${encodeURIComponent(options.knownHlsUrl.trim())}&stripAds=1`,
+            rawUrl: options.knownHlsUrl.trim(),
+            priority: 5,
             isAvailable: true,
+            adFree: true,
           },
         ];
       }
@@ -200,7 +208,7 @@ export async function resolveAllSources(
             displayName: "Server Dự Phòng",
             type: options.nguoncEmbedUrl.includes(".m3u8") ? "hls" : "iframe",
             url: options.nguoncEmbedUrl,
-            priority: 4,
+            priority: 6,
             isAvailable: true,
           },
         ];

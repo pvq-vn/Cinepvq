@@ -10,13 +10,25 @@ interface CinepvqApiService {
     @GET("api/video-sources/resolve")
     suspend fun resolveVideoSources(
         @Query("slug") slug: String?,
+        @Query("title") title: String? = null,
         @Query("episode") episode: Int = 1,
         @Query("season") season: Int = 1,
         @Query("type") type: String = "series",
         @Query("serverName") serverName: String? = null,
         @Query("episodeSlug") episodeSlug: String? = null,
+        @Query("knownHlsUrl") knownHlsUrl: String? = null,
         @Query("nguoncEmbedUrl") nguoncEmbedUrl: String? = null
     ): Response<VideoSourcesResponse>
+
+    // ── Trending BXH Multi-Platform Rankings ──────────────────────────────────
+    @GET("api/trending")
+    suspend fun getTrendingRankings(
+        @Query("platform") platform: String = "all",
+        @Query("country") country: String = "vn",
+        @Query("netflixType") netflixType: String = "tv",
+        @Query("doubanCategory") doubanCategory: String = "all",
+        @Query("refresh") refresh: Boolean? = null
+    ): Response<TrendingRankingsResponseDto>
 
     // ── User Identity & Profile ───────────────────────────────────────────────
     @POST("api/user/sync")

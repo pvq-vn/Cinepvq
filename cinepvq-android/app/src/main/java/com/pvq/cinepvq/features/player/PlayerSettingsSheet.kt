@@ -432,7 +432,13 @@ fun PlayerSourceBottomSheet(
                                     fontSize = 14.sp
                                 )
                                 Text(
-                                    text = if (isHls) "Luồng trực tiếp HLS (Mượt, đầy đủ tính năng)" else "Trình phát Web Iframe",
+                                    text = if (isHls) {
+                                        val subTag = if (source.subtitles.isNotEmpty()) " • Có phụ đề" else ""
+                                        val adTag = if (source.adFree) " • Không QC" else ""
+                                        "Trình phát Native HLS$adTag$subTag"
+                                    } else {
+                                        "Trình phát Web Iframe"
+                                    },
                                     color = CinepvqTextMuted,
                                     fontSize = 11.sp
                                 )

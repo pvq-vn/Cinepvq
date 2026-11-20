@@ -14,26 +14,33 @@ export async function GET(request: NextRequest) {
 
   try {
     const res = await queryPg<{
-      platform_id: string;
-      platform_name: string;
-      category_label: string;
-      items: unknown[];
+      platform: string;
+      title: string;
+      subtitle: string | null;
+      items: unknown;
       updated_at: string;
     }>(
-      `SELECT platform_id, platform_name, category_label, items, updated_at
+      `SELECT platform, title, subtitle, items, updated_at
        FROM public.platform_rankings_cache
-       ORDER BY platform_id ASC`
+       ORDER BY platform ASC`
     );
 
     return NextResponse.json({
       status: true,
-      caches: res.rows.map((r) => ({
-        platformId: r.platform_id,
-        platformName: r.platform_name,
-        categoryLabel: r.category_label,
-        itemCount: Array.isArray(r.items) ? r.items.length : 0,
-        updatedAt: r.updated_at,
-      })),
+      caches: res.rows.map((r) => {
+        const list = Array.isArray(r.items)
+          ? r.items
+          : r.items && typeof r.items === "object" && "items" in r.items && Array.isArray((r.items as { items: unknown[] }).items)
+            ? (r.items as { items: unknown[] }).items
+            : [];
+        return {
+          platformId: r.platform,
+          platformName: r.title,
+          categoryLabel: r.subtitle || "",
+          itemCount: list.length,
+          updatedAt: r.updated_at,
+        };
+      }),
     });
   } catch (err) {
     return NextResponse.json(
@@ -55,10 +62,10 @@ export async function POST(request: NextRequest) {
     const { action } = body;
 
     if (action === "crawl_rankings") {
-      const payload = await crawlAllPlatformRankings(true);
+      const payload = await crawlAllPlatformRankings({ forceRefresh: true });
       return NextResponse.json({
         status: true,
-        message: `Đã cào mới BXH từ ${payload.platforms.length} nền tảng (Netflix, Douban, VieON, FPT Play, iQIYI/WeTV)!`,
+        message: `Đã cào mới BXH từ ${payload.platforms.length} nền tảng (Netflix, Douban, Vân Hợp, Khốc Vân, VieON, FPT Play, iQIYI/WeTV)!`,
         updatedAt: payload.updatedAt,
         platformsCount: payload.platforms.length,
       });

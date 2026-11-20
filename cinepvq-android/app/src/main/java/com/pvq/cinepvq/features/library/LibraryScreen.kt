@@ -141,6 +141,14 @@ fun LibraryScreen(
     var lastScrollIndex by remember { mutableIntStateOf(0) }
     var lastScrollOffset by remember { mutableIntStateOf(0) }
 
+    // Reset header & scroll tracking cleanly when switching between Favorites / History / Watch Later
+    LaunchedEffect(selectedTab) {
+        isHeaderCollapsed = false
+        lastScrollIndex = 0
+        lastScrollOffset = 0
+        onBarsVisibilityChanged?.invoke(true)
+    }
+
     // Scroll tracking & collapsing header controller
     val currentScrollPair by remember(selectedTab) {
         derivedStateOf {

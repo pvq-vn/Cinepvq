@@ -263,6 +263,8 @@ class PlaybackManager(
     private var pendingSeekPositionMs: Long? = null
     private var pendingPlayWhenReady: Boolean? = null
     private var playerInitJob: Job? = null
+    private var backupResolveJob: Job? = null
+    private var prefetchJob: Job? = null
     private var progressTrackingJob: Job? = null
 
     // ── Single Persistent ExoPlayer Instance ─────────────────────────────────
@@ -400,17 +402,17 @@ class PlaybackManager(
         preferredSourceKey: String? = null,
         initialFullscreen: Boolean = false
     ) {
-        val isSameMovie = (slug == currentSlug && currentSlug.isNotEmpty())
-        val isSameEpisode = (episodeSlug == currentEpisodeSlug && currentEpisodeSlug.isNotEmpty())
+        // Capture previous playback metadata BEFORE mutating currentSlug / currentEpisodeSlug
+        val prevSlug = currentSlug
+        val prevEpisodeSlug = currentEpisodeSlug
+        val prevStreamType = _activeStream.value?.type
+        val prevPosMs = if (prevStreamType == StreamType.HLS_DIRECT) exoPlayer.currentPosition.coerceAtLeast(0L) else 0L
+        val prevDurMs = if (prevStreamType == StreamType.HLS_DIRECT) exoPlayer.duration.coerceAtLeast(0L) else 0L
+
+        val isSameMovie = (slug == prevSlug && prevSlug.isNotEmpty())
+        val isSameEpisode = (episodeSlug == prevEpisodeSlug && prevEpisodeSlug.isNotEmpty())
         val isSameServer = (serverName == null || serverName == currentServerName)
         val hasValidStream = (_activeStream.value != null)
-
-        currentSlug = slug
-        _currentSlugFlow.value = slug
-        _sniffedEmbedStreamUrl.value = null
-        currentEpisodeSlug = episodeSlug
-        currentServerName = serverName
-        currentEmbedUrl = initialEmbedUrl
 
         // Update presentation state if hidden or mini
         val targetPresentation = if (initialFullscreen || previousPresentationState == PlayerPresentationState.FULL_LANDSCAPE) {
@@ -431,23 +433,57 @@ class PlaybackManager(
             return
         }
 
-        // Record progress for previous episode before switching
-        if (_activeStream.value?.type == StreamType.HLS_DIRECT && exoPlayer.duration > 0 && exoPlayer.currentPosition > 0) {
-            recordProgress(currentEpisodeSlug, exoPlayer.currentPosition, exoPlayer.duration)
+        // Record progress for PREVIOUS episode BEFORE switching (never leak onto new episode!)
+        if (prevStreamType == StreamType.HLS_DIRECT && prevDurMs > 0L && prevPosMs > 0L && prevEpisodeSlug.isNotEmpty()) {
+            recordProgress(prevEpisodeSlug, prevPosMs, prevDurMs)
+        }
+
+        currentSlug = slug
+        _currentSlugFlow.value = slug
+        _sniffedEmbedStreamUrl.value = null
+        currentEpisodeSlug = episodeSlug
+        currentServerName = serverName
+        currentEmbedUrl = initialEmbedUrl
+
+        // Reset position UI immediately when moving to a different movie or episode
+        if (!isSameMovie || !isSameEpisode) {
+            _currentPositionMs.value = (resumePositionMs ?: 0L).coerceAtLeast(0L)
+            _durationMs.value = 0L
         }
 
         playerInitJob?.cancel()
-        playerInitJob = scope.launch {
-            userSyncRepository.flushWatchProgress(slug)
-            _isLoadingStream.value = true
-            _errorMessage.value = null
-            _activeStream.value = null
-            _watchedEpisodes.value = userSyncRepository.getWatchedEpisodeSlugs(slug)
+        backupResolveJob?.cancel()
+        prefetchJob?.cancel()
 
-            // 1. Fetch movie detail
-            val movieRes = movieRepository.getMovieDetail(slug)
-            val detail = movieRes.getOrNull()
-            _movie.value = detail
+        // Fire-and-forget cloud flush on IO so episode switching has ZERO network blocking delay
+        if (prevSlug.isNotEmpty()) {
+            scope.launch(Dispatchers.IO) {
+                try {
+                    userSyncRepository.flushWatchProgress(prevSlug)
+                } catch (_: Exception) {}
+            }
+        }
+
+        playerInitJob = scope.launch {
+            _errorMessage.value = null
+
+            // 1. Reuse cached MovieDetail when switching episodes of the SAME movie (0ms!)
+            val cachedSameMovie = _movie.value?.takeIf { isSameMovie && it.slug == slug }
+            val detail = if (cachedSameMovie != null) {
+                cachedSameMovie
+            } else {
+                _isLoadingStream.value = true
+                _activeStream.value = null
+                val movieRes = movieRepository.getMovieDetail(slug)
+                movieRes.getOrNull().also { _movie.value = it }
+            }
+
+            // Load watched badges asynchronously (non-blocking)
+            launch(Dispatchers.IO) {
+                try {
+                    _watchedEpisodes.value = userSyncRepository.getWatchedEpisodeSlugs(slug)
+                } catch (_: Exception) {}
+            }
 
             val detailServers = detail?.episodes ?: emptyList()
             _servers.value = detailServers
@@ -467,7 +503,8 @@ class PlaybackManager(
 
             val serverIndex = detailServers.indexOf(targetServer).coerceAtLeast(0)
             _selectedServerIndex.value = serverIndex
-            currentServerName = targetServer?.serverName ?: serverName
+            val resolvedServerName = targetServer?.serverName ?: serverName
+            currentServerName = resolvedServerName
 
             // 3. Find matching episode
             val serverEpisodes = targetServer?.items ?: emptyList()
@@ -488,12 +525,13 @@ class PlaybackManager(
                 )
             }
             _currentEpisode.value = targetEp
+            currentEpisodeSlug = targetEp.slug
 
-            // 4. Determine resume position
-            if (resumePositionMs != null && resumePositionMs > 0L) {
-                initialResumePositionMs = resumePositionMs
+            // 4. Determine authoritative resume position for THIS target episode
+            initialResumePositionMs = if (resumePositionMs != null) {
+                resumePositionMs.coerceAtLeast(0L)
             } else {
-                initialResumePositionMs = 0L
+                var savedMs = 0L
                 val targetSlug = targetEp.slug
                 val epProgressSec = userSyncRepository.getEpisodeProgress(slug, targetSlug)
                 val epDurationSec = userSyncRepository.getEpisodeDuration(slug, targetSlug)
@@ -501,7 +539,7 @@ class PlaybackManager(
                 if (epProgressSec > 0) {
                     val isNearEnd = epDurationSec > 0 && (epDurationSec - epProgressSec < 15 || (epProgressSec.toFloat() / epDurationSec) >= 0.95f)
                     if (!isNearEnd) {
-                        initialResumePositionMs = epProgressSec * 1000L
+                        savedMs = epProgressSec * 1000L
                     }
                 } else {
                     val history = userSyncRepository.getHistoryDirect(slug)
@@ -509,28 +547,19 @@ class PlaybackManager(
                         val dur = history.duration
                         val isNearEnd = dur > 0 && (dur - history.currentTime < 15 || (history.currentTime.toFloat() / dur) >= 0.95f)
                         if (!isNearEnd) {
-                            initialResumePositionMs = history.currentTime * 1000L
+                            savedMs = history.currentTime * 1000L
                         }
                     }
                 }
+                savedMs
             }
+            _currentPositionMs.value = initialResumePositionMs
 
-            // 5. Resolve streams
+            // 5. Fast Stream Selection (0ms instant start from cache or direct HLS + background multi-source resolution!)
             val epNum = targetEp.name.filter { it.isDigit() }.toIntOrNull() ?: 1
-            val effectiveM3u8 = targetEp.m3u8Url?.ifBlank { null }
-                ?: if (targetEp.embed.contains(".m3u8")) targetEp.embed else null
+            val effectiveM3u8 = VideoSourceRepository.extractDirectM3u8(targetEp.m3u8Url)
+                ?: VideoSourceRepository.extractDirectM3u8(targetEp.embed)
             val effectiveEmbed = targetEp.embed.ifBlank { initialEmbedUrl }
-
-            val sources = videoSourceRepository.resolveStreams(
-                slug = slug,
-                episode = epNum,
-                episodeSlug = targetEp.slug,
-                serverName = targetServer?.serverName ?: serverName,
-                fallbackM3u8 = effectiveM3u8,
-                fallbackEmbed = effectiveEmbed
-            )
-
-            _availableSources.value = sources
 
             val effectivePreferredKey = if (!preferredSourceKey.isNullOrBlank() && preferredSourceKey != "auto") {
                 preferredSourceKey
@@ -542,15 +571,77 @@ class PlaybackManager(
                 }
             }
 
-            val preferredMatch = if (!effectivePreferredKey.isNullOrBlank() && effectivePreferredKey != "auto") {
-                sources.firstOrNull { it.isAvailable && matchSource(it, effectivePreferredKey) }
-            } else null
+            // Check TTL cache first (instant even for VSMOV / PhimHDCSS / ChoPhim / K20!)
+            val cachedSources = videoSourceRepository.getCachedStreams(
+                slug = slug,
+                episode = epNum,
+                episodeSlug = targetEp.slug,
+                serverName = resolvedServerName
+            )
 
-            val chosen = preferredMatch ?: sources.firstOrNull { it.isAvailable }
+            if (!cachedSources.isNullOrEmpty()) {
+                _availableSources.value = cachedSources
+                val chosen = selectPreferredSource(cachedSources, effectivePreferredKey)
+                if (chosen != null) {
+                    _activeStream.value = chosen
+                    _isLoadingStream.value = false
+                    preparePlayerWithStream(chosen, initialResumePositionMs)
+                    scheduleNextEpisodePrefetch(detail, targetEp, resolvedServerName)
+                    return@launch
+                }
+            }
+
+            // Instant 0ms playback when direct ad-free KKPhim1 HLS is available and user is on Auto or KKPhim
+            val canStartInstantKkphim = !effectiveM3u8.isNullOrBlank() &&
+                (effectivePreferredKey.isBlank() || effectivePreferredKey == "auto" || effectivePreferredKey == "kkphim")
+
+            if (canStartInstantKkphim) {
+                val instantSource = VideoSourceRepository.buildInstantKkphimSource(effectiveM3u8!!, resolvedServerName)
+                _availableSources.value = listOf(instantSource)
+                _activeStream.value = instantSource
+                _isLoadingStream.value = false
+                preparePlayerWithStream(instantSource, initialResumePositionMs)
+
+                // Resolve all backup sources (K20, VSMOV Native HLS, PhimHDCSS FHDC, ChoPhim, NguonC) in background!
+                backupResolveJob = scope.launch {
+                    val fullSources = videoSourceRepository.resolveStreams(
+                        slug = slug,
+                        title = detail?.name,
+                        episode = epNum,
+                        episodeSlug = targetEp.slug,
+                        serverName = resolvedServerName,
+                        fallbackM3u8 = effectiveM3u8,
+                        fallbackEmbed = effectiveEmbed
+                    )
+                    if (currentSlug == slug && currentEpisodeSlug == targetEp.slug && fullSources.isNotEmpty()) {
+                        _availableSources.value = fullSources
+                    }
+                }
+                scheduleNextEpisodePrefetch(detail, targetEp, resolvedServerName)
+                return@launch
+            }
+
+            // Otherwise resolve all sources in parallel (fast ~1.5-3s)
+            _isLoadingStream.value = true
+            _activeStream.value = null
+
+            val sources = videoSourceRepository.resolveStreams(
+                slug = slug,
+                title = detail?.name,
+                episode = epNum,
+                episodeSlug = targetEp.slug,
+                serverName = resolvedServerName,
+                fallbackM3u8 = effectiveM3u8,
+                fallbackEmbed = effectiveEmbed
+            )
+
+            _availableSources.value = sources
+            val chosen = selectPreferredSource(sources, effectivePreferredKey)
 
             if (chosen != null) {
                 _activeStream.value = chosen
                 preparePlayerWithStream(chosen, initialResumePositionMs)
+                scheduleNextEpisodePrefetch(detail, targetEp, resolvedServerName)
             } else {
                 _errorMessage.value = "Không tìm thấy nguồn phát khả dụng cho tập này"
             }
@@ -559,13 +650,83 @@ class PlaybackManager(
         }
     }
 
+    private fun selectPreferredSource(
+        sources: List<StreamSource>,
+        preferredKey: String?
+    ): StreamSource? {
+        val preferredMatch = if (!preferredKey.isNullOrBlank() && preferredKey != "auto") {
+            sources.firstOrNull { it.isAvailable && matchSource(it, preferredKey) }
+        } else null
+        return preferredMatch ?: sources.firstOrNull { it.isAvailable }
+    }
+
+    private fun scheduleNextEpisodePrefetch(
+        detail: MovieDetail?,
+        currentEp: EpisodeItem,
+        serverName: String?
+    ) {
+        prefetchJob?.cancel()
+        val movieDetail = detail ?: return
+        val nextEp = getNextEpisode() ?: return
+        val nextEpNum = nextEp.name.filter { it.isDigit() }.toIntOrNull()
+            ?: ((currentEp.name.filter { it.isDigit() }.toIntOrNull() ?: 1) + 1)
+        val nextM3u8 = VideoSourceRepository.extractDirectM3u8(nextEp.m3u8Url)
+            ?: VideoSourceRepository.extractDirectM3u8(nextEp.embed)
+
+        prefetchJob = scope.launch(Dispatchers.IO) {
+            delay(2500L)
+            videoSourceRepository.prefetchStreams(
+                slug = movieDetail.slug,
+                title = movieDetail.name,
+                episode = nextEpNum,
+                serverName = serverName,
+                episodeSlug = nextEp.slug,
+                fallbackM3u8 = nextM3u8,
+                fallbackEmbed = nextEp.embed
+            )
+        }
+    }
+
     private fun preparePlayerWithStream(stream: StreamSource, targetPosMs: Long) {
         if (stream.type == StreamType.HLS_DIRECT) {
+            val targetUrl = stream.rawUrl?.ifBlank { null } ?: stream.url
+            val isPhimHdcssFhdc = targetUrl.contains("phimhdc.com/embed/", ignoreCase = true)
+
+            val smartFactory = SmartHlsDataSourceFactory(
+                defaultHeaders = stream.headers,
+                stripAds = true,
+                stripPng = stream.stripPng || isPhimHdcssFhdc
+            )
+            val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
+                .setDataSourceFactory(smartFactory)
+
+            val subtitleConfigs = stream.subtitles.mapIndexed { idx, sub ->
+                val subUrl = sub.rawUrl?.ifBlank { null } ?: sub.url
+                val isVietnamese = sub.lang.equals("vi", ignoreCase = true)
+                MediaItem.SubtitleConfiguration.Builder(android.net.Uri.parse(subUrl))
+                    .setMimeType(MimeTypes.TEXT_VTT)
+                    .setLanguage(sub.lang)
+                    .setLabel(sub.label)
+                    .setSelectionFlags(
+                        if (isVietnamese || (idx == 0 && stream.subtitles.none { it.lang.equals("vi", ignoreCase = true) })) {
+                            C.SELECTION_FLAG_DEFAULT
+                        } else 0
+                    )
+                    .build()
+            }
+
             val mediaItem = MediaItem.Builder()
-                .setUri(stream.url)
+                .setUri(targetUrl)
                 .apply {
-                    if (stream.url.contains(".m3u8") || stream.url.contains("/m3u8")) {
+                    if (targetUrl.contains(".m3u8", ignoreCase = true) ||
+                        targetUrl.contains("/m3u8", ignoreCase = true) ||
+                        targetUrl.contains("hls-proxy", ignoreCase = true) ||
+                        isPhimHdcssFhdc
+                    ) {
                         setMimeType(MimeTypes.APPLICATION_M3U8)
+                    }
+                    if (subtitleConfigs.isNotEmpty()) {
+                        setSubtitleConfigurations(subtitleConfigs)
                     }
                 }
                 .build()
@@ -576,9 +737,11 @@ class PlaybackManager(
             exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
                 .buildUpon()
                 .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+                .setPreferredTextLanguage("vi")
                 .build()
 
-            exoPlayer.setMediaItem(mediaItem, targetPosMs)
+            val mediaSource = mediaSourceFactory.createMediaSource(mediaItem)
+            exoPlayer.setMediaSource(mediaSource, targetPosMs.coerceAtLeast(0L))
             exoPlayer.playWhenReady = shouldPlay
             exoPlayer.prepare()
         } else {
@@ -600,6 +763,8 @@ class PlaybackManager(
             "k20" -> id.contains("k20") || name.contains("k20") || displayName.contains("k20")
             "kkphim" -> id.contains("kkphim") || name.contains("kkphim") || displayName.contains("kkphim")
             "vsmov" -> id.contains("vsmov") || name.contains("vsmov") || displayName.contains("vsmov")
+            "phimhdcss" -> id.contains("phimhdcss") || name.contains("phimhdcss") || displayName.contains("phimhdcss")
+            "chophim" -> id.contains("chophim") || name.contains("chophim") || displayName.contains("chophim")
             "nguonc" -> id.contains("nguonc") || name.contains("nguonc") || id.contains("embed_fallback") || name.contains("streamc") || displayName.contains("nguonc")
             else -> id.contains(key) || name.contains(key) || displayName.contains(key)
         }
@@ -695,6 +860,8 @@ class PlaybackManager(
             recordProgress(currentEpisodeSlug, exoPlayer.currentPosition, exoPlayer.duration)
         }
         playerInitJob?.cancel()
+        backupResolveJob?.cancel()
+        prefetchJob?.cancel()
         userPausedManually = true
         exoPlayer.pause()
         exoPlayer.stop()
@@ -884,8 +1051,10 @@ class PlaybackManager(
 
     fun recordProgress(forEpisodeSlug: String, currentMs: Long, durationMs: Long) {
         val m = _movie.value ?: return
-        val ep = _currentEpisode.value ?: return
-        if (ep.slug != forEpisodeSlug) return
+        if (forEpisodeSlug.isBlank()) return
+        val ep = _currentEpisode.value?.takeIf { it.slug == forEpisodeSlug }
+            ?: m.episodes.asSequence().flatMap { it.items.asSequence() }.firstOrNull { it.slug == forEpisodeSlug }
+            ?: return
 
         val currentSec = currentMs / 1000L
         val durationSec = durationMs / 1000L

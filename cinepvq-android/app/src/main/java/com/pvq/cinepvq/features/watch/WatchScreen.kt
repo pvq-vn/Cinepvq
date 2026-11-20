@@ -98,6 +98,8 @@ fun WatchScreen(
     var currentEpisodeSlug by remember { mutableStateOf(initialEpisodeSlug) }
     var currentServerName by remember { mutableStateOf(initialServerName) }
     var currentEmbedUrl by remember { mutableStateOf(initialEmbedUrl) }
+    // Explicit token incremented ONLY when user switches audio/translation server (NOT when tapping an episode!)
+    var serverSwitchToken by remember { mutableIntStateOf(0) }
 
     val activeStream by playbackManager.activeStream.collectAsStateWithLifecycle()
     val watchedEpisodes by playbackManager.watchedEpisodes.collectAsStateWithLifecycle()
@@ -192,6 +194,7 @@ fun WatchScreen(
                 currentEpisodeSlug = matchingEp.slug
                 currentEmbedUrl = matchingEp.embed
             }
+            serverSwitchToken++
             showSyncWarning = true
         } else if (servers.size >= 3) {
             showAudioLanguageSheet = true
@@ -322,7 +325,7 @@ fun WatchScreen(
                                     if (!isDownDrag) {
                                         if (totalY > requiredSlopY && totalY > kotlin.math.abs(totalX) * 1.8f) {
                                             isDownDrag = true
-                                        } else if (kotlin.math.abs(totalX) > touchSlop * 1.5f || totalY < -touchSlop) {
+                                        } else if (kotlin.math.abs(totalX) > touchSlop * 0.7f || totalY < -touchSlop) {
                                             break
                                         }
                                     }
@@ -351,6 +354,7 @@ fun WatchScreen(
                         episodeSlug = currentEpisodeSlug,
                         serverName = currentServerName,
                         embedUrl = currentEmbedUrl,
+                        serverSwitchToken = serverSwitchToken,
                         isFullscreen = effectiveFullscreen,
                         isCocCocNativeFullscreen = isCocCocFullscreen && effectiveFullscreen,
                         onFullscreenToggle = { fullscreen ->
@@ -497,6 +501,7 @@ fun WatchScreen(
                                                     currentEpisodeSlug = matchingEp.slug
                                                     currentEmbedUrl = matchingEp.embed
                                                 }
+                                                serverSwitchToken++
                                                 showSyncWarning = true
                                             }
                                         },
@@ -569,6 +574,7 @@ fun WatchScreen(
                         currentEpisodeSlug = matchingEp.slug
                         currentEmbedUrl = matchingEp.embed
                     }
+                    serverSwitchToken++
                     showSyncWarning = true
                 }
                 showAudioLanguageSheet = false
@@ -584,10 +590,7 @@ fun WatchScreen(
             sources = availableSources,
             activeSource = activeStream,
             onSelectSource = { src ->
-                val isVsmovCurrent = activeStream?.sourceId?.contains("vsmov", ignoreCase = true) == true ||
-                                     activeStream?.name?.contains("vsmov", ignoreCase = true) == true ||
-                                     activeStream?.url?.contains("vsmov", ignoreCase = true) == true
-                if (isVsmovCurrent && effectiveFullscreen) {
+                if (activeStream?.type == StreamType.EMBED && effectiveFullscreen) {
                     isFullscreen = false
                     activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                 }

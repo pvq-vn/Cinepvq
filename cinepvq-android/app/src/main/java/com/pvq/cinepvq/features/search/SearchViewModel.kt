@@ -227,6 +227,16 @@ class SearchViewModel(
         }
     }
 
+    fun applyPrefilledQuery(newQuery: String) {
+        val trimmed = newQuery.trim()
+        if (trimmed.isBlank()) return
+        query.value = trimmed
+        activeCategory.value = null
+        activeGenre.value = null
+        activeCountry.value = null
+        executeDiscovery()
+    }
+
     fun clearQuery() {
         query.value = ""
         executeDiscovery()

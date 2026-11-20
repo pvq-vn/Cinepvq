@@ -62,6 +62,11 @@ fun SectionDetailScreen(
 
     val gridState = rememberLazyGridState()
 
+    LaunchedEffect(type) {
+        gridState.scrollToItem(0)
+        onBarsVisibilityChanged?.invoke(true)
+    }
+
     TrackLazyGridScroll(
         gridState = gridState,
         threshold = 32,

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import Hls from "hls.js";
+import Hls, { type HlsConfig } from "hls.js";
 import {
   Play,
   Pause,
@@ -24,15 +24,52 @@ import {
   PictureInPicture,
   Info,
   Languages,
+  Captions,
   X,
   Check,
 } from "lucide-react";
 import { exitFullscreenSafely, type AudioServerInfo } from "@/contexts/GlobalPlayerContext";
 import { episodeProgressStore } from "@/services/userStore";
+import { stripPngPrefixFromTs } from "@/lib/hlsCleaner";
+import type { SubtitleTrack } from "@/services/videoSources/types";
+
+const DefaultHlsLoader = Hls.DefaultConfig.loader;
+
+class PngUnwrapFragmentLoader extends DefaultHlsLoader {
+  load(
+    context: Parameters<InstanceType<typeof DefaultHlsLoader>["load"]>[0],
+    config: Parameters<InstanceType<typeof DefaultHlsLoader>["load"]>[1],
+    callbacks: Parameters<InstanceType<typeof DefaultHlsLoader>["load"]>[2]
+  ) {
+    const origOnSuccess = callbacks.onSuccess;
+    const wrappedCallbacks = {
+      ...callbacks,
+      onSuccess: (
+        response: Parameters<typeof origOnSuccess>[0],
+        stats: Parameters<typeof origOnSuccess>[1],
+        ctx: Parameters<typeof origOnSuccess>[2],
+        networkDetails: Parameters<typeof origOnSuccess>[3]
+      ) => {
+        if (response.data instanceof ArrayBuffer) {
+          const stripped = stripPngPrefixFromTs(new Uint8Array(response.data));
+          if (stripped.byteOffset !== 0 || stripped.byteLength !== response.data.byteLength) {
+            const copy = new Uint8Array(stripped.byteLength);
+            copy.set(stripped);
+            response.data = copy.buffer;
+          }
+        }
+        origOnSuccess(response, stats, ctx, networkDetails);
+      },
+    };
+    super.load(context, config, wrappedCallbacks);
+  }
+}
 
 export interface CustomHlsPlayerProps {
   src: string;
   poster?: string;
+  subtitles?: SubtitleTrack[];
+  stripPng?: boolean;
   initialTime?: number;
   autoPlay?: boolean;
   initialPlaybackRate?: number;
@@ -120,6 +157,8 @@ function selectQualityLevel(
 export default function CustomHlsPlayer({
   src,
   poster,
+  subtitles = [],
+  stripPng = false,
   initialTime = 0,
   autoPlay = true,
   initialPlaybackRate = 1,
@@ -332,6 +371,41 @@ export default function CustomHlsPlayer({
   const [qualityLevels, setQualityLevels] = useState<QualityLevel[]>([]);
   const [currentQuality, setCurrentQuality] = useState<number>(-1); // -1 = Auto
 
+  // Subtitle track selection (-1 = Off)
+  const subtitlesKey = subtitles.map((s) => `${s.lang}:${s.url}`).join("|");
+  const [activeSubtitleIndex, setActiveSubtitleIndex] = useState<number>(() => {
+    if (subtitles.length === 0) return -1;
+    const viIdx = subtitles.findIndex((s) => s.lang === "vi");
+    return viIdx >= 0 ? viIdx : 0;
+  });
+  const [prevSubtitlesKey, setPrevSubtitlesKey] = useState<string>(subtitlesKey);
+  if (subtitlesKey !== prevSubtitlesKey) {
+    setPrevSubtitlesKey(subtitlesKey);
+    if (subtitles.length === 0) {
+      setActiveSubtitleIndex(-1);
+    } else {
+      const viIdx = subtitles.findIndex((s) => s.lang === "vi");
+      setActiveSubtitleIndex(viIdx >= 0 ? viIdx : 0);
+    }
+  }
+
+  // Sync active subtitle track onto native HTMLVideoElement textTracks
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const applyTracks = () => {
+      const tracks = video.textTracks;
+      for (let i = 0; i < tracks.length; i++) {
+        tracks[i].mode = i === activeSubtitleIndex ? "showing" : "hidden";
+      }
+    };
+    applyTracks();
+    video.addEventListener("loadedmetadata", applyTracks);
+    return () => {
+      video.removeEventListener("loadedmetadata", applyTracks);
+    };
+  }, [activeSubtitleIndex, subtitlesKey, src]);
+
   // Brightness simulation overlay (0.2 to 1.0)
   const [brightness, setBrightness] = useState<number>(1);
   const [gestureHud, setGestureHud] = useState<{
@@ -525,6 +599,9 @@ export default function CustomHlsPlayer({
         enableWorker: true,
         lowLatencyMode: false,
         backBufferLength: 90,
+        ...(stripPng
+          ? { fLoader: PngUnwrapFragmentLoader as unknown as HlsConfig["fLoader"] }
+          : {}),
       });
       hlsRef.current = hlsInstance;
 
@@ -634,8 +711,12 @@ export default function CustomHlsPlayer({
         }
       });
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      // Native Safari/iOS support
-      video.src = src;
+      // Native Safari/iOS support (route FHDC segments via server PNG unwrapper when needed)
+      const nativeSrc =
+        stripPng && src.includes("phimhdcssEmbed=") && !src.includes("proxySegments=1")
+          ? `${src}&proxySegments=1`
+          : src;
+      video.src = nativeSrc;
       video.playbackRate = playbackRateRef.current;
       syncMediaAudio(video);
       video.addEventListener("loadedmetadata", () => {
@@ -708,7 +789,7 @@ export default function CustomHlsPlayer({
     // playbackRate, preferredQuality, and autoPlay are decoupled via refs to prevent
     // destroying and recreating the active Hls instance during playback speed or quality changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src, episodeSlug]);
+  }, [src, episodeSlug, stripPng]);
 
   // Safety timeout: automatically dismiss episode transition overlay if still active after 8s
   useEffect(() => {
@@ -1427,7 +1508,18 @@ function getFullscreenElement(): Element | null {
           onEnded?.();
         }}
         className="w-full h-full object-contain cursor-pointer"
-      />
+      >
+        {subtitles.map((sub, idx) => (
+          <track
+            key={`${sub.lang}-${sub.url}`}
+            kind="subtitles"
+            src={sub.url}
+            srcLang={sub.lang}
+            label={sub.label}
+            default={idx === activeSubtitleIndex}
+          />
+        ))}
+      </video>
 
       {/* Brightness Filter Overlay (Hardware/Eye-comfort simulation) */}
       <div
@@ -1836,8 +1928,39 @@ function getFullscreenElement(): Element | null {
             </div>
           </div>
 
-          {/* Right: Audio Switcher, Lock, PiP, Settings, Fullscreen */}
+          {/* Right: Subtitle Toggle, Audio Switcher, Lock, PiP, Settings, Fullscreen */}
           <div className="flex items-center gap-0.5 sm:gap-1.5 shrink-0 relative">
+            {/* Subtitle Quick Toggle (when WebVTT tracks are available, e.g. VSMOV) */}
+            {!isMini && subtitles.length > 0 && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setActiveSubtitleIndex((prev) =>
+                    prev >= subtitles.length - 1 ? -1 : prev + 1
+                  );
+                  triggerControls();
+                }}
+                className={`px-1.5 py-1 min-h-[32px] min-w-[32px] sm:min-h-[36px] rounded-lg transition-colors flex items-center gap-1 justify-center cursor-pointer shrink-0 ${
+                  activeSubtitleIndex >= 0
+                    ? "bg-violet-600/30 text-violet-300 border border-violet-500/40"
+                    : "hover:bg-white/10 text-zinc-400 hover:text-white"
+                }`}
+                title={
+                  activeSubtitleIndex >= 0
+                    ? `Phụ đề: ${subtitles[activeSubtitleIndex]?.label || "Bật"}`
+                    : "Bật phụ đề"
+                }
+                aria-label="Chuyển đổi phụ đề"
+              >
+                <Captions className="h-4 w-4 sm:h-5 sm:w-5" />
+                <span className="hidden md:inline text-[11px] font-semibold">
+                  {activeSubtitleIndex >= 0
+                    ? subtitles[activeSubtitleIndex]?.label || "CC"
+                    : "Tắt CC"}
+                </span>
+              </button>
+            )}
+
             {/* Audio Track / Server Switcher Button - Available in normal & fullscreen when availableServers >= 2 */}
             {!isMini && availableServers && availableServers.length >= 2 && (
               <button
@@ -2070,6 +2193,46 @@ function getFullscreenElement(): Element | null {
                         </div>
                       </div>
                     )}
+
+                    {/* Subtitle Options */}
+                    {subtitles.length > 0 && (
+                      <div className="border-t border-zinc-800 pt-2">
+                        <div className="font-semibold text-zinc-400 mb-1.5 px-1">Phụ đề (CC):</div>
+                        <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
+                          <button
+                            onClick={() => {
+                              setActiveSubtitleIndex(-1);
+                              setShowSettings(false);
+                              triggerControls();
+                            }}
+                            className={`w-full text-left px-2 py-1 rounded-md transition-all cursor-pointer ${
+                              activeSubtitleIndex === -1
+                                ? "bg-violet-600 text-white font-bold"
+                                : "hover:bg-zinc-800 text-zinc-300"
+                            }`}
+                          >
+                            Tắt phụ đề
+                          </button>
+                          {subtitles.map((sub, idx) => (
+                            <button
+                              key={`${sub.lang}-${idx}`}
+                              onClick={() => {
+                                setActiveSubtitleIndex(idx);
+                                setShowSettings(false);
+                                triggerControls();
+                              }}
+                              className={`w-full text-left px-2 py-1 rounded-md transition-all cursor-pointer ${
+                                activeSubtitleIndex === idx
+                                  ? "bg-violet-600 text-white font-bold"
+                                  : "hover:bg-zinc-800 text-zinc-300"
+                              }`}
+                            >
+                              {sub.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )
                 : typeof document !== "undefined"
@@ -2158,6 +2321,46 @@ function getFullscreenElement(): Element | null {
                               }`}
                             >
                               {lvl.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Subtitle Options */}
+                    {subtitles.length > 0 && (
+                      <div className="border-t border-zinc-800 pt-2">
+                        <div className="font-semibold text-zinc-400 mb-1.5 px-1">Phụ đề (CC):</div>
+                        <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
+                          <button
+                            onClick={() => {
+                              setActiveSubtitleIndex(-1);
+                              setShowSettings(false);
+                              triggerControls();
+                            }}
+                            className={`w-full text-left px-2 py-1 rounded-md transition-all cursor-pointer ${
+                              activeSubtitleIndex === -1
+                                ? "bg-violet-600 text-white font-bold"
+                                : "hover:bg-zinc-800 text-zinc-300"
+                            }`}
+                          >
+                            Tắt phụ đề
+                          </button>
+                          {subtitles.map((sub, idx) => (
+                            <button
+                              key={`${sub.lang}-${idx}`}
+                              onClick={() => {
+                                setActiveSubtitleIndex(idx);
+                                setShowSettings(false);
+                                triggerControls();
+                              }}
+                              className={`w-full text-left px-2 py-1 rounded-md transition-all cursor-pointer ${
+                                activeSubtitleIndex === idx
+                                  ? "bg-violet-600 text-white font-bold"
+                                  : "hover:bg-zinc-800 text-zinc-300"
+                              }`}
+                            >
+                              {sub.label}
                             </button>
                           ))}
                         </div>

@@ -82,6 +82,8 @@ private val SEARCH_SORTS = listOf(
 @Composable
 fun SearchScreen(
     onMovieClick: (String) -> Unit,
+    prefillQuery: String? = null,
+    onPrefillConsumed: (() -> Unit)? = null,
     onBarsVisibilityChanged: ((Boolean) -> Unit)? = null,
     viewModel: SearchViewModel = viewModel()
 ) {
@@ -92,7 +94,25 @@ fun SearchScreen(
     val isLoadingMore by viewModel.isLoadingMore.collectAsStateWithLifecycle()
     val canLoadMore by viewModel.canLoadMore.collectAsStateWithLifecycle()
     val selectedTag by viewModel.selectedTag.collectAsStateWithLifecycle()
+    val activeCategory by viewModel.activeCategory.collectAsStateWithLifecycle()
+    val activeGenre by viewModel.activeGenre.collectAsStateWithLifecycle()
+    val activeCountry by viewModel.activeCountry.collectAsStateWithLifecycle()
+    val activeSort by viewModel.activeSort.collectAsStateWithLifecycle()
     val gridState = rememberLazyGridState()
+
+    // Apply prefilled search query (e.g. when tapping an uncataloged Trending title)
+    androidx.compose.runtime.LaunchedEffect(prefillQuery) {
+        if (!prefillQuery.isNullOrBlank()) {
+            viewModel.applyPrefilledQuery(prefillQuery)
+            onPrefillConsumed?.invoke()
+        }
+    }
+
+    // Always scroll cleanly to the top when sort order (e.g. A-Z, Year) or filters/query change!
+    androidx.compose.runtime.LaunchedEffect(activeSort, activeCategory, activeGenre, activeCountry, query) {
+        gridState.scrollToItem(0)
+        onBarsVisibilityChanged?.invoke(true)
+    }
 
     // Viewport Sentinel: Load more results smoothly when scrolling near the end
     androidx.compose.runtime.LaunchedEffect(gridState) {
@@ -193,11 +213,6 @@ fun SearchScreen(
         }
 
         val searchHistory by viewModel.searchHistory.collectAsStateWithLifecycle(emptyList())
-
-        val activeCategory by viewModel.activeCategory.collectAsStateWithLifecycle()
-        val activeGenre by viewModel.activeGenre.collectAsStateWithLifecycle()
-        val activeCountry by viewModel.activeCountry.collectAsStateWithLifecycle()
-        val activeSort by viewModel.activeSort.collectAsStateWithLifecycle()
 
         val activeFiltersCount = listOfNotNull(activeCategory, activeGenre, activeCountry, if (activeSort != "latest") activeSort else null).size
 
@@ -362,7 +377,8 @@ fun SearchScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        items(searchResults, key = { it.slug }) { movie ->
+                        // Include activeSort in item key so Compose does NOT anchor-follow a reordered slug to mid-page!
+                        items(searchResults, key = { "${activeSort}_${it.slug}" }) { movie ->
                             MovieCard(
                                 movie = movie,
                                 onClick = { onMovieClick(movie.slug) }

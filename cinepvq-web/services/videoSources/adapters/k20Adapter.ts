@@ -1,6 +1,6 @@
 // ==============================================================================
 // services/videoSources/adapters/k20Adapter.ts
-// Primary Video Source Adapter: K20 Direct HLS (.m3u8 CDN)
+// Primary Video Source Adapter: K20 Direct HLS (.m3u8 CDN) with Ad-Stripping
 // ==============================================================================
 
 import { resolveK20StreamServer } from "@/services/k20Resolver";
@@ -35,6 +35,9 @@ export class K20Adapter implements VideoSourceAdapter {
 
       const isTM = /thuy[eế]t\s*minh|\btm\b/i.test(serverName || "");
       const isLT = /l[oồ]ng\s*ti[eế]ng/i.test(serverName || "");
+      const rawUrl = stream.url.trim();
+      // Route K20/KKPhim-CDN m3u8 through lightweight ad-stripping manifest proxy
+      const proxiedUrl = `/api/hls-proxy?url=${encodeURIComponent(rawUrl)}&stripAds=1`;
 
       return {
         sourceId: this.sourceId,
@@ -45,11 +48,13 @@ export class K20Adapter implements VideoSourceAdapter {
           ? "K20 Direct (Lồng Tiếng)"
           : "K20 Direct",
         type: "hls",
-        url: stream.url,
+        url: proxiedUrl,
+        rawUrl,
         priority: this.priority,
         quality: "FHD",
         serverName: stream.title || stream.source || "K20 CDN",
         isAvailable: true,
+        adFree: true,
       };
     } catch (err) {
       console.warn("[K20 Adapter] Error resolving stream:", err);

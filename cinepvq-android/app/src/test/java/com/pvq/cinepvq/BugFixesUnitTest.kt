@@ -1,9 +1,12 @@
 package com.pvq.cinepvq
 
 import androidx.lifecycle.SavedStateHandle
+import com.pvq.cinepvq.data.player.HlsAdAndPngProcessor
+import com.pvq.cinepvq.data.player.VideoSourceRepository
 import com.pvq.cinepvq.domain.model.StreamSource
 import com.pvq.cinepvq.domain.model.StreamType
 import com.pvq.cinepvq.features.library.LibraryTab
+import com.pvq.cinepvq.features.player.PlayerGestureMath
 import com.pvq.cinepvq.features.player.VideoResolution
 import org.junit.Assert.*
 import org.junit.Test
@@ -137,5 +140,146 @@ class BugFixesUnitTest {
         val exoPlayerPosInEmbed = 0L
         val capturedFromEmbed = if (exoPlayerPosInEmbed > 0L) exoPlayerPosInEmbed else currentPositionMs
         assertEquals(154000L, capturedFromEmbed)
+    }
+
+    // ── Bug 6: HLS Ad-Stripping & PNG-TS Unwrapping ──────────────────────────
+
+    @Test
+    fun testHlsAdStripping_removesKkphimAdBlockAndPreservesConvertV9() {
+        val sb = StringBuilder()
+        sb.appendLine("#EXTM3U")
+        sb.appendLine("#EXT-X-VERSION:3")
+        sb.appendLine("#EXT-X-TARGETDURATION:6")
+        // 25 normal main movie segments (random alnum)
+        for (i in 1..25) {
+            sb.appendLine("#EXTINF:5.0,")
+            sb.appendLine("abc${i}xyz99.ts")
+        }
+        // Watermarked real movie scene (convertv9) — MUST BE PRESERVED!
+        sb.appendLine("#EXT-X-DISCONTINUITY")
+        for (i in 1..4) {
+            sb.appendLine("#EXTINF:4.0,")
+            sb.appendLine("convertv9/scene${i}ab.ts")
+        }
+        // Injected KKPhim1 commercial ad block — MUST BE REMOVED!
+        sb.appendLine("#EXT-X-DISCONTINUITY")
+        sb.appendLine("#EXT-X-KEY:METHOD=NONE")
+        for (i in 1..9) {
+            sb.appendLine("#EXTINF:3.8,")
+            sb.appendLine("/v9/d3b54219ece57fa7c8af6d2076384ce0/segment_000$i.ts")
+        }
+        // Continuation of real movie
+        sb.appendLine("#EXT-X-DISCONTINUITY")
+        for (i in 26..35) {
+            sb.appendLine("#EXTINF:5.0,")
+            sb.appendLine("def${i}uvw88.ts")
+        }
+        sb.appendLine("#EXT-X-ENDLIST")
+
+        val res = HlsAdAndPngProcessor.stripAdsFromM3u8(
+            sb.toString(),
+            "https://s6.kkphimplayer6.com/20261120/demo/2000kb/hls/mixed.m3u8"
+        )
+
+        assertEquals(9, res.removedSegments)
+        assertTrue(res.removedSeconds > 30.0)
+        assertFalse(res.cleaned.contains("segment_0001.ts"))
+        assertTrue(res.cleaned.contains("convertv9/scene1ab.ts"))
+        assertTrue(res.cleaned.contains("abc1xyz99.ts"))
+        assertTrue(res.cleaned.contains("def35uvw88.ts"))
+    }
+
+    @Test
+    fun testPngTsUnwrapper_stripsVsmov478bAndPhimHdcss76bWithFooter() {
+        fun makeTsPackets(count: Int): ByteArray {
+            val out = ByteArray(count * 188)
+            for (p in 0 until count) {
+                out[p * 188] = 0x47.toByte()
+                out[p * 188 + 1] = (p + 1).toByte()
+            }
+            return out
+        }
+
+        // Case 1: VSMOV 478-byte PNG prefix + 4 TS packets
+        val vsmovPrefix = ByteArray(478)
+        vsmovPrefix[0] = 0x89.toByte(); vsmovPrefix[1] = 0x50; vsmovPrefix[2] = 0x4E; vsmovPrefix[3] = 0x47
+        val vsmovWrapped = vsmovPrefix + makeTsPackets(4)
+        val vsmovClean = HlsAdAndPngProcessor.stripPngPrefixFromTs(vsmovWrapped)
+        assertEquals(4 * 188, vsmovClean.size)
+        assertEquals(0x47.toByte(), vsmovClean[0])
+        assertEquals(0x47.toByte(), vsmovClean[188])
+
+        // Case 2: PhimHDCSS FHDC 76-byte PNG prefix + 5 TS packets + 64-byte trailing footer
+        val fhdcPrefix = ByteArray(76)
+        fhdcPrefix[0] = 0x89.toByte(); fhdcPrefix[1] = 0x50; fhdcPrefix[2] = 0x4E; fhdcPrefix[3] = 0x47
+        val fhdcFooter = ByteArray(64) { 0x2A }
+        val fhdcWrapped = fhdcPrefix + makeTsPackets(5) + fhdcFooter
+        val fhdcClean = HlsAdAndPngProcessor.stripPngPrefixFromTs(fhdcWrapped)
+        assertEquals(5 * 188, fhdcClean.size)
+        assertEquals(0x47.toByte(), fhdcClean[0])
+        assertEquals(0x47.toByte(), fhdcClean[376])
+
+        // Case 3: Pure MPEG-TS passes through untouched
+        val pure = makeTsPackets(3)
+        val pureOut = HlsAdAndPngProcessor.stripPngPrefixFromTs(pure)
+        assertEquals(pure.size, pureOut.size)
+    }
+
+    @Test
+    fun testExtractPhimHdcssManifestFromHtml() {
+        val html = """<script>window.__edgePlayBootstrap = Object.freeze(Object.assign({"manifest":"#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:4.0,\nhttps:\/\/p16-oec-sg.ibyteimg.com\/seg1.png\n#EXT-X-ENDLIST"}, {}));</script>"""
+        val manifest = HlsAdAndPngProcessor.extractPhimHdcssManifestFromHtml(html)
+        assertNotNull(manifest)
+        assertTrue(manifest!!.startsWith("#EXTM3U"))
+        assertTrue(manifest.contains("https://p16-oec-sg.ibyteimg.com/seg1.png"))
+    }
+
+    // ── Bug 7: Brightness Normalization & Responsive Gesture Math ────────────
+
+    @Test
+    fun testBrightnessNormalization_preserves30PercentWithoutJumpingTo50() {
+        // Standard 0..255 Android scale: 30% ~= 77
+        val norm255 = PlayerGestureMath.normalizeSystemBrightness(77, 255)
+        assertEquals(0.30f, norm255, 0.02f)
+
+        // Xiaomi / Samsung / Pixel high-precision 0..4095 scale: 30% ~= 1229
+        val norm4095 = PlayerGestureMath.normalizeSystemBrightness(1229, 4095)
+        assertEquals(0.30f, norm4095, 0.02f)
+
+        // Auto-detect vendor max when configuredMax is fallback 255 but raw is > 255
+        val autoHigh = PlayerGestureMath.normalizeSystemBrightness(1229, 255)
+        assertEquals(0.30f, autoHigh, 0.02f)
+    }
+
+    @Test
+    fun testGestureSeekAndVolumeMath_symmetricRounding() {
+        assertEquals(15, PlayerGestureMath.computeSeekDeltaSeconds(80f, 1000f))
+        assertEquals(-15, PlayerGestureMath.computeSeekDeltaSeconds(-80f, 1000f))
+        assertEquals(8, PlayerGestureMath.computeVolumeIndex(0.51f, 15))
+        assertEquals(0, PlayerGestureMath.computeVolumeIndex(0f, 15))
+        assertEquals(15, PlayerGestureMath.computeVolumeIndex(1f, 15))
+    }
+
+    // ── Bug 8: New Video Source Cleaning (PhimHDCSS, ChoPhim, VSMOV Native) ─
+
+    @Test
+    fun testCleanSourceName_newSourcesAndNativeVsmov() {
+        val (phimName, phimDisplay) = VideoSourceRepository.cleanSourceName(
+            "phimhdcss", "PhimHDCSS FHDC", "PhimHDCSS (FHDC)", "Vietsub", "https://tiktok.phimhdc.com/embed/123"
+        )
+        assertEquals("PhimHDCSS", phimName)
+        assertTrue(phimDisplay.contains("PhimHDCSS"))
+
+        val (choName, choDisplay) = VideoSourceRepository.cleanSourceName(
+            "chophim", "ChoPhim Direct", "ChoPhim", "Thuyết Minh", "https://cdn.example.com/a.m3u8"
+        )
+        assertEquals("ChoPhim", choName)
+        assertTrue(choDisplay.contains("Thuyết Minh"))
+
+        val (vsmovName, vsmovDisplay) = VideoSourceRepository.cleanSourceName(
+            "vsmov", "VSMOV Native HLS", "VSMOV", "Vietsub", "https://v8.streamvsmov.com/stream/abc/master.m3u8"
+        )
+        assertEquals("VSMOV", vsmovName)
+        assertTrue(vsmovDisplay.contains("Native"))
     }
 }

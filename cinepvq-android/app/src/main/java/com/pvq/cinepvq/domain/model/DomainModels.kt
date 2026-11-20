@@ -79,6 +79,13 @@ enum class StreamType {
     UNAVAILABLE
 }
 
+data class SubtitleTrack(
+    val label: String,
+    val lang: String,
+    val url: String,
+    val rawUrl: String? = null
+)
+
 data class StreamSource(
     val sourceId: String,
     val name: String,
@@ -88,7 +95,83 @@ data class StreamSource(
     val priority: Int,
     val quality: String? = null,
     val serverName: String? = null,
-    val isAvailable: Boolean = true
+    val isAvailable: Boolean = true,
+    val rawUrl: String? = null,
+    val headers: Map<String, String> = emptyMap(),
+    val subtitles: List<SubtitleTrack> = emptyList(),
+    val stripPng: Boolean = false,
+    val adFree: Boolean = false
+)
+
+data class NetflixCountryOption(
+    val code: String,
+    val label: String,
+    val shortLabel: String,
+    val flag: String
+)
+
+data class DoubanCategoryOption(
+    val key: String,
+    val label: String
+)
+
+data class TrendingRankItem(
+    val slug: String,
+    val name: String,
+    val originalName: String? = null,
+    val thumbUrl: String = "",
+    val posterUrl: String = "",
+    val year: String = "",
+    val episodeCurrent: String = "",
+    val quality: String = "HD",
+    val rank: Int,
+    val platformId: String,
+    val platformName: String,
+    val score: Double = 0.0,
+    val scoreSource: String = "",
+    val views: Long = 0L,
+    val formattedViews: String = "",
+    val heatLabel: String = "",
+    val trendDelta: Int = 0,
+    val playable: Boolean = true,
+    val searchQuery: String? = null,
+    val weeksInTop10: Int? = null,
+    val marketShare: Double? = null,
+    val broadcastPlatform: String? = null
+) {
+    fun toMovie(): Movie = Movie(
+        slug = slug,
+        name = name,
+        originalName = originalName,
+        thumbUrl = thumbUrl,
+        posterUrl = posterUrl,
+        year = year,
+        episodeCurrent = episodeCurrent,
+        quality = quality
+    )
+}
+
+data class TrendingPlatformSection(
+    val id: String,
+    val name: String,
+    val subtitle: String,
+    val badgeText: String,
+    val updatedAt: String,
+    val countryCode: String? = null,
+    val countryLabel: String? = null,
+    val categoryKey: String? = null,
+    val metricLabel: String? = null,
+    val items: List<TrendingRankItem> = emptyList()
+)
+
+data class TrendingRankingsData(
+    val updatedAt: String,
+    val activeNetflixCountry: String = "vn",
+    val activeNetflixType: String = "tv",
+    val activeDoubanCategory: String = "all",
+    val netflixCountries: List<NetflixCountryOption> = emptyList(),
+    val doubanCategories: List<DoubanCategoryOption> = emptyList(),
+    val platforms: List<TrendingPlatformSection> = emptyList()
 )
 
 data class User(

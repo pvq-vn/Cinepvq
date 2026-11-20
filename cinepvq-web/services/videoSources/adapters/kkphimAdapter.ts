@@ -1,7 +1,6 @@
 // ==============================================================================
 // services/videoSources/adapters/kkphimAdapter.ts
-// Fallback 2 Video Source Adapter: KKPhim1 Direct HLS (.m3u8) / Embed
-// Supports 0ms instant resolution via knownHlsUrl and strict audio-track matching
+// Video Source Adapter: KKPhim1 Direct HLS (.m3u8) with Automatic Ad-Stripping
 // ==============================================================================
 
 import type { VideoSourceAdapter, ResolveSourceOptions, ResolvedSource } from "../types";
@@ -33,6 +32,10 @@ interface KKPhimMovieData {
   episodes?: KKPhimEpisodeGroup[];
 }
 
+function buildAdFreeHlsUrl(rawM3u8: string): string {
+  return `/api/hls-proxy?url=${encodeURIComponent(rawM3u8)}&stripAds=1`;
+}
+
 function matchTitle(candidateName: string, targetTitle: string, season = 1): boolean {
   const norm = (s: string) =>
     s
@@ -57,8 +60,8 @@ function matchTitle(candidateName: string, targetTitle: string, season = 1): boo
 
 export class KKPhimAdapter implements VideoSourceAdapter {
   readonly sourceId = "kkphim" as const;
-  readonly name = "KKPhim1 Direct HLS (Dự Phòng 2)";
-  readonly priority = 3;
+  readonly name = "KKPhim1 Direct HLS (Đã cắt QC)";
+  readonly priority = 5;
 
   async resolveStream(options: ResolveSourceOptions): Promise<ResolvedSource | null> {
     const { slug, title, episode = 1, knownHlsUrl, serverName } = options;
@@ -68,8 +71,9 @@ export class KKPhimAdapter implements VideoSourceAdapter {
     const isLT = /l[oồ]ng\s*ti[eế]ng/i.test(reqServer);
     const isVS = /vietsub/i.test(reqServer);
 
-    // Fast path: if client already provided the exact .m3u8 URL from movie detail for this server/episode
+    // Fast path: if client already provided the exact .m3u8 URL from movie detail
     if (knownHlsUrl && knownHlsUrl.includes(".m3u8")) {
+      const cleanRaw = knownHlsUrl.trim();
       return {
         sourceId: this.sourceId,
         name: this.name,
@@ -79,11 +83,13 @@ export class KKPhimAdapter implements VideoSourceAdapter {
           ? "KKPhim1 (Lồng Tiếng)"
           : "KKPhim1 Direct",
         type: "hls",
-        url: knownHlsUrl,
+        url: buildAdFreeHlsUrl(cleanRaw),
+        rawUrl: cleanRaw,
         priority: this.priority,
         quality: "FHD",
         serverName: serverName || "KKPhim Direct CDN",
         isAvailable: true,
+        adFree: true,
       };
     }
 
@@ -92,7 +98,7 @@ export class KKPhimAdapter implements VideoSourceAdapter {
     const headers: Record<string, string> = {
       Accept: "application/json, text/plain, */*",
       "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     };
 
     let movieData: KKPhimMovieData | null = null;
@@ -165,7 +171,6 @@ export class KKPhimAdapter implements VideoSourceAdapter {
       return null;
     }
 
-    // Filter groups strictly when a specific translation is requested
     let candidateGroups = movieData.episodes;
     if (isTM) {
       candidateGroups = movieData.episodes.filter((g) =>
@@ -210,6 +215,7 @@ export class KKPhimAdapter implements VideoSourceAdapter {
         const groupIsLT = /l[oồ]ng\s*ti[eế]ng/i.test(group.server_name || "");
 
         if (ep.link_m3u8 && ep.link_m3u8.includes(".m3u8")) {
+          const cleanRaw = ep.link_m3u8.trim();
           return {
             sourceId: this.sourceId,
             name: this.name,
@@ -219,16 +225,18 @@ export class KKPhimAdapter implements VideoSourceAdapter {
               ? "KKPhim1 (Lồng Tiếng)"
               : "KKPhim1 Direct",
             type: "hls",
-            url: ep.link_m3u8,
+            url: buildAdFreeHlsUrl(cleanRaw),
+            rawUrl: cleanRaw,
             priority: this.priority,
             quality: movieData.movie?.quality || "HD",
             serverName: group.server_name || "KKPhim Direct CDN",
             isAvailable: true,
+            adFree: true,
           };
         } else if (ep.link_embed) {
           return {
             sourceId: this.sourceId,
-            name: "KKPhim1 Embed (Dự Phòng 2)",
+            name: "KKPhim1 Embed",
             displayName: groupIsTM
               ? "KKPhim1 Embed (Thuyết Minh)"
               : groupIsLT
@@ -236,6 +244,7 @@ export class KKPhimAdapter implements VideoSourceAdapter {
               : "KKPhim1 Embed",
             type: "iframe",
             url: ep.link_embed,
+            rawUrl: ep.link_embed,
             priority: this.priority,
             quality: movieData.movie?.quality || "HD",
             serverName: group.server_name || "KKPhim Server",

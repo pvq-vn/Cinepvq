@@ -37,7 +37,8 @@ class AppUpdateUnitTest {
         }
 
         // Stub out other endpoints
-        override suspend fun resolveVideoSources(slug: String?, episode: Int, season: Int, type: String, serverName: String?, episodeSlug: String?, nguoncEmbedUrl: String?) = Response.error<com.pvq.cinepvq.core.network.model.VideoSourcesResponse>(501, "".toResponseBody())
+        override suspend fun resolveVideoSources(slug: String?, title: String?, episode: Int, season: Int, type: String, serverName: String?, episodeSlug: String?, knownHlsUrl: String?, nguoncEmbedUrl: String?) = Response.error<com.pvq.cinepvq.core.network.model.VideoSourcesResponse>(501, "".toResponseBody())
+        override suspend fun getTrendingRankings(platform: String, country: String, netflixType: String, doubanCategory: String, refresh: Boolean?) = Response.error<com.pvq.cinepvq.core.network.model.TrendingRankingsResponseDto>(501, "".toResponseBody())
         override suspend fun syncUser() = Response.error<com.pvq.cinepvq.core.network.model.UserSyncResponse>(501, "".toResponseBody())
         override suspend fun getProfile() = Response.error<com.pvq.cinepvq.core.network.model.UserSyncResponse>(501, "".toResponseBody())
         override suspend fun updateProfile(request: com.pvq.cinepvq.core.network.model.ProfileUpdateRequest) = Response.error<com.pvq.cinepvq.core.network.model.UserSyncResponse>(501, "".toResponseBody())

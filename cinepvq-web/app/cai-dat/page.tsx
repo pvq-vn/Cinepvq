@@ -196,8 +196,10 @@ export default function SettingsPage() {
               >
                 <option value="auto">Tự động (Khuyên dùng)</option>
                 <option value="k20">K20 Direct HLS</option>
-                <option value="vsmov">VSMOV Stream</option>
-                <option value="kkphim">KKPhim1 Direct</option>
+                <option value="vsmov">VSMOV (Native HLS • Phụ đề)</option>
+                <option value="phimhdcss">PhimHDCSS (FHDC Siêu nhanh)</option>
+                <option value="chophim">ChoPhim (Direct HLS)</option>
+                <option value="kkphim">KKPhim1 (Đã cắt QC)</option>
                 <option value="nguonc">NguonC (StreamC)</option>
               </select>
             </div>

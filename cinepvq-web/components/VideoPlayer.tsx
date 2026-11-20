@@ -96,24 +96,29 @@ function extractDirectHlsUrl(knownHlsUrl?: string, videoUrl?: string): string {
 function buildInstantKkphimSource(directHlsUrl: string, serverName?: string): ResolvedSource {
   const isTM = /thuy[eế]t\s*minh|\btm\b|l[oồ]ng\s*ti[eế]ng/i.test(serverName || "");
   const isLT = /l[oồ]ng\s*ti[eế]ng|\blt\b/i.test(serverName || "");
+  const proxiedUrl = directHlsUrl.startsWith("/api/hls-proxy")
+    ? directHlsUrl
+    : `/api/hls-proxy?url=${encodeURIComponent(directHlsUrl)}&stripAds=1`;
   return {
     sourceId: "kkphim",
     name: isLT
-      ? "Server 3 (KKPhim1 - Lồng Tiếng)"
+      ? "KKPhim1 (Lồng Tiếng • Đã cắt QC)"
       : isTM
-      ? "Server 3 (KKPhim1 - Thuyết Minh)"
-      : "Server 3 (KKPhim1 - Vietsub)",
+      ? "KKPhim1 (Thuyết Minh • Đã cắt QC)"
+      : "KKPhim1 (Vietsub • Đã cắt QC)",
     displayName: isLT
-      ? "Server 3 (Lồng Tiếng)"
+      ? "KKPhim1 (Lồng Tiếng)"
       : isTM
-      ? "Server 3 (Thuyết Minh)"
-      : "Server 3 (Vietsub)",
+      ? "KKPhim1 (Thuyết Minh)"
+      : "KKPhim1 (Vietsub)",
     type: "hls",
-    url: directHlsUrl,
-    priority: 3,
+    url: proxiedUrl,
+    rawUrl: directHlsUrl,
+    priority: 5,
     quality: "FHD",
-    serverName: serverName || "KKPhim Direct",
+    serverName: serverName || "KKPhim1 Direct",
     isAvailable: true,
+    adFree: true,
   };
 }
 
@@ -378,7 +383,12 @@ export default function VideoPlayer({
           });
         }
 
-        finalList.sort((a, b) => a.priority - b.priority);
+        finalList.sort((a, b) => {
+          if (a.type !== b.type) {
+            return a.type === "hls" ? -1 : 1;
+          }
+          return a.priority - b.priority;
+        });
         setSources(finalList);
         setResolvedKey(episodeKey);
 
@@ -667,7 +677,11 @@ export default function VideoPlayer({
                             <div className="truncate">
                               <p className="truncate text-xs">{src.displayName}</p>
                               <p className="text-[10px] text-zinc-400 font-normal">
-                                {src.type === "hls" ? "Direct HLS • Không quảng cáo" : "Iframe Embed"}
+                                {src.type === "hls"
+                                  ? src.adFree
+                                    ? "Native HLS • Không quảng cáo"
+                                    : "Direct HLS"
+                                  : "Iframe Embed"}
                               </p>
                             </div>
                           </div>
@@ -705,9 +719,11 @@ export default function VideoPlayer({
           src={
             activeSource?.type === "hls"
               ? activeSource.url
-              : directHlsUrl
+              : `/api/hls-proxy?url=${encodeURIComponent(directHlsUrl)}&stripAds=1`
           }
           poster={poster}
+          subtitles={activeSource?.subtitles}
+          stripPng={activeSource?.stripPng}
           initialTime={resumeTime}
           autoPlay={currentAutoPlay}
           initialPlaybackRate={settings?.playbackSpeed || 1}
