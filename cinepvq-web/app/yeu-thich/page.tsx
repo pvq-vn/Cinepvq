@@ -1,12 +1,64 @@
 "use client";
 
+import { useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
 import { Heart, Film, ArrowLeft, Trash2, LogIn } from "lucide-react";
 import { useUserStore } from "@/hooks/useUserStore";
+import { favoritesStore } from "@/services/userStore";
 import { normalizeEpisodeLabel } from "@/lib/format";
+
+const FALLBACK_POSTER_DATA_URI =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="360" viewBox="0 0 240 360"><rect width="240" height="360" fill="#18181b"/><circle cx="120" cy="170" r="32" fill="#7c3aed" fill-opacity="0.2"/><path d="M112 156l24 14-24 14v-28z" fill="#a78bfa"/></svg>'
+  );
+
+function isBrokenPoster(url?: string | null): boolean {
+  if (!url) return true;
+  const trimmed = url.trim();
+  if (!trimmed || !trimmed.startsWith("http")) return true;
+  if (trimmed.includes("phim.nguonc.com/public/images/")) return true;
+  return false;
+}
 
 export default function FavoritesPage() {
   const { user, favorites, mounted, removeFavorite, clearFavorites } = useUserStore();
+  const healedSlugsRef = useRef<Set<string>>(new Set());
+
+  const healFavoritePoster = useCallback(async (slug: string) => {
+    if (!slug || healedSlugsRef.current.has(slug)) return;
+    healedSlugsRef.current.add(slug);
+    try {
+      const res = await fetch(`/api/movies/${encodeURIComponent(slug)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const m = data?.movie;
+      if (!m) return;
+      const freshThumb = m.thumb_url || m.poster_url || "";
+      if (isBrokenPoster(freshThumb)) return;
+      const current = favoritesStore.getAll();
+      const updated = current.map((it) =>
+        it.slug === slug
+          ? {
+              ...it,
+              name: m.name && m.name !== slug ? m.name : it.name,
+              original_name: it.original_name || m.original_name,
+              thumb_url: freshThumb,
+            }
+          : it
+      );
+      favoritesStore.setAll(updated);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (!mounted || favorites.length === 0) return;
+    for (const item of favorites) {
+      if (!item.name || item.name === item.slug || isBrokenPoster(item.thumb_url)) {
+        healFavoritePoster(item.slug);
+      }
+    }
+  }, [mounted, favorites, healFavoritePoster]);
 
   if (!mounted) {
     return (
@@ -110,8 +162,15 @@ export default function FavoritesPage() {
                   className="aspect-[2/3] w-full overflow-hidden relative block"
                 >
                   <img
-                    src={movie.thumb_url}
+                    src={!isBrokenPoster(movie.thumb_url) ? movie.thumb_url : FALLBACK_POSTER_DATA_URI}
                     alt={movie.name}
+                    onError={(e) => {
+                      const target = e.currentTarget;
+                      if (target.src !== FALLBACK_POSTER_DATA_URI) {
+                        target.src = FALLBACK_POSTER_DATA_URI;
+                      }
+                      healFavoritePoster(movie.slug);
+                    }}
                     className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
                   />
                   {movie.quality && (

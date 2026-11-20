@@ -263,29 +263,72 @@ export const userSyncManager = {
               const itemsToPush: WatchHistoryItem[] = [];
 
               // 1. Reconcile authoritative remote DB rows
+              const isBrokenThumb = (u?: string | null) =>
+                !u || !u.trim() || u.includes("phim.nguonc.com/public/images/") || !u.startsWith("http");
+
+              const mergeHistoryMeta = (primary: WatchHistoryItem, secondary?: WatchHistoryItem): WatchHistoryItem => {
+                if (!secondary) return primary;
+                const bestName =
+                  primary.name && primary.name !== primary.slug
+                    ? primary.name
+                    : secondary.name && secondary.name !== secondary.slug
+                    ? secondary.name
+                    : primary.name;
+                const bestThumb = !isBrokenThumb(primary.thumb_url)
+                  ? primary.thumb_url
+                  : !isBrokenThumb(secondary.thumb_url)
+                  ? secondary.thumb_url
+                  : primary.thumb_url;
+                return {
+                  ...primary,
+                  name: bestName,
+                  original_name: primary.original_name || secondary.original_name,
+                  thumb_url: bestThumb,
+                };
+              };
+
+              const seedCrossDeviceWatchedEpisodes = (item: WatchHistoryItem) => {
+                if (!item.episodeSlug) return;
+                if (typeof item.currentTime === "number" && item.currentTime > 0) {
+                  episodeProgressStore.save(
+                    item.slug,
+                    item.episodeSlug,
+                    1,
+                    item.currentTime,
+                    item.duration || 0,
+                    item.updatedAt,
+                    true
+                  );
+                }
+                const m = item.episodeSlug.match(/\d+/);
+                if (m) {
+                  const latestNum = parseInt(m[0], 10);
+                  if (!isNaN(latestNum) && latestNum > 1 && latestNum <= 200) {
+                    for (let i = 1; i < latestNum; i++) {
+                      const padSlug = `tap-${String(i).padStart(2, "0")}`;
+                      if (episodeProgressStore.get(item.slug, padSlug, 1) <= 0) {
+                        episodeProgressStore.save(item.slug, padSlug, 1, 1, 0, item.updatedAt, true);
+                      }
+                    }
+                  }
+                }
+              };
+
               remoteHistory.forEach((remote) => {
                 const local = localMap.get(remote.slug);
                 const timeRemote = remote.updatedAt ? new Date(remote.updatedAt).getTime() : 0;
                 const timeLocal = local?.updatedAt ? new Date(local.updatedAt).getTime() : 0;
 
                 if (!local || timeRemote >= timeLocal) {
-                  mergedMap.set(remote.slug, remote);
+                  const merged = mergeHistoryMeta(remote, local);
+                  mergedMap.set(remote.slug, merged);
                   removeSlugFromSet(TOMBSTONE_KEYS.PENDING_HIST, remote.slug);
-
-                  if (remote.episodeSlug && typeof remote.currentTime === "number") {
-                    episodeProgressStore.save(
-                      remote.slug,
-                      remote.episodeSlug,
-                      1,
-                      remote.currentTime,
-                      remote.duration || 0,
-                      remote.updatedAt,
-                      true
-                    );
-                  }
+                  seedCrossDeviceWatchedEpisodes(merged);
                 } else {
-                  mergedMap.set(remote.slug, local);
-                  itemsToPush.push(local);
+                  const merged = mergeHistoryMeta(local, remote);
+                  mergedMap.set(remote.slug, merged);
+                  itemsToPush.push(merged);
+                  seedCrossDeviceWatchedEpisodes(merged);
                 }
               });
 
@@ -797,6 +840,14 @@ export const userSyncManager = {
           body: JSON.stringify({
             action: "upsert",
             movieSlug: target.movieSlug,
+            movie: existingHist
+              ? {
+                  slug: existingHist.slug,
+                  name: existingHist.name,
+                  original_name: existingHist.original_name,
+                  thumb_url: existingHist.thumb_url,
+                }
+              : undefined,
             episodeSlug: target.episodeSlug,
             episodeName: epLabel,
             position: target.currentTime,

@@ -5,7 +5,6 @@ import { useParams, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { useFetchMovieDetail } from "@/hooks/useMovies";
 import { searchMovies } from "@/services/api";
-import { resolveAllSources } from "@/services/videoSources";
 import { extractCategoriesFromMovie, type MovieEnrichmentData } from "@/types/movie";
 import { useUserStore } from "@/hooks/useUserStore";
 import {
@@ -327,7 +326,13 @@ export default function MovieDetailPage() {
 
     // 4. Saved history episode
     if (savedHistory?.episodeSlug) {
-      const found = episodeItems.find((e) => e.slug === savedHistory.episodeSlug);
+      const found =
+        episodeItems.find((e) => e.slug === savedHistory.episodeSlug) ||
+        episodeItems.find((e) => {
+          const hNum = parseInt((savedHistory.episodeSlug || "").replace(/\D/g, ""), 10);
+          const eNum = parseInt(e.slug.replace(/\D/g, ""), 10) || parseInt(e.name.replace(/\D/g, ""), 10);
+          return !isNaN(hNum) && !isNaN(eNum) && hNum > 0 && hNum === eNum;
+        });
       if (found) return found;
     }
 
@@ -337,45 +342,6 @@ export default function MovieDetailPage() {
 
   const currentVideoUrl = activeEpisode?.embed || activeEpisode?.m3u8 || "";
   const activeEpisodeSlug = activeEpisode?.slug || "";
-
-  // Pre-warm multi-source video resolver at low priority while user views the movie detail page
-  // so tapping "Xem Ngay" starts in 0ms directly on the fastest CDN (VSMOV / PhimHDCSS).
-  useEffect(() => {
-    if (isWatching || !movie || !activeEpisode) return;
-    const mSlug = movie.slug || slug;
-    if (!mSlug) return;
-    const epNum =
-      parseInt(activeEpisode.name.replace(/\D/g, ""), 10) ||
-      parseInt(activeEpisode.slug.replace(/\D/g, ""), 10) ||
-      1;
-    const timer = setTimeout(() => {
-      resolveAllSources(
-        {
-          slug: mSlug,
-          imdbId: movie.imdb_id || undefined,
-          tmdbId: movie.tmdb_id ? String(movie.tmdb_id) : undefined,
-          title: movie.name || movie.original_name,
-          season: currentSeason,
-          episode: epNum,
-          type: isMovie ? "movie" : "series",
-          nguoncEmbedUrl: activeEpisode.embed || undefined,
-          knownHlsUrl: activeEpisode.m3u8 || undefined,
-          serverName: currentServer?.server_name || "Vietsub",
-          episodeSlug: activeEpisode.slug,
-        },
-        { priority: "low" }
-      ).catch(() => {});
-    }, 350);
-    return () => clearTimeout(timer);
-  }, [
-    isWatching,
-    movie,
-    slug,
-    activeEpisode,
-    currentSeason,
-    isMovie,
-    currentServer?.server_name,
-  ]);
 
   // Initial resume time for VideoPlayer — keyed strictly by episode to prevent cross-episode leakage
   const movieSlug = movie?.slug;
@@ -1668,35 +1634,45 @@ export default function MovieDetailPage() {
                 <div className="flex flex-wrap gap-2 max-h-72 overflow-y-auto pr-1">
                   {visibleEpisodes.map((ep) => {
                     const isActive = ep.slug === activeEpisodeSlug;
-                    const watchedSeconds = episodeProgressStore.get(
-                      movie.slug,
-                      ep.slug,
-                      currentSeason
-                    );
-                    const isWatched = (watchedSeconds || 0) > 0;
+                    const { isWatched, watchedSeconds } =
+                      episodeProgressStore.getEpisodeWatchStatus(
+                        movie.slug,
+                        ep.slug,
+                        currentSeason,
+                        savedHistory?.episodeSlug,
+                        savedHistory?.currentTime
+                      );
                     const label = normalizeEpisodeLabel(ep.name, ep.slug);
 
                     return (
                       <button
                         key={ep.slug}
-                        onClick={() => handleSelectEpisode(ep, watchedSeconds || 0)}
+                        onClick={() => handleSelectEpisode(ep, watchedSeconds > 1 ? watchedSeconds : 0)}
                         className={`
-                          relative min-w-[46px] rounded-xl px-3.5 py-2 text-xs font-bold transition-colors cursor-pointer
+                          relative min-w-[46px] overflow-hidden rounded-xl px-3.5 py-2 text-xs font-bold transition-all cursor-pointer
                           ${
                             isActive
                               ? "bg-violet-600 text-white shadow-lg shadow-violet-600/30 scale-105 opacity-100 grayscale-0 z-10"
                               : isWatched
-                              ? "opacity-75 bg-zinc-100/80 dark:bg-zinc-900/60 text-zinc-500 dark:text-zinc-400 hover:opacity-100 hover:text-violet-600 border border-zinc-200/60 dark:border-zinc-800/60"
-                              : "bg-white dark:bg-zinc-800/80 text-zinc-700 dark:text-zinc-300 hover:bg-violet-500/10 hover:text-violet-600 border border-zinc-200 dark:border-zinc-700/60"
+                              ? "opacity-45 bg-zinc-200/50 dark:bg-zinc-950/70 text-zinc-400 dark:text-zinc-500 hover:opacity-90 hover:text-violet-600 dark:hover:text-violet-400 border border-zinc-200/50 dark:border-zinc-800/50"
+                              : "bg-white dark:bg-zinc-800/90 text-zinc-800 dark:text-zinc-200 hover:bg-violet-500/10 hover:text-violet-600 border border-zinc-200 dark:border-zinc-700/70"
                           }
                         `}
                         title={
                           isWatched
-                            ? `Đã xem đến ${formatTime(watchedSeconds)}`
+                            ? watchedSeconds > 1
+                              ? `Đã xem đến ${formatTime(watchedSeconds)}`
+                              : `Đã xem (${label})`
                             : label
                         }
                       >
                         {label}
+                        {isWatched && !isActive && (
+                          <span
+                            aria-hidden="true"
+                            className="absolute bottom-0 inset-x-0 h-0.5 bg-violet-500/60"
+                          />
+                        )}
                       </button>
                     );
                   })}

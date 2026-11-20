@@ -15,7 +15,8 @@ data class PlayerSettings(
     val defaultPlaybackSpeed: Float = 1.0f,
     val defaultSource: String = "auto",
     val defaultResolution: String = "auto",
-    val defaultSeekDuration: Int = 10
+    val defaultSeekDuration: Int = 10,
+    val autoSwitchSource: Boolean = false
 )
 
 class SettingsRepository(private val context: Context) {
@@ -25,6 +26,7 @@ class SettingsRepository(private val context: Context) {
         val KEY_SOURCE = stringPreferencesKey("default_source")
         val KEY_RESOLUTION = stringPreferencesKey("default_resolution")
         val KEY_SEEK_DURATION = intPreferencesKey("default_seek_duration")
+        val KEY_AUTO_SWITCH_SOURCE = booleanPreferencesKey("auto_switch_source")
     }
 
     val playerSettings: Flow<PlayerSettings> = context.dataStore.data
@@ -40,11 +42,13 @@ class SettingsRepository(private val context: Context) {
             val source = preferences[PreferencesKeys.KEY_SOURCE] ?: "auto"
             val resolution = preferences[PreferencesKeys.KEY_RESOLUTION] ?: "auto"
             val seekDuration = preferences[PreferencesKeys.KEY_SEEK_DURATION] ?: 10
+            val autoSwitch = preferences[PreferencesKeys.KEY_AUTO_SWITCH_SOURCE] ?: false
             PlayerSettings(
                 defaultPlaybackSpeed = speed,
                 defaultSource = source,
                 defaultResolution = resolution,
-                defaultSeekDuration = seekDuration
+                defaultSeekDuration = seekDuration,
+                autoSwitchSource = autoSwitch
             )
         }
 
@@ -69,6 +73,12 @@ class SettingsRepository(private val context: Context) {
     suspend fun updateSeekDuration(duration: Int) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.KEY_SEEK_DURATION] = duration
+        }
+    }
+
+    suspend fun updateAutoSwitchSource(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.KEY_AUTO_SWITCH_SOURCE] = enabled
         }
     }
 }

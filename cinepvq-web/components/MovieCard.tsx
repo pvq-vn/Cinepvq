@@ -36,7 +36,24 @@ function MovieCardComponent({
     toggleWatchlist(movie);
   };
 
-  const imageSrc = movie.thumb_url || movie.poster_url || "/placeholder-poster.png";
+  const rawSrc = movie.thumb_url || movie.poster_url || "";
+  const FALLBACK_POSTER =
+    "data:image/svg+xml;utf8," +
+    encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="360" viewBox="0 0 240 360"><rect width="240" height="360" fill="#18181b"/><circle cx="120" cy="170" r="32" fill="#7c3aed" fill-opacity="0.2"/><path d="M112 156l24 14-24 14v-28z" fill="#a78bfa"/></svg>'
+    );
+  const imageSrc =
+    rawSrc && !rawSrc.includes("phim.nguonc.com/public/images/")
+      ? rawSrc.startsWith("http")
+        ? rawSrc
+        : `https://phimimg.com/${rawSrc.replace(/^\/+/, "")}`
+      : FALLBACK_POSTER;
+  const handleImgError = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const el = e.currentTarget;
+    if (el.src !== FALLBACK_POSTER) {
+      el.src = FALLBACK_POSTER;
+    }
+  };
 
   // Compact variant (smaller card for sidebars / quick lists)
   if (variant === "compact") {
@@ -49,6 +66,7 @@ function MovieCardComponent({
           <img
             src={imageSrc}
             alt={movie.name}
+            onError={handleImgError}
             decoding="async"
             className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
             loading="lazy"
@@ -89,6 +107,7 @@ function MovieCardComponent({
           <img
             src={imageSrc}
             alt={movie.name}
+            onError={handleImgError}
             referrerPolicy="no-referrer"
             decoding="async"
             fetchPriority={priority ? "high" : "auto"}
@@ -175,6 +194,7 @@ function MovieCardComponent({
         <img
           src={imageSrc}
           alt={movie.name}
+          onError={handleImgError}
           decoding="async"
           fetchPriority={priority ? "high" : "auto"}
           className="h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"

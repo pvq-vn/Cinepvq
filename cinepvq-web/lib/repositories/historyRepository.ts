@@ -1,6 +1,11 @@
 import { query } from "@/lib/db/client";
 import { userRepository } from "@/lib/repositories/userRepository";
-import { ensureMovieStub } from "@/lib/repositories/favoriteRepository";
+import {
+  ensureMovieStub,
+  isBrokenOrStalePosterUrl,
+  normalizePosterUrl,
+} from "@/lib/repositories/favoriteRepository";
+import { getUnifiedMovieDetail } from "@/services/unifiedCatalog";
 import { normalizeEpisodeLabel } from "@/lib/format";
 import type { WatchHistoryItem } from "@/types/movie";
 
@@ -19,6 +24,7 @@ interface HistoryJoinedRow {
 export const historyRepository = {
   /**
    * Get watch history items for a user ordered by most recently updated.
+   * Automatically heals any missing/stale posters or raw-slug titles from the unified 6-source catalog.
    */
   async getHistoryByUserId(userId: string, limit = 50): Promise<WatchHistoryItem[]> {
     const realUserId = await userRepository.resolveUserId(userId);
@@ -39,17 +45,58 @@ export const historyRepository = {
 
     if (!res) return [];
 
-    return res.rows.map((row) => ({
-      slug: row.slug,
-      name: row.name,
-      original_name: row.original_name ?? undefined,
-      thumb_url: row.thumb_url ?? "",
-      episodeSlug: row.episode_slug ?? undefined,
-      episodeName: normalizeEpisodeLabel(row.episode_name, row.episode_slug) || undefined,
-      currentTime: row.last_position_seconds ?? 0,
-      duration: row.duration_seconds ?? 0,
-      updatedAt: row.updated_at.toISOString(),
-    }));
+    const items = await Promise.all(
+      res.rows.map(async (row) => {
+        let name = row.name;
+        let originalName = row.original_name ?? undefined;
+        let thumbUrl = normalizePosterUrl(row.thumb_url);
+
+        if (!name || name === row.slug || isBrokenOrStalePosterUrl(thumbUrl)) {
+          try {
+            const detailResp = await getUnifiedMovieDetail(row.slug);
+            const detail = detailResp?.movie;
+            if (detail) {
+              if ((!name || name === row.slug) && detail.name) {
+                name = detail.name;
+              }
+              if (!originalName && detail.original_name) {
+                originalName = detail.original_name;
+              }
+              const freshThumb = detail.thumb_url || detail.poster_url || "";
+              if (!isBrokenOrStalePosterUrl(freshThumb)) {
+                thumbUrl = normalizePosterUrl(freshThumb);
+              }
+              // Persist healed metadata back to movies table
+              query(
+                `UPDATE movies
+                 SET name = $2,
+                     original_name = COALESCE($3, original_name),
+                     thumb_url = COALESCE(NULLIF($4, ''), thumb_url),
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE slug = $1`,
+                [row.slug, name, originalName ?? null, thumbUrl]
+              ).catch(() => {});
+            }
+          } catch {
+            // Ignore healing error
+          }
+        }
+
+        return {
+          slug: row.slug,
+          name,
+          original_name: originalName,
+          thumb_url: thumbUrl,
+          episodeSlug: row.episode_slug ?? undefined,
+          episodeName: normalizeEpisodeLabel(row.episode_name, row.episode_slug) || undefined,
+          currentTime: row.last_position_seconds ?? 0,
+          duration: row.duration_seconds ?? 0,
+          updatedAt: row.updated_at.toISOString(),
+        };
+      })
+    );
+
+    return items;
   },
 
   /**

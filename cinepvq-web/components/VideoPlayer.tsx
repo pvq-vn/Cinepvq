@@ -210,9 +210,13 @@ export default function VideoPlayer({
         const hit = list.find((s) => s.sourceId === pref && s.isAvailable);
         if (hit) return hit.sourceId;
       }
+      if (instantHlsSource) {
+        const kk = list.find((s) => s.sourceId === "kkphim" && s.isAvailable);
+        if (kk) return kk.sourceId;
+      }
       return list[0].sourceId;
     },
-    [settings?.preferredSource]
+    [settings?.preferredSource, instantHlsSource]
   );
 
   const [sources, setSources] = useState<ResolvedSource[]>(() =>
@@ -238,6 +242,7 @@ export default function VideoPlayer({
     new Set()
   );
   const failedSourceIdsRef = useRef<Set<VideoSourceId>>(new Set());
+  const manualSourceIdRef = useRef<VideoSourceId | null>(null);
   useEffect(() => {
     failedSourceIdsRef.current = failedSourceIds;
   }, [failedSourceIds]);
@@ -264,8 +269,9 @@ export default function VideoPlayer({
     }, 4500);
   }, []);
 
-  // Synchronously update state when episodeKey or initialTime changes
-  if (episodeKey !== prevEpisodeKey || initialTime !== prevInitialTime) {
+  // Synchronously reset sources/activeSourceId ONLY when episodeKey actually changes!
+  // NEVER reset activeSourceId or failedSourceIds when initialTime updates during playback!
+  if (episodeKey !== prevEpisodeKey) {
     const isNewEpisode = episodeIdentity !== prevEpisodeIdentity;
     setPrevEpisodeKey(episodeKey);
     setPrevEpisodeIdentity(episodeIdentity);
@@ -285,7 +291,17 @@ export default function VideoPlayer({
       setSources([]);
       setActiveSourceId(null);
     }
+  } else if (initialTime !== prevInitialTime) {
+    setPrevInitialTime(initialTime);
+    // Only apply updated initialTime if playback hasn't progressed yet on this episode
+    if (resumeTime <= 1 && initialTime > 1) {
+      setResumeTime(initialTime);
+    }
   }
+
+  useEffect(() => {
+    manualSourceIdRef.current = null;
+  }, [episodeKey]);
 
   // Only block viewport on `isResolving` when we do NOT have an instant direct HLS stream
   const isResolving = resolvedKey !== episodeKey && !instantHlsSource;
@@ -458,6 +474,14 @@ export default function VideoPlayer({
         setResolvedKey(episodeKey);
 
         if (finalList.length > 0) {
+          // If user manually selected a source via "Đổi nguồn", NEVER override it!
+          if (
+            manualSourceIdRef.current &&
+            finalList.some((s) => s.sourceId === manualSourceIdRef.current)
+          ) {
+            return;
+          }
+
           const pref = settings?.preferredSource;
           const preferredMatch =
             pref && pref !== "auto"
@@ -470,14 +494,12 @@ export default function VideoPlayer({
             const firstHealthy =
               finalList.find((s) => s.isAvailable && !failedSourceIdsRef.current.has(s.sourceId)) ||
               finalList[0];
-            if (instantHlsSource && !failedSourceIdsRef.current.has("kkphim")) {
-              // Keep playing active stream smoothly without interrupting unless it already failed/stalled
-              setActiveSourceId((prev) =>
-                prev && !failedSourceIdsRef.current.has(prev) ? prev : firstHealthy.sourceId
-              );
-            } else {
-              setActiveSourceId(firstHealthy.sourceId);
-            }
+            // Keep playing active stream smoothly without interrupting unless activeSourceId is unset!
+            setActiveSourceId((prev) =>
+              prev && finalList.some((s) => s.sourceId === prev) && !failedSourceIdsRef.current.has(prev)
+                ? prev
+                : firstHealthy.sourceId
+            );
           }
         }
       })
@@ -523,6 +545,7 @@ export default function VideoPlayer({
       isCancelled = true;
       if (deferTimer) clearTimeout(deferTimer);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     episodeKey,
     movieSlug,
@@ -536,8 +559,6 @@ export default function VideoPlayer({
     episodeSlug,
     videoUrl,
     directHlsUrl,
-    instantHlsSource,
-    cachedForEpisode,
     settings?.preferredSource,
   ]);
 
@@ -587,10 +608,16 @@ export default function VideoPlayer({
     }
   }, [activeSource, isResolving, onFinishEpisodeTransition, flushPendingAudioWarning]);
 
-  // 2. Automatic Fallback Handler on Fatal Error
+  // 2. Automatic Fallback Handler on Fatal Error (Only when autoSwitchSource is explicitly enabled in Settings!)
   const handleFatalError = useCallback(
     (reason?: string) => {
       if (!activeSourceId) return;
+      if (!settings?.autoSwitchSource) {
+        console.warn(
+          `[MULTI-SOURCE] Error on source: ${activeSourceId} (${reason}). Auto-switch is OFF (keeping source fixed).`
+        );
+        return;
+      }
       console.warn(
         `[MULTI-SOURCE] Fatal error on source: ${activeSourceId}. Fallback reason: ${reason}`
       );
@@ -618,11 +645,12 @@ export default function VideoPlayer({
         return next;
       });
     },
-    [activeSourceId, displaySources, videoUrl]
+    [activeSourceId, displaySources, videoUrl, settings?.autoSwitchSource]
   );
 
   // Manual source switch handler
   const handleSelectSource = (sourceId: VideoSourceId) => {
+    manualSourceIdRef.current = sourceId;
     const oldSrc = activeSource;
     const newSrc = displaySources.find((s) => s.sourceId === sourceId);
 

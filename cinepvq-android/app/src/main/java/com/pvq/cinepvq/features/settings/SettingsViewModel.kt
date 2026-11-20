@@ -49,4 +49,10 @@ class SettingsViewModel(
             settingsRepository.updateSeekDuration(seconds)
         }
     }
+
+    fun setAutoSwitchSource(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.updateAutoSwitchSource(enabled)
+        }
+    }
 }

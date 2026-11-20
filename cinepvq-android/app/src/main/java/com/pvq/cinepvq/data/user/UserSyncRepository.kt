@@ -781,19 +781,34 @@ class UserSyncRepository(
                 }
 
                 // Compare remote items with local items of current user
+                val isBrokenThumb = { u: String? ->
+                    u.isNullOrBlank() || u.contains("phim.nguonc.com/public/images/") || !u.startsWith("http")
+                }
+
                 validRemoteHist.forEach { r ->
                     val local = historyDao.getHistoryBySlug(currentUid, r.slug)
                     val timeRemote = parseTime(r.updatedAt)
                     val timeLocal = parseTime(local?.updatedAt)
+
+                    val bestName = when {
+                        r.name.isNotBlank() && r.name != r.slug -> r.name
+                        local != null && local.name.isNotBlank() && local.name != local.slug -> local.name
+                        else -> r.name
+                    }
+                    val bestThumb = when {
+                        !isBrokenThumb(r.thumb_url) -> r.thumb_url
+                        local != null && !isBrokenThumb(local.thumbUrl) -> local.thumbUrl
+                        else -> r.thumb_url
+                    }
 
                     if (local == null || timeRemote >= timeLocal) {
                         historyDao.upsert(
                             WatchHistoryEntity(
                                 userId = currentUid,
                                 slug = r.slug,
-                                name = r.name,
-                                originalName = r.original_name,
-                                thumbUrl = r.thumb_url,
+                                name = bestName,
+                                originalName = r.original_name ?: local?.originalName,
+                                thumbUrl = bestThumb,
                                 episodeSlug = r.episodeSlug,
                                 episodeName = r.episodeName,
                                 currentTime = r.currentTime,
@@ -803,6 +818,19 @@ class UserSyncRepository(
                         )
                         if (!r.episodeSlug.isNullOrBlank()) {
                             saveEpisodeProgress(r.slug, r.episodeSlug, r.currentTime, r.duration)
+                            val epNum = r.episodeSlug.filter { it.isDigit() }.toIntOrNull() ?: 0
+                            if (epNum in 2..200) {
+                                for (i in 1 until epNum) {
+                                    val padSlug = "tap-${i.toString().padStart(2, '0')}"
+                                    val rawSlug = "tap-$i"
+                                    if (getEpisodeProgress(r.slug, padSlug) <= 0L) {
+                                        saveEpisodeProgress(r.slug, padSlug, 16L, 0L)
+                                    }
+                                    if (getEpisodeProgress(r.slug, rawSlug) <= 0L) {
+                                        saveEpisodeProgress(r.slug, rawSlug, 16L, 0L)
+                                    }
+                                }
+                            }
                         }
                         secureStorageManager.removePendingSyncHistorySlug(currentUid, r.slug)
                     } else {
@@ -810,9 +838,9 @@ class UserSyncRepository(
                         itemsToPush.add(
                             WatchHistoryDto(
                                 slug = local.slug,
-                                name = local.name,
-                                original_name = local.originalName,
-                                thumb_url = local.thumbUrl,
+                                name = bestName,
+                                original_name = local.originalName ?: r.original_name,
+                                thumb_url = bestThumb,
                                 episodeSlug = local.episodeSlug,
                                 episodeName = local.episodeName,
                                 currentTime = local.currentTime,

@@ -276,6 +276,8 @@ class PlaybackManager(
     private val failedSourceIdsForEpisode = mutableSetOf<String>()
     private val recentRebufferTimestamps = ArrayDeque<Long>()
     private var hasRenderedFirstFrameForStream = false
+    @Volatile
+    private var isAutoSwitchSourceEnabled = false
 
     // ── Single Persistent ExoPlayer Instance (Fast Start + Deep Anti-Stutter Cushion) ──
     val trackSelector = DefaultTrackSelector(context).apply {
@@ -376,21 +378,23 @@ class PlaybackManager(
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     _isBuffering.value = (playbackState == Player.STATE_BUFFERING)
                     if (playbackState == Player.STATE_BUFFERING) {
-                        // Track rebuffer frequency & start slow-CDN stall watchdog
-                        if (hasRenderedFirstFrameForStream && playWhenReady) {
-                            val now = System.currentTimeMillis()
-                            recentRebufferTimestamps.addLast(now)
-                            while (recentRebufferTimestamps.isNotEmpty() && now - recentRebufferTimestamps.first() > 25_000L) {
-                                recentRebufferTimestamps.removeFirst()
+                        // Only run automatic rebuffer/stall source switching if explicitly enabled in Settings!
+                        if (isAutoSwitchSourceEnabled) {
+                            if (hasRenderedFirstFrameForStream && playWhenReady) {
+                                val now = System.currentTimeMillis()
+                                recentRebufferTimestamps.addLast(now)
+                                while (recentRebufferTimestamps.isNotEmpty() && now - recentRebufferTimestamps.first() > 25_000L) {
+                                    recentRebufferTimestamps.removeFirst()
+                                }
+                                if (recentRebufferTimestamps.size >= 3) {
+                                    recentRebufferTimestamps.clear()
+                                    triggerAutomaticSourceFailover("Đường truyền giật lag liên tục")
+                                    return
+                                }
                             }
-                            if (recentRebufferTimestamps.size >= 3) {
-                                recentRebufferTimestamps.clear()
-                                triggerAutomaticSourceFailover("Đường truyền giật lag liên tục")
-                                return
+                            if (playWhenReady && _activeStream.value?.type == StreamType.HLS_DIRECT) {
+                                startStallWatchdog()
                             }
-                        }
-                        if (playWhenReady && _activeStream.value?.type == StreamType.HLS_DIRECT) {
-                            startStallWatchdog()
                         }
                     } else if (playbackState == Player.STATE_READY) {
                         hasRenderedFirstFrameForStream = true
@@ -418,7 +422,11 @@ class PlaybackManager(
                 override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                     _isBuffering.value = false
                     stallWatchdogJob?.cancel()
-                    triggerAutomaticSourceFailover(error.message ?: "Lỗi phát luồng video")
+                    if (isAutoSwitchSourceEnabled) {
+                        triggerAutomaticSourceFailover(error.message ?: "Lỗi phát luồng video")
+                    } else {
+                        _errorMessage.value = "Nguồn phát này đang gặp sự cố. Bạn có thể chọn Đổi nguồn phát khác."
+                    }
                 }
             })
         }
@@ -499,6 +507,15 @@ class PlaybackManager(
 
     init {
         startProgressTracking()
+        scope.launch {
+            settingsRepository.playerSettings.collect { s ->
+                isAutoSwitchSourceEnabled = s.autoSwitchSource
+                if (!s.autoSwitchSource) {
+                    stallWatchdogJob?.cancel()
+                    recentRebufferTimestamps.clear()
+                }
+            }
+        }
     }
 
     private fun startProgressTracking() {
@@ -612,10 +629,26 @@ class PlaybackManager(
                 movieRes.getOrNull().also { _movie.value = it }
             }
 
-            // Load watched badges asynchronously (non-blocking)
+            // Load watched badges asynchronously (non-blocking), including cross-device synced history progress
             launch(Dispatchers.IO) {
                 try {
-                    _watchedEpisodes.value = userSyncRepository.getWatchedEpisodeSlugs(slug)
+                    val watchedSet = userSyncRepository.getWatchedEpisodeSlugs(slug).toMutableSet()
+                    val hist = userSyncRepository.getHistoryDirect(slug)
+                    val histEpSlug = hist?.episodeSlug
+                    if (!histEpSlug.isNullOrBlank()) {
+                        if (hist.currentTime > 15L) {
+                            watchedSet.add(histEpSlug)
+                        }
+                        val histNum = histEpSlug.filter { it.isDigit() }.toIntOrNull() ?: 0
+                        if (histNum in 1..200) {
+                            val maxWatched = if (hist.currentTime > 15L) histNum else (histNum - 1)
+                            for (i in 1..maxWatched) {
+                                watchedSet.add("tap-$i")
+                                watchedSet.add("tap-${i.toString().padStart(2, '0')}")
+                            }
+                        }
+                    }
+                    _watchedEpisodes.value = watchedSet
                 } catch (_: Exception) {}
             }
 
@@ -798,7 +831,9 @@ class PlaybackManager(
     ): StreamSource? {
         val preferredMatch = if (!preferredKey.isNullOrBlank() && preferredKey != "auto") {
             sources.firstOrNull { it.isAvailable && matchSource(it, preferredKey) }
-        } else null
+        } else {
+            sources.firstOrNull { it.isAvailable && it.sourceId == "kkphim" }
+        }
         return preferredMatch ?: sources.firstOrNull { it.isAvailable }
     }
 

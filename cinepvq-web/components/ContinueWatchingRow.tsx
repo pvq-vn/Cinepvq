@@ -1,12 +1,48 @@
 "use client";
 
+import { useRef, useCallback } from "react";
 import Link from "next/link";
 import { Play, Clock, ChevronRight } from "lucide-react";
 import { useUserStore } from "@/hooks/useUserStore";
+import { historyStore } from "@/services/userStore";
 import { normalizeEpisodeLabel } from "@/lib/format";
+
+const FALLBACK_POSTER_DATA_URI =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180"><rect width="320" height="180" fill="#18181b"/><circle cx="160" cy="90" r="24" fill="#7c3aed" fill-opacity="0.2"/><path d="M154 80l18 10-18 10v-20z" fill="#a78bfa"/></svg>'
+  );
 
 export default function ContinueWatchingRow() {
   const { history, mounted } = useUserStore();
+  const healedSlugsRef = useRef<Set<string>>(new Set());
+
+  const healPoster = useCallback(async (slug: string) => {
+    if (!slug || healedSlugsRef.current.has(slug)) return;
+    healedSlugsRef.current.add(slug);
+    try {
+      const res = await fetch(`/api/movies/${encodeURIComponent(slug)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const m = data?.movie;
+      if (!m) return;
+      const freshThumb = m.thumb_url || m.poster_url || "";
+      const freshName = m.name || slug;
+      if (!freshThumb) return;
+      const current = historyStore.getAll();
+      const updated = current.map((it) =>
+        it.slug === slug
+          ? {
+              ...it,
+              name: freshName && freshName !== slug ? freshName : it.name,
+              original_name: it.original_name || m.original_name,
+              thumb_url: freshThumb,
+            }
+          : it
+      );
+      historyStore.setAll(updated);
+    } catch {}
+  }, []);
 
   if (!mounted || !history || history.length === 0) {
     return null;
@@ -58,8 +94,19 @@ export default function ContinueWatchingRow() {
               >
                 <Link href={playUrl} className="relative aspect-video w-full overflow-hidden block bg-zinc-800">
                   <img
-                    src={item.thumb_url}
+                    src={
+                      item.thumb_url && !item.thumb_url.includes("phim.nguonc.com/public/images/")
+                        ? item.thumb_url
+                        : FALLBACK_POSTER_DATA_URI
+                    }
                     alt={item.name}
+                    onError={(e) => {
+                      const target = e.currentTarget;
+                      if (target.src !== FALLBACK_POSTER_DATA_URI) {
+                        target.src = FALLBACK_POSTER_DATA_URI;
+                      }
+                      healPoster(item.slug);
+                    }}
                     className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />

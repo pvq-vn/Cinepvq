@@ -1,12 +1,77 @@
 "use client";
 
+import { useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
 import { History, Play, Trash2, ArrowLeft, LogIn, Clock, Film } from "lucide-react";
 import { useUserStore } from "@/hooks/useUserStore";
+import { historyStore } from "@/services/userStore";
 import { normalizeEpisodeLabel } from "@/lib/format";
+
+const FALLBACK_POSTER_DATA_URI =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="240" viewBox="0 0 160 240"><rect width="160" height="240" fill="#18181b"/><circle cx="80" cy="110" r="24" fill="#7c3aed" fill-opacity="0.2"/><path d="M74 100l18 10-18 10v-20z" fill="#a78bfa"/></svg>'
+  );
+
+function isBrokenPoster(url?: string | null): boolean {
+  if (!url) return true;
+  const trimmed = url.trim();
+  if (!trimmed || !trimmed.startsWith("http")) return true;
+  if (trimmed.includes("phim.nguonc.com/public/images/")) return true;
+  return false;
+}
 
 export default function HistoryPage() {
   const { user, history, mounted, removeHistory, clearHistory } = useUserStore();
+  const healedSlugsRef = useRef<Set<string>>(new Set());
+
+  const healHistoryPoster = useCallback(async (slug: string) => {
+    if (!slug || healedSlugsRef.current.has(slug)) return;
+    healedSlugsRef.current.add(slug);
+    try {
+      const res = await fetch(`/api/movies/${encodeURIComponent(slug)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const m = data?.movie;
+      if (!m) return;
+      const freshThumb = m.thumb_url || m.poster_url || "";
+      const freshName = m.name || slug;
+      const freshOrig = m.original_name || undefined;
+      if (!freshThumb && freshName === slug) return;
+
+      const current = historyStore.getAll();
+      let changed = false;
+      const updated = current.map((it) => {
+        if (it.slug !== slug) return it;
+        const nextThumb = !isBrokenPoster(freshThumb) ? freshThumb : it.thumb_url;
+        const nextName = freshName && freshName !== slug ? freshName : it.name;
+        if (nextThumb !== it.thumb_url || nextName !== it.name) {
+          changed = true;
+          return {
+            ...it,
+            name: nextName,
+            original_name: it.original_name || freshOrig,
+            thumb_url: nextThumb,
+          };
+        }
+        return it;
+      });
+      if (changed) {
+        historyStore.setAll(updated);
+      }
+    } catch {
+      // Ignore heal error
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!mounted || history.length === 0) return;
+    for (const item of history) {
+      if (!item.name || item.name === item.slug || isBrokenPoster(item.thumb_url)) {
+        healHistoryPoster(item.slug);
+      }
+    }
+  }, [mounted, history, healHistoryPoster]);
 
   if (!mounted) {
     return (
@@ -98,8 +163,15 @@ export default function HistoryPage() {
 
             <div className="flex items-center gap-4">
               <img
-                src={mostRecent.thumb_url}
+                src={!isBrokenPoster(mostRecent.thumb_url) ? mostRecent.thumb_url : FALLBACK_POSTER_DATA_URI}
                 alt={mostRecent.name}
+                onError={(e) => {
+                  const target = e.currentTarget;
+                  if (target.src !== FALLBACK_POSTER_DATA_URI) {
+                    target.src = FALLBACK_POSTER_DATA_URI;
+                  }
+                  healHistoryPoster(mostRecent.slug);
+                }}
                 className="h-20 w-14 sm:h-24 sm:w-16 object-cover rounded-2xl bg-zinc-800 shadow-md flex-shrink-0"
               />
               <div className="min-w-0 flex-1 space-y-1">
@@ -196,8 +268,15 @@ export default function HistoryPage() {
                 >
                   <Link href={playUrl} className="flex items-center gap-4 min-w-0 flex-1">
                     <img
-                      src={item.thumb_url}
+                      src={!isBrokenPoster(item.thumb_url) ? item.thumb_url : FALLBACK_POSTER_DATA_URI}
                       alt={item.name}
+                      onError={(e) => {
+                        const target = e.currentTarget;
+                        if (target.src !== FALLBACK_POSTER_DATA_URI) {
+                          target.src = FALLBACK_POSTER_DATA_URI;
+                        }
+                        healHistoryPoster(item.slug);
+                      }}
                       className="h-20 w-14 object-cover rounded-xl bg-zinc-800 flex-shrink-0 shadow-sm"
                     />
                     <div className="min-w-0 flex-1 space-y-1">

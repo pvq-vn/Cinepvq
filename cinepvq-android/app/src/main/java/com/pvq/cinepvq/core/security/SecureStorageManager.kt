@@ -174,6 +174,11 @@ class SecureStorageManager(context: Context) {
                 val epSlug = k.removePrefix(prefixPos)
                 if (epSlug.isNotBlank()) {
                     watched.add(epSlug)
+                    val epNum = epSlug.filter { it.isDigit() }.toIntOrNull()
+                    if (epNum != null && epNum > 0) {
+                        watched.add("tap-$epNum")
+                        watched.add("tap-${epNum.toString().padStart(2, '0')}")
+                    }
                 }
             }
         }

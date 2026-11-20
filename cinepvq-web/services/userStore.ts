@@ -34,6 +34,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   preferredQuality: "auto",
   playbackSpeed: 1,
   preferredSource: "auto",
+  autoSwitchSource: false,
   skipSeconds: 10,
 };
 
@@ -634,9 +635,77 @@ export const episodeProgressStore = {
 
   get(movieSlug: string, episodeSlug?: string, season = 1): number {
     if (!movieSlug || !episodeSlug) return 0;
-    const progressKey = `${movieSlug}_s${season}_${episodeSlug}`;
     const all = this.getAll();
-    return all[progressKey]?.currentTime || 0;
+    const progressKey = `${movieSlug}_s${season}_${episodeSlug}`;
+    if (all[progressKey]?.currentTime) {
+      return all[progressKey].currentTime;
+    }
+
+    // Fallback: match by normalized episode number (e.g. tap-1 === tap-01)
+    const numMatch = episodeSlug.match(/\d+/);
+    if (numMatch) {
+      const epNum = parseInt(numMatch[0], 10);
+      if (!isNaN(epNum) && epNum > 0) {
+        const altPad = `${movieSlug}_s${season}_tap-${String(epNum).padStart(2, "0")}`;
+        if (all[altPad]?.currentTime) return all[altPad].currentTime;
+        const altRaw = `${movieSlug}_s${season}_tap-${epNum}`;
+        if (all[altRaw]?.currentTime) return all[altRaw].currentTime;
+        const prefix = `${movieSlug}_s${season}_`;
+        for (const [k, val] of Object.entries(all)) {
+          if (k.startsWith(prefix) && val?.currentTime > 0) {
+            const kSlug = k.slice(prefix.length);
+            const kNum = parseInt((kSlug.match(/\d+/) || [""])[0], 10);
+            if (kNum === epNum) return val.currentTime;
+          }
+        }
+      }
+    }
+    return 0;
+  },
+
+  /**
+   * Determines whether an episode has been watched (either recorded in local episodeProgressStore
+   * or inferred from cross-device synced watch_history up to latestHistoryEpisodeSlug).
+   */
+  getEpisodeWatchStatus(
+    movieSlug: string,
+    episodeSlug?: string,
+    season = 1,
+    latestHistoryEpisodeSlug?: string,
+    latestHistoryCurrentTime?: number
+  ): { isWatched: boolean; watchedSeconds: number } {
+    if (!movieSlug || !episodeSlug) {
+      return { isWatched: false, watchedSeconds: 0 };
+    }
+    const directSeconds = this.get(movieSlug, episodeSlug, season);
+    if (directSeconds > 0) {
+      return { isWatched: true, watchedSeconds: directSeconds };
+    }
+
+    if (latestHistoryEpisodeSlug) {
+      if (latestHistoryEpisodeSlug.toLowerCase() === episodeSlug.toLowerCase()) {
+        const t = latestHistoryCurrentTime || 0;
+        if (t > 0) {
+          return { isWatched: true, watchedSeconds: t };
+        }
+      }
+      const epMatch = episodeSlug.match(/\d+/);
+      const histMatch = latestHistoryEpisodeSlug.match(/\d+/);
+      if (epMatch && histMatch) {
+        const epNum = parseInt(epMatch[0], 10);
+        const histNum = parseInt(histMatch[0], 10);
+        if (!isNaN(epNum) && !isNaN(histNum) && epNum > 0 && histNum > 0) {
+          if (epNum < histNum) {
+            return { isWatched: true, watchedSeconds: 1 };
+          }
+          if (epNum === histNum && (latestHistoryCurrentTime || 0) > 0) {
+            return { isWatched: true, watchedSeconds: latestHistoryCurrentTime || 1 };
+          }
+        }
+      }
+    }
+
+    return { isWatched: false, watchedSeconds: 0 };
   },
 
   save(

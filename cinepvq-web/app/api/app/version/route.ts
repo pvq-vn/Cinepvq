@@ -14,17 +14,16 @@ export interface AppVersionResponse {
   forceUpdate: boolean;
 }
 
-const DEFAULT_VERSION_CODE = 4;
-const DEFAULT_VERSION_NAME = "1.2.0";
+const DEFAULT_VERSION_CODE = 5;
+const DEFAULT_VERSION_NAME = "1.2.1";
 const DEFAULT_TAG = `v${DEFAULT_VERSION_NAME}`;
 
 const DEFAULT_CHANGELOG = [
-  "Tối ưu toàn diện tốc độ khởi phát phim (0ms từ bộ nhớ đệm, gộp manifest 1 lượt tải, pre-warm sẵn nguồn ngay tại trang chi tiết) và phát mượt không giật lag (HTTP/2 pool, buffer 30s-75s, tự động chuyển nguồn nhanh hơn khi CDN tắc nghẽn)",
-  "Hiển thị vòng xoay đang tải (buffering spinner) chuẩn xác thay vì nháy nút tạm dừng khi nạp video",
-  "Hợp nhất toàn bộ 6 kho phim (KKPhim1, VSMOV, PhimHDCSS, ChoPhim, K20, NguonC) thành 1 kho phim duy nhất trên Tìm kiếm, Trang chủ, Chi tiết & BXH",
-  "Bổ sung phụ đề tiếng Việt cho PhimHDCSS và hiển thị đầy đủ nguồn ChoPhim trong trình phát",
-  "Nâng cấp BXH Douban cuộn vô hạn, chỉ hiển thị phim khả dụng có poster và giữ nguyên thứ hạng gốc",
-  "Sửa triệt để lỗi phim đã xóa trong Lịch sử tự đồng bộ quay lại giữa Web và App",
+  "Khóa cố định nguồn phát đang xem, loại bỏ hoàn toàn hiện tượng tự động nhảy nguồn gây giật lag trên cả Web và App",
+  "Bổ sung cài đặt 'Tự động chuyển nguồn khi lỗi' (mặc định: Tắt) ngay trong mục Cài đặt nguồn phim & tốc độ phát",
+  "Đồng bộ và làm nhạt màu rõ ràng các tập đã xem giữa App và Web trong danh sách tập phim",
+  "Khôi phục tự động toàn bộ ảnh poster và tên phim bị lỗi hiển thị trong Lịch sử, Yêu thích và Xem sau",
+  "Hợp nhất toàn bộ 6 kho phim (KKPhim1, VSMOV, PhimHDCSS, ChoPhim, K20, NguonC) thành 1 kho phim duy nhất",
   "Bổ sung Trang Quản Trị (Admin Portal) tích hợp trực tiếp trong Tài khoản và Cài đặt",
 ];
 

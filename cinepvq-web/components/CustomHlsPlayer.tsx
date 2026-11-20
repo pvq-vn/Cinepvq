@@ -53,9 +53,10 @@ class PngUnwrapFragmentLoader extends DefaultHlsLoader {
         if (response.data instanceof ArrayBuffer) {
           const stripped = stripPngPrefixFromTs(new Uint8Array(response.data));
           if (stripped.byteOffset !== 0 || stripped.byteLength !== response.data.byteLength) {
-            const copy = new Uint8Array(stripped.byteLength);
-            copy.set(stripped);
-            response.data = copy.buffer;
+            response.data = response.data.slice(
+              stripped.byteOffset,
+              stripped.byteOffset + stripped.byteLength
+            );
           }
         }
         origOnSuccess(response, stats, ctx, networkDetails);
@@ -595,79 +596,28 @@ export default function CustomHlsPlayer({
     let hlsInstance: Hls | null = null;
     let networkRecoveryCount = 0;
     let mediaRecoveryCount = 0;
-    let hasReceivedFirstFrame = false;
-    let startupWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
-    const recentStallTimestamps: number[] = [];
-
-    const clearStartupWatchdog = () => {
-      if (startupWatchdogTimer) {
-        clearTimeout(startupWatchdogTimer);
-        startupWatchdogTimer = null;
-      }
-    };
-
-    const markFirstFrameReady = () => {
-      if (!hasReceivedFirstFrame) {
-        hasReceivedFirstFrame = true;
-        clearStartupWatchdog();
-      }
-    };
-
-    const handleStallCheck = () => {
-      if (sessionId !== loadSessionIdRef.current) return;
-      if (!hasReceivedFirstFrame || video.paused || video.seeking) return;
-      const now = Date.now();
-      recentStallTimestamps.push(now);
-      while (recentStallTimestamps.length > 0 && now - recentStallTimestamps[0] > 25000) {
-        recentStallTimestamps.shift();
-      }
-      // If active CDN stalls 3+ times inside 25 seconds, proactively fail over to a faster source
-      if (recentStallTimestamps.length >= 3) {
-        recentStallTimestamps.length = 0;
-        console.warn("[HlsPlayer] Frequent rebuffering detected — failing over to faster source");
-        onErrorRef.current?.("Frequent rebuffering on current source");
-      }
-    };
-
-    video.addEventListener("loadeddata", markFirstFrameReady);
-    video.addEventListener("playing", markFirstFrameReady);
-    video.addEventListener("waiting", handleStallCheck);
-
-    // Startup watchdog: never spin infinitely on a dead/throttled CDN (failover after 8s if no frame)
-    if (autoPlayRef.current || isServerSwitch) {
-      startupWatchdogTimer = setTimeout(() => {
-        if (
-          sessionId === loadSessionIdRef.current &&
-          !hasReceivedFirstFrame &&
-          video.readyState < 3
-        ) {
-          console.warn("[HlsPlayer] Startup timeout (>8s without first frame) — failing over");
-          onErrorRef.current?.("Startup timeout on current source");
-        }
-      }, 8000);
-    }
 
     if (Hls.isSupported()) {
       hlsInstance = new Hls({
         enableWorker: true,
         lowLatencyMode: false,
         startFragPrefetch: true,
-        maxBufferLength: 45,
-        maxMaxBufferLength: 120,
-        maxBufferSize: 80 * 1000 * 1000,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        maxBufferSize: 60 * 1000 * 1000,
         maxBufferHole: 0.8,
         nudgeOffset: 0.2,
         nudgeMaxRetry: 8,
-        backBufferLength: 60,
-        manifestLoadingTimeOut: 10000,
-        manifestLoadingMaxRetry: 2,
-        manifestLoadingRetryDelay: 500,
-        levelLoadingTimeOut: 10000,
-        levelLoadingMaxRetry: 2,
-        levelLoadingRetryDelay: 500,
-        fragLoadingTimeOut: 12000,
-        fragLoadingMaxRetry: 3,
-        fragLoadingRetryDelay: 500,
+        backBufferLength: 30,
+        manifestLoadingTimeOut: 15000,
+        manifestLoadingMaxRetry: 4,
+        manifestLoadingRetryDelay: 800,
+        levelLoadingTimeOut: 15000,
+        levelLoadingMaxRetry: 4,
+        levelLoadingRetryDelay: 800,
+        fragLoadingTimeOut: 20000,
+        fragLoadingMaxRetry: 6,
+        fragLoadingRetryDelay: 800,
         ...(stripPng
           ? { fLoader: PngUnwrapFragmentLoader as unknown as HlsConfig["fLoader"] }
           : {}),
@@ -771,32 +721,29 @@ export default function CustomHlsPlayer({
 
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
-              if (isHardHttpFailure || isManifestFail || networkRecoveryCount >= 2) {
-                console.warn("[HlsPlayer] Unrecoverable network error -> triggering source failover", data);
-                clearStartupWatchdog();
-                setErrorMsg("Đang chuyển sang nguồn phát nhanh hơn...");
+              if (isHardHttpFailure || isManifestFail || networkRecoveryCount >= 3) {
+                console.warn("[HlsPlayer] Unrecoverable network error", data);
+                setErrorMsg("Nguồn phát này đang gặp sự cố kết nối. Bạn có thể chọn nguồn khác ở nút Đổi nguồn.");
                 onErrorRef.current?.(data.details || `Network error (${httpCode})`);
               } else {
                 networkRecoveryCount++;
-                console.warn(`[HlsPlayer] Fatal network error, retry ${networkRecoveryCount}/2...`, data);
+                console.warn(`[HlsPlayer] Fatal network error, retry ${networkRecoveryCount}/3...`, data);
                 hlsInstance?.startLoad();
               }
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
-              if (mediaRecoveryCount >= 2) {
-                console.warn("[HlsPlayer] Repeated media error -> triggering source failover", data);
-                clearStartupWatchdog();
-                setErrorMsg("Đang chuyển sang nguồn phát dự phòng...");
+              if (mediaRecoveryCount >= 3) {
+                console.warn("[HlsPlayer] Repeated media error", data);
+                setErrorMsg("Lỗi giải mã luồng video trên nguồn này. Bạn có thể chọn nguồn khác ở nút Đổi nguồn.");
                 onErrorRef.current?.(data.details || "Media error");
               } else {
                 mediaRecoveryCount++;
-                console.warn(`[HlsPlayer] Fatal media error, recover ${mediaRecoveryCount}/2...`, data);
+                console.warn(`[HlsPlayer] Fatal media error, recover ${mediaRecoveryCount}/3...`, data);
                 hlsInstance?.recoverMediaError();
               }
               break;
             default:
               console.error("[HlsPlayer] Unrecoverable HLS error:", data);
-              clearStartupWatchdog();
               setErrorMsg("Không thể phát video từ nguồn này.");
               onErrorRef.current?.(data.details || "HLS error");
               break;
@@ -866,10 +813,6 @@ export default function CustomHlsPlayer({
     }
 
     return () => {
-      clearStartupWatchdog();
-      video.removeEventListener("loadeddata", markFirstFrameReady);
-      video.removeEventListener("playing", markFirstFrameReady);
-      video.removeEventListener("waiting", handleStallCheck);
       if (hlsInstance) {
         hlsInstance.stopLoad();
         hlsInstance.detachMedia();
@@ -1803,16 +1746,25 @@ function getFullscreenElement(): Element | null {
       {errorMsg && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950/90 text-white p-6 text-center space-y-3 z-30">
           <AlertCircle className="h-10 w-10 text-red-500" />
-          <p className="text-sm font-semibold">{errorMsg}</p>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onError?.(errorMsg);
-            }}
-            className="rounded-xl bg-violet-600 px-4 py-2 text-xs font-bold hover:bg-violet-500 transition-all shadow-lg cursor-pointer"
-          >
-            Chuyển sang Server Iframe
-          </button>
+          <p className="text-sm font-semibold max-w-md">{errorMsg}</p>
+          <div className="flex flex-wrap items-center justify-center gap-2.5">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setErrorMsg(null);
+                setIsBuffering(true);
+                if (hlsRef.current) {
+                  hlsRef.current.startLoad();
+                } else if (videoRef.current) {
+                  videoRef.current.load();
+                }
+                videoRef.current?.play().catch(() => {});
+              }}
+              className="rounded-xl bg-violet-600 px-4 py-2 text-xs font-bold hover:bg-violet-500 transition-all shadow-lg cursor-pointer"
+            >
+              Thử lại nguồn này
+            </button>
+          </div>
         </div>
       )}
 

@@ -135,7 +135,7 @@ export interface UserSettingsRow {
   sound_enabled: boolean;
   preferred_quality: "auto" | "HD" | "FHD";
   playback_speed?: number | string | null;
-  preferred_source?: "auto" | "k20" | "vsmov" | "kkphim" | "nguonc" | null;
+  preferred_source?: "auto" | "k20" | "vsmov" | "phimhdcss" | "chophim" | "kkphim" | "nguonc" | null;
   updated_at: Date;
 }
 
@@ -203,7 +203,7 @@ export function mapSettingsRowToAppSettings(row: UserSettingsRow): AppSettings {
   const speed = row.playback_speed ? Number(row.playback_speed) : 1;
   const validSpeeds = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
   const cleanSpeed = validSpeeds.includes(speed) ? speed : 1;
-  const validSources = ["auto", "k20", "vsmov", "kkphim", "nguonc"];
+  const validSources = ["auto", "k20", "vsmov", "phimhdcss", "chophim", "kkphim", "nguonc"];
   const cleanSource =
     row.preferred_source && validSources.includes(row.preferred_source)
       ? (row.preferred_source as AppSettings["preferredSource"])
@@ -216,6 +216,7 @@ export function mapSettingsRowToAppSettings(row: UserSettingsRow): AppSettings {
     preferredQuality: row.preferred_quality,
     playbackSpeed: cleanSpeed,
     preferredSource: cleanSource,
+    autoSwitchSource: false,
     skipSeconds: 10,
   };
 }

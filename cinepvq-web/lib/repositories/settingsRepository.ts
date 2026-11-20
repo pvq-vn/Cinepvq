@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   preferredQuality: "auto",
   playbackSpeed: 1,
   preferredSource: "auto",
+  autoSwitchSource: false,
 };
 
 export const settingsRepository = {
@@ -58,7 +59,7 @@ export const settingsRepository = {
         : 1;
     const cleanSource =
       merged.preferredSource &&
-      ["auto", "k20", "vsmov", "kkphim", "nguonc"].includes(merged.preferredSource)
+      ["auto", "k20", "vsmov", "phimhdcss", "chophim", "kkphim", "nguonc"].includes(merged.preferredSource)
         ? merged.preferredSource
         : "auto";
 

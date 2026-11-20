@@ -16,6 +16,7 @@ import {
   Gauge,
   Layers,
   RotateCw,
+  Sparkles,
 } from "lucide-react";
 
 export default function SettingsPage() {
@@ -180,7 +181,7 @@ export default function SettingsPage() {
                     Nguồn phát mặc định
                   </h3>
                   <p className="text-[11px] text-zinc-500">
-                    Ưu tiên thử nguồn này trước; nếu lỗi sẽ tự động fallback sang nguồn khác.
+                    Chọn nguồn phát ưu tiên khi bắt đầu xem phim. Bạn vẫn có thể đổi nguồn thủ công ngay trên trình phát.
                   </p>
                 </div>
               </div>
@@ -202,6 +203,41 @@ export default function SettingsPage() {
                 <option value="kkphim">KKPhim1 (Đã cắt QC)</option>
                 <option value="nguonc">NguonC (StreamC)</option>
               </select>
+            </div>
+
+            {/* Auto Switch Source On Error Toggle (Default: OFF) */}
+            <div className="pt-4 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-rose-500/10 text-rose-500">
+                  <Sparkles className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="text-xs sm:text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                    Tự động chuyển nguồn khi lỗi
+                  </h3>
+                  <p className="text-[11px] text-zinc-500">
+                    Mặc định tắt để giữ cố định nguồn phát bạn đang xem. Khi bật, trình phát sẽ tự chuyển sang nguồn khác nếu nguồn hiện tại không tải được.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                role="switch"
+                aria-checked={Boolean(settings.autoSwitchSource)}
+                onClick={() =>
+                  updateSettings({ autoSwitchSource: !Boolean(settings.autoSwitchSource) })
+                }
+                className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  settings.autoSwitchSource ? "bg-violet-600" : "bg-zinc-300 dark:bg-zinc-700"
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                    settings.autoSwitchSource ? "translate-x-5" : "translate-x-0"
+                  }`}
+                />
+              </button>
             </div>
 
             {/* Skip Seconds */}

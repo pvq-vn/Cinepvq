@@ -150,6 +150,14 @@ fun SettingsScreen(
                         value = currentResName,
                         onClick = { showResolutionDialog = true }
                     )
+                    HorizontalDivider(color = CinepvqBorderSubtle, modifier = Modifier.padding(horizontal = 16.dp))
+                    SettingsSwitchRow(
+                        icon = Icons.Default.SyncAlt,
+                        title = "Tự động chuyển nguồn khi lỗi",
+                        subtitle = "Mặc định tắt để giữ cố định nguồn phát bạn đang chọn",
+                        checked = settings.autoSwitchSource,
+                        onCheckedChange = { viewModel.setAutoSwitchSource(it) }
+                    )
                 }
             }
 
@@ -342,6 +350,65 @@ private fun SettingsItemRow(
             contentDescription = null,
             tint = CinepvqTextMuted,
             modifier = Modifier.size(20.dp)
+        )
+    }
+}
+
+@Composable
+private fun SettingsSwitchRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) }
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(CinepvqSurfaceVariant),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = CinepvqPrimary,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(16.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge.copy(
+                    fontWeight = FontWeight.Medium,
+                    color = CinepvqTextPrimary
+                )
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    color = CinepvqTextSecondary
+                )
+            )
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = CinepvqPrimary,
+                uncheckedThumbColor = CinepvqTextSecondary,
+                uncheckedTrackColor = CinepvqSurfaceVariant
+            )
         )
     }
 }

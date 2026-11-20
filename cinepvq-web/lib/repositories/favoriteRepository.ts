@@ -1,5 +1,6 @@
 import { query } from "@/lib/db/client";
 import { userRepository } from "@/lib/repositories/userRepository";
+import { getUnifiedMovieDetail } from "@/services/unifiedCatalog";
 import type { FavoriteMovie } from "@/types/movie";
 
 interface FavoriteJoinedRow {
@@ -12,6 +13,24 @@ interface FavoriteJoinedRow {
   created_at: Date;
 }
 
+export function isBrokenOrStalePosterUrl(url?: string | null): boolean {
+  if (!url) return true;
+  const trimmed = url.trim();
+  if (!trimmed || !trimmed.startsWith("http")) return true;
+  if (trimmed.includes("phim.nguonc.com/public/images/")) return true;
+  return false;
+}
+
+export function normalizePosterUrl(url?: string | null): string {
+  if (!url) return "";
+  const trimmed = url.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed;
+  }
+  return `https://phimimg.com/${trimmed.replace(/^\/+/, "")}`;
+}
+
 export async function ensureMovieStub(movie: {
   slug: string;
   name?: string;
@@ -20,12 +39,64 @@ export async function ensureMovieStub(movie: {
   quality?: string;
   current_episode?: string;
 }): Promise<string | null> {
-  const existing = await query<{ id: string }>(
-    "SELECT id FROM movies WHERE slug = $1 LIMIT 1",
+  const existing = await query<{
+    id: string;
+    name: string | null;
+    original_name: string | null;
+    thumb_url: string | null;
+  }>(
+    "SELECT id, name, original_name, thumb_url FROM movies WHERE slug = $1 LIMIT 1",
     [movie.slug]
   );
+
+  let resolvedName =
+    movie.name && movie.name.trim() && movie.name.trim() !== movie.slug
+      ? movie.name.trim()
+      : existing?.rows[0]?.name && existing.rows[0].name !== movie.slug
+      ? existing.rows[0].name
+      : "";
+  let resolvedOrig = movie.original_name || existing?.rows[0]?.original_name || null;
+  let resolvedThumb = !isBrokenOrStalePosterUrl(movie.thumb_url)
+    ? normalizePosterUrl(movie.thumb_url)
+    : !isBrokenOrStalePosterUrl(existing?.rows[0]?.thumb_url)
+    ? normalizePosterUrl(existing?.rows[0]?.thumb_url)
+    : "";
+
+  if (!resolvedName || !resolvedThumb) {
+    try {
+      const detailResp = await getUnifiedMovieDetail(movie.slug);
+      const detail = detailResp?.movie;
+      if (detail) {
+        if (!resolvedName && detail.name) resolvedName = detail.name;
+        if (!resolvedOrig && detail.original_name) resolvedOrig = detail.original_name;
+        const candidateThumb = detail.thumb_url || detail.poster_url || "";
+        if (!resolvedThumb && !isBrokenOrStalePosterUrl(candidateThumb)) {
+          resolvedThumb = normalizePosterUrl(candidateThumb);
+        }
+      }
+    } catch {
+      // Ignore catalog lookup error
+    }
+  }
+
   if (existing?.rows[0]?.id) {
-    return existing.rows[0].id;
+    const row = existing.rows[0];
+    const needsHeal =
+      !row.name ||
+      row.name === movie.slug ||
+      isBrokenOrStalePosterUrl(row.thumb_url);
+    if (needsHeal && (resolvedName || resolvedThumb)) {
+      await query(
+        `UPDATE movies
+         SET name = COALESCE(NULLIF($2, ''), name),
+             original_name = COALESCE($3, original_name),
+             thumb_url = COALESCE(NULLIF($4, ''), thumb_url),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [row.id, resolvedName, resolvedOrig, resolvedThumb]
+      );
+    }
+    return row.id;
   }
 
   const res = await query<{ id: string }>(
@@ -35,14 +106,18 @@ export async function ensureMovieStub(movie: {
        $1, $2, $3, $4, $5, $6, 'nguonc', 'pending'
      )
      ON CONFLICT (slug) DO UPDATE SET
-       name = EXCLUDED.name,
-       thumb_url = COALESCE(EXCLUDED.thumb_url, movies.thumb_url)
+       name = CASE
+         WHEN EXCLUDED.name IS NOT NULL AND EXCLUDED.name <> '' AND EXCLUDED.name <> movies.slug
+         THEN EXCLUDED.name
+         ELSE movies.name
+       END,
+       thumb_url = COALESCE(NULLIF(EXCLUDED.thumb_url, ''), movies.thumb_url)
      RETURNING id;`,
     [
       movie.slug,
-      movie.name || movie.slug,
-      movie.original_name ?? null,
-      movie.thumb_url ?? null,
+      resolvedName || movie.name || movie.slug,
+      resolvedOrig,
+      resolvedThumb || null,
       movie.quality ?? null,
       movie.current_episode ?? null,
     ]
@@ -70,15 +145,49 @@ export const favoriteRepository = {
 
     if (!res) return [];
 
-    return res.rows.map((row) => ({
-      slug: row.slug,
-      name: row.name,
-      original_name: row.original_name ?? undefined,
-      thumb_url: row.thumb_url ?? "",
-      quality: row.quality ?? undefined,
-      current_episode: row.current_episode ?? undefined,
-      addedAt: row.created_at.toISOString(),
-    }));
+    const items = await Promise.all(
+      res.rows.map(async (row) => {
+        let name = row.name;
+        let originalName = row.original_name ?? undefined;
+        let thumbUrl = normalizePosterUrl(row.thumb_url);
+
+        if (!name || name === row.slug || isBrokenOrStalePosterUrl(thumbUrl)) {
+          try {
+            const detailResp = await getUnifiedMovieDetail(row.slug);
+            const detail = detailResp?.movie;
+            if (detail) {
+              if ((!name || name === row.slug) && detail.name) name = detail.name;
+              if (!originalName && detail.original_name) originalName = detail.original_name;
+              const freshThumb = detail.thumb_url || detail.poster_url || "";
+              if (!isBrokenOrStalePosterUrl(freshThumb)) {
+                thumbUrl = normalizePosterUrl(freshThumb);
+              }
+              query(
+                `UPDATE movies
+                 SET name = $2,
+                     original_name = COALESCE($3, original_name),
+                     thumb_url = COALESCE(NULLIF($4, ''), thumb_url),
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE slug = $1`,
+                [row.slug, name, originalName ?? null, thumbUrl]
+              ).catch(() => {});
+            }
+          } catch {}
+        }
+
+        return {
+          slug: row.slug,
+          name,
+          original_name: originalName,
+          thumb_url: thumbUrl,
+          quality: row.quality ?? undefined,
+          current_episode: row.current_episode ?? undefined,
+          addedAt: row.created_at.toISOString(),
+        };
+      })
+    );
+
+    return items;
   },
 
   /**
